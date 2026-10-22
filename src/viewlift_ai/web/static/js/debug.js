@@ -387,21 +387,32 @@
       const user = result.user || {};
       const parental = result.parental || {};
       const sub = result.subscription || {};
+      const entitlements = result.entitlements_v2 || {};
+      const entitlementCache = result.entitlement_cache || {};
       const tve = result.tve || {};
       const page = result.page || {};
+      const player = result.player || {};
       const geo = result.geo || {};
+      const site = result.site_features || {};
+      const lists = result.user_lists || {};
       const summary = [
+        ["Platform", result.platform || result.device?.platform || "—"],
         ["Flow", flow.name || (user.logged_in ? "logged_in" : "guest")],
         ["Guest", String(flow.is_guest ?? !(user.logged_in))],
         ["Logged in", String(flow.is_logged_in ?? user.logged_in ?? false)],
-        ["Subscribed", String(sub.is_user_subscribed_effective ?? sub.is_subscribed ?? false)],
-        ["Plan", sub.plan_id || sub.subscription_plan || "—"],
+        ["Subscribed", String(entitlements.is_subscribed ?? sub.is_user_subscribed_effective ?? sub.is_subscribed ?? false)],
+        ["SVOD", String(entitlements.has_svod ?? false)],
+        ["Plan", entitlements.svod_plan_id || sub.plan_id || sub.subscription_plan || "—"],
+        ["TVOD buys", String(entitlements.purchased_content_count ?? sub.purchased_content_ids_count ?? 0)],
         ["TVE", String(tve.signed_in_via_tve ?? false)],
         ["MVPD", tve.selected_provider_title || tve.mvpd_provider || "—"],
+        ["Player", player.visible ? (player.title || player.content_id || "on") : "off"],
+        ["Entitlement API", player.entitlement?.is_success != null ? String(player.entitlement.is_success) : `cache ${entitlementCache.bulk_key_count ?? 0}`],
         ["Country", geo.country_code || user.country_code || "—"],
         ["Auth token", session.auth_token_present ? "present" : "missing"],
         ["Parental", parental.user_enabled ? `on (${parental.rating || "no rating"})` : "off"],
         ["Page modules", String(page.module_count ?? 0)],
+        ["Watchlist", String(lists.watchlist_count ?? 0)],
       ];
       document.getElementById("ott-summary").innerHTML = summary
         .map(([label, value]) => `<div class="metric"><span class="muted">${escapeHtml(label)}</span><strong>${escapeHtml(value)}</strong></div>`)
@@ -412,16 +423,26 @@
         ["User", user],
         ["Geo / locale", geo],
         ["Parental", parental],
-        ["Subscription", sub],
+        ["Subscription / plan", sub],
+        ["Entitlements v2 (SVOD/TVOD/TVE)", entitlements],
+        ["Entitlement API cache (/v3/entitlement)", entitlementCache],
+        ["Plan feature gates", result.plan_features || {}],
         ["TVE", tve],
         ["Profiles", result.profiles || {}],
         ["Personalization", result.personalization || {}],
+        ["Devices", result.devices || {}],
+        ["Watchlist / history", lists],
+        ["Live player / video", player],
         ["Player prefs", result.player_prefs || {}],
         ["Content filter", result.content_filter || {}],
         ["Theme", result.theme || {}],
         ["Config", result.config || {}],
+        ["Site features", site],
+        ["DRM", result.drm || {}],
+        ["SSO", result.sso || {}],
         ["Navigation", result.navigation || {}],
-        ["Device", result.device || result.bundle || {}],
+        ["Navigation catalog", result.navigation_catalog || {}],
+        ["Device / app", result.device || result.bundle || {}],
         ["Analytics clients", result.analytics || {}],
         ["Page", {
           page_id: page.page_id,
@@ -429,6 +450,8 @@
           page_title: page.page_title,
           module_count: page.module_count,
           visible: page.visible,
+          source: page.source,
+          platform: page.platform,
           top_vc: page.top_vc,
           note: page.note,
         }],
@@ -457,13 +480,18 @@
         }).join("");
         html += `</div>`;
       }
+      if (player.visible && player.stream) {
+        html += `<div class="ott-card"><h3>Player stream (no secrets)</h3>${this.kvHtml(player.stream)}`
+          + (player.entitlement ? `<h4>Entitlement response</h4>${this.kvHtml(player.entitlement)}` : "")
+          + `</div>`;
+      }
       if (Array.isArray(result.frameworks) && result.frameworks.length) {
         html += `<div class="ott-card"><h3>Linked frameworks (${result.frameworks.length})</h3>`
           + `<pre>${escapeHtml(result.frameworks.join("\n"))}</pre></div>`;
       }
       document.getElementById("ott-sections").innerHTML = html;
       // #region agent log
-      fetch('http://127.0.0.1:7666/ingest/82fbf0b7-a054-4463-8681-d068ac48fa59',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'93a126'},body:JSON.stringify({sessionId:'93a126',location:'debug.js:renderOtt',message:'ott snapshot rendered',data:{flow:flow.name,guest:!!flow.is_guest,logged_in:!!flow.is_logged_in,modules:modules.length,subscribed:!!(sub.is_user_subscribed_effective||sub.is_subscribed),tve:!!tve.signed_in_via_tve,auth_present:!!session.auth_token_present,pin_exposed:parental.pin_value_exposed===true,token_exposed:session.token_values_exposed===true},timestamp:Date.now(),hypothesisId:'H-guest-login'})}).catch(()=>{});
+      fetch('http://127.0.0.1:7666/ingest/82fbf0b7-a054-4463-8681-d068ac48fa59',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'93a126'},body:JSON.stringify({sessionId:'93a126',location:'debug.js:renderOtt',message:'ott snapshot rendered',data:{flow:flow.name,guest:!!flow.is_guest,logged_in:!!flow.is_logged_in,modules:modules.length,subscribed:!!(sub.is_user_subscribed_effective||sub.is_subscribed),has_svod:!!entitlements.has_svod,player_visible:!!player.visible,entitlement_cache:entitlementCache.bulk_key_count||0,tve:!!tve.signed_in_via_tve,auth_present:!!session.auth_token_present,pin_exposed:parental.pin_value_exposed===true,token_exposed:session.token_values_exposed===true,platform:result.platform||null},timestamp:Date.now(),hypothesisId:'H-expand'})}).catch(()=>{});
       // #endregion
     },
 
