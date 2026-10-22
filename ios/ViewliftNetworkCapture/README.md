@@ -11,8 +11,12 @@ AI dashboard. No Wi-Fi proxy or installed CA is required.
 
 ## Add package
 
-Add this directory as a local Swift package. For a remote repository, use that
-repository URL and select the `ViewliftNetworkCapture` product.
+**Git SPM (preferred for AppCMS debug branches):** add
+`https://github.com/rakesh-vl/viewlift-ai.git` (branch `main`) and select the
+`ViewliftNetworkCapture` product on both AppCMS and AppCMS_tvOS. The repo root
+`Package.swift` exposes this library.
+
+**Local iteration:** add `ios/ViewliftNetworkCapture` as a local Swift package.
 
 Add this key to the app's `Info.plist`:
 
