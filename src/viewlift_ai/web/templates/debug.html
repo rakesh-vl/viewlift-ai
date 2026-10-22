@@ -1,0 +1,70 @@
+{% extends "base.html" %}
+{% block content %}
+<p class="muted setup-note">
+  Debug tools run on this Mac. Nothing on this page is compiled into the iOS app.
+</p>
+<div id="debug-modules" class="module-grid"></div>
+
+<section class="rules-block" id="network">
+  <h2>Bad network</h2>
+  <p class="muted">One global throttle rule. Packet loss from the preset list is not applied.</p>
+  <div id="profile-buttons" class="row-actions"></div>
+  <p id="profile-status" class="muted"></p>
+</section>
+
+<section class="rules-block" id="waterfall">
+  <h2>Waterfall</h2>
+  <div id="waterfall" class="waterfall"></div>
+</section>
+
+<section class="rules-block" id="diagnostics">
+  <h2>Log diagnostics</h2>
+  <div class="row-actions">
+    {% for key, needle in diagnostics.items() %}
+    <button type="button" class="btn ghost" data-diag="{{ needle }}">{{ key }}</button>
+    {% endfor %}
+  </div>
+  <div id="diag-rows" class="diag-rows"></div>
+</section>
+
+<section class="rules-block" id="analytics">
+  <h2>Analytics hosts</h2>
+  <p class="muted">Captured flows whose host matches {{ analytics_markers | join(', ') }}.</p>
+  <div id="analytics-rows" class="diag-rows"></div>
+</section>
+
+<section class="rules-block" id="deeplink">
+  <h2>Deeplink</h2>
+  <p class="muted">Opens the URL on a booted simulator with simctl. Not sent to the iPhone.</p>
+  <form id="deeplink-form" class="filters">
+    <label>UDID <input id="deeplink-udid" value="booted" autocomplete="off"></label>
+    <label class="grow">URL <input id="deeplink-url" placeholder="myapp://home" autocomplete="off"></label>
+    <button type="submit" class="btn">Open</button>
+  </form>
+  <p id="deeplink-status" class="muted"></p>
+</section>
+
+<section class="rules-block" id="location">
+  <h2>Simulated location</h2>
+  <p class="muted">Paired iPhone, iOS 17+. Stop the log stream first or the phone drops off USB.</p>
+  <form id="location-form" class="filters">
+    <label>UDID <input id="loc-udid" placeholder="device UDID" autocomplete="off"></label>
+    <label>Lat <input id="loc-lat" type="number" step="any" placeholder="40.69"></label>
+    <label>Lon <input id="loc-lon" type="number" step="any" placeholder="-74.04"></label>
+    <button type="submit" class="btn">Set</button>
+    <button type="button" id="loc-clear" class="btn ghost">Clear</button>
+  </form>
+  <p id="location-status" class="muted"></p>
+</section>
+
+<section class="rules-block" id="security">
+  <h2>Dashboard security</h2>
+  <p class="muted">Jailbreak, pinning, and ATS checks need the app process. They are not run here.</p>
+  <div id="security-rows" class="diag-rows"></div>
+</section>
+{% endblock %}
+{% block scripts %}
+<script>
+  document.addEventListener("DOMContentLoaded", () => ViewliftNetwork.initDebug());
+</script>
+{% endblock %}

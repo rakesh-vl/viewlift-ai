@@ -1,0 +1,34 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{% block title %}{{ title }} · Viewlift AI{% endblock %}</title>
+  <link rel="stylesheet" href="/static/css/app.css">
+</head>
+<body>
+  <header class="topbar">
+    <a class="brand" href="/">Viewlift AI</a>
+    <nav class="nav">
+      <a href="/" class="nav-link{% if active_nav == 'network' %} active{% endif %}">Network</a>
+      <a href="/logs" class="nav-link{% if active_nav == 'logs' %} active{% endif %}">Logs</a>
+      <a href="/rules" class="nav-link{% if active_nav == 'rules' %} active{% endif %}">Rules</a>
+      <a href="/debug" class="nav-link{% if active_nav == 'debug' %} active{% endif %}">Debug</a>
+      <a href="/setup" class="nav-link{% if active_nav == 'setup' %} active{% endif %}">Setup</a>
+      <a href="/health" class="nav-link muted">Health</a>
+    </nav>
+    <div class="topbar-meta">
+      <span id="live-dot" class="live-dot" title="WebSocket"></span>
+      <span id="live-label" class="muted">connecting</span>
+    </div>
+  </header>
+  <div id="mutating-banner" class="mutating-banner{% if mutating_enabled %} show{% endif %}" role="alert">
+    Mutating proxy rules are enabled (map / rewrite / throttle / breakpoints). Traffic may be altered.
+  </div>
+  <main class="main{% if mutating_enabled %} with-banner{% endif %}">
+    {% block content %}{% endblock %}
+  </main>
+  <script src="/static/js/app.js?v=7"></script>
+  {% block scripts %}{% endblock %}
+</body>
+</html>

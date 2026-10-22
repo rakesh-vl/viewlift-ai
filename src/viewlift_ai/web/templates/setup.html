@@ -1,0 +1,126 @@
+{% extends "base.html" %}
+{% block content %}
+<section class="setup-page">
+  <div class="pane-head">
+    <span>Setup</span>
+    <span class="muted">CA, device proxy profile, simulator helpers — private key never leaves this Mac</span>
+  </div>
+
+  <div class="rules-grid">
+    <section class="rules-block" id="block-ca">
+      <h2>Certificate authority</h2>
+      <p class="muted">Uses the mitmproxy CA under the app data directory. Private key stays mode 0600 and is never served.</p>
+      <div class="setup-row">
+        <span>Status: <strong id="ca-status">…</strong></span>
+        <span class="muted" id="ca-mode"></span>
+        <span class="muted" id="keychain-fallback"></span>
+      </div>
+      <div class="rules-form">
+        <button type="button" class="btn" id="btn-ensure-ca">Ensure CA</button>
+        <button type="button" class="btn" id="btn-dl-ca">Download public CA</button>
+        <button type="button" class="btn" id="btn-dl-mobileconfig">Download CA profile</button>
+      </div>
+      <p class="muted" id="ca-msg"></p>
+    </section>
+
+    <section class="rules-block" id="block-proxy">
+      <h2>Proxy bind</h2>
+      <p class="muted">Default is loopback. Non-loopback bind requires explicit enable and proxy basic auth (credentials shown only for this session).</p>
+      <div class="rules-form">
+        <label class="check">Interface / IP
+          <select id="proxy-ip" class="rules-input"></select>
+        </label>
+        <label class="check">Port
+          <input id="proxy-port" type="number" min="1" max="65535" value="8080">
+        </label>
+        <label class="check">
+          <input id="enable-lan" type="checkbox"> Enable LAN bind (required for non-loopback)
+        </label>
+        <button type="button" class="btn" id="btn-apply-proxy">Apply bind</button>
+      </div>
+      <div class="setup-auth muted" id="proxy-auth-box" hidden>
+        <div>Proxy basic auth (session only — copy into device proxy settings):</div>
+        <div class="pre" id="proxy-auth-cred"></div>
+      </div>
+      <p class="muted" id="proxy-msg"></p>
+    </section>
+
+    <section class="rules-block" id="block-iphone">
+      <h2>iPhone</h2>
+      <ol class="setup-steps">
+        <li>Join the same Wi-Fi as this Mac. Select the LAN IP above, enable LAN bind, Apply. Do not use 127.0.0.1 on the phone.</li>
+        <li>Download the CA profile in Safari on the iPhone. It contains only the certificate. A global HTTP proxy payload installs only on a supervised device, so this profile does not include one.</li>
+        <li>Settings → General → VPN &amp; Device Management → install the profile. Ignore the “Not Signed” warning.</li>
+        <li>Settings → Wi-Fi → the network’s info button → Configure Proxy → Manual. Server is this Mac’s LAN IP. Port is the proxy port. Add the session basic-auth credentials if LAN bind is on.</li>
+        <li>Settings → General → About → Certificate Trust Settings → enable full trust for the Viewlift AI / mitmproxy CA.</li>
+        <li>When finished: turn off the Wi-Fi proxy, remove the configuration profile, and disable full trust / delete the certificate.</li>
+      </ol>
+    </section>
+
+    <section class="rules-block" id="block-tv">
+      <h2>Apple TV</h2>
+      <ol class="setup-steps">
+        <li>Settings → Network → Wi-Fi → HTTP Proxy → Manual. Enter the selected LAN IP/port and basic-auth credentials from this page.</li>
+        <li>Install the CA with a configuration profile via Apple Configurator (tvOS has no Safari profile install path like iPhone).</li>
+        <li>Trust UI on tvOS is limited. Do not expect iPhone-parity Certificate Trust Settings.</li>
+        <li class="warn-text">Certificate pinning: pinned builds will not decrypt. Failed handshakes appear as TLS failed (likely certificate pinning). This tool does not bypass pinning.</li>
+      </ol>
+    </section>
+
+    <section class="rules-block" id="block-sim">
+      <h2>Simulator</h2>
+      <p class="muted">Boot an iOS/tvOS simulator first. Commands use subprocess argv (no shell).</p>
+      <div class="rules-form">
+        <button type="button" class="btn" id="btn-sim-ca">Install CA into booted simulator</button>
+        <button type="button" class="btn" id="btn-sim-proxy">Configure simulator proxy</button>
+      </div>
+      <pre class="pre" id="sim-msg">No simulator action yet.</pre>
+    </section>
+
+    <section class="rules-block" id="block-test">
+      <h2>Test request</h2>
+      <p class="muted">Send a simple HTTP request through the current proxy bind.</p>
+      <div class="rules-form">
+        <input id="test-url" type="text" class="grow" value="http://example.com/" autocomplete="off">
+        <button type="button" class="btn" id="btn-test">Run test</button>
+      </div>
+      <pre class="pre" id="test-msg">No test run yet.</pre>
+    </section>
+
+    <section class="rules-block" id="block-sdk">
+      <h2>SDK setup</h2>
+      <p class="muted">
+        Pick the interface and receiver port here. The list includes localhost, Wi-Fi, Ethernet,
+        and VPN addresses from NetBird or Tailscale. The phone discovers the selected address.
+        If that interface gets a new IP, the receiver follows it. Dashboard stays on
+        <code>http://127.0.0.1:8741</code>.
+      </p>
+      <div class="rules-form">
+        <label class="check">Interface
+          <select id="sdk-ip" class="rules-input"></select>
+        </label>
+        <label class="check">Receiver port
+          <input id="sdk-port" type="number" min="1" max="65535" value="8742">
+        </label>
+        <button type="button" class="btn" id="btn-sdk-enable">Enable receiver</button>
+        <button type="button" class="btn ghost" id="btn-sdk-disable">Disable</button>
+        <button type="button" class="btn ghost" id="btn-sdk-token">Mint pairing token</button>
+      </div>
+      <table class="kv">
+        <tr><th>Receiver URL</th><td id="sdk-url" class="muted">Not enabled</td></tr>
+        <tr><th>Pairing token</th><td id="sdk-token" class="muted">Not enabled</td></tr>
+        <tr><th>Pinned fingerprint (SHA-256)</th><td id="sdk-fp" class="mono muted">Not enabled</td></tr>
+        <tr><th>App activity</th><td id="sdk-activity" class="muted">No app has connected yet</td></tr>
+      </table>
+      <p class="muted" id="sdk-note"></p>
+      <p class="muted">Integration (DEBUG or <code>VIEWLIFT_CAPTURE_ENABLED</code>). App Store default: no capture.</p>
+      <pre class="pre" id="sdk-snippet">Enable the receiver. The DEBUG app discovers host, port, fingerprint, and debug key.</pre>
+    </section>
+  </div>
+</section>
+{% endblock %}
+{% block scripts %}
+<script>
+  document.addEventListener("DOMContentLoaded", () => ViewliftNetwork.initSetup());
+</script>
+{% endblock %}

@@ -1,0 +1,67 @@
+{% extends "base.html" %}
+{% block content %}
+<section class="filters" id="filters">
+  <label>Method <input id="f-method" type="text" placeholder="GET" autocomplete="off"></label>
+  <label>Host <input id="f-host" type="text" placeholder="api.example.com" autocomplete="off"></label>
+  <label>Status <input id="f-status" type="number" placeholder="200" autocomplete="off"></label>
+  <label>Content-Type <input id="f-ctype" type="text" placeholder="json" autocomplete="off"></label>
+  <label class="grow">Text <input id="f-text" type="text" placeholder="path, header, body…" autocomplete="off"></label>
+  <button type="button" id="btn-apply" class="btn">Filter</button>
+  <button type="button" id="btn-clear" class="btn ghost">Clear</button>
+  <button type="button" id="btn-har" class="btn ghost">Export HAR</button>
+</section>
+<section class="filters reveal-bar" id="reveal-bar">
+  <label class="grow">Session reveal token
+    <input id="reveal-token" type="password" autocomplete="off" placeholder="from /health or Setup">
+  </label>
+  <button type="button" id="btn-reveal-unlock" class="btn ghost">Unlock reveal</button>
+  <button type="button" id="btn-reveal-lock" class="btn ghost">Lock</button>
+  <span id="reveal-state" class="muted">locked · HAR/cURL stay redacted</span>
+</section>
+<p class="muted setup-note" id="capture-hint">Checking whether the app has connected…</p>
+
+<section class="split">
+  <div class="pane list-pane">
+    <div class="pane-head">
+      <span>Flows</span>
+      <span id="flow-count" class="muted">0</span>
+      <span id="capture-status" class="muted"></span>
+    </div>
+    <div class="table-wrap">
+      <table class="flow-table">
+        <thead>
+          <tr>
+            <th>Method</th>
+            <th>Host</th>
+            <th>Path</th>
+            <th>Status</th>
+            <th>Type</th>
+            <th>Time</th>
+            <th>Size</th>
+            <th>Stage</th>
+          </tr>
+        </thead>
+        <tbody id="flow-rows"></tbody>
+      </table>
+    </div>
+  </div>
+  <div class="pane detail-pane" id="detail-pane">
+    <div class="pane-head">
+      <span id="detail-title">Detail</span>
+      <div class="row-actions">
+        <button type="button" id="btn-curl" class="btn ghost" disabled>Copy cURL</button>
+        <button type="button" id="btn-har-one" class="btn ghost" disabled>HAR</button>
+        <a id="btn-open" class="btn ghost disabled" href="#">Open</a>
+      </div>
+    </div>
+    <div id="detail-body" class="detail-body">
+      <p class="muted empty">Select a flow</p>
+    </div>
+  </div>
+</section>
+{% endblock %}
+{% block scripts %}
+<script>
+  document.addEventListener("DOMContentLoaded", () => ViewliftNetwork.initDashboard());
+</script>
+{% endblock %}

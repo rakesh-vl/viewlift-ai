@@ -1,0 +1,26 @@
+included:
+  - Sources
+  - Tests
+excluded:
+  - .build
+disabled_rules: []
+opt_in_rules:
+  - empty_count
+  - explicit_init
+  - first_where
+  - sorted_imports
+function_body_length:
+  warning: 60
+  error: 100
+line_length:
+  warning: 120
+  error: 160
+identifier_name:
+  min_length:
+    warning: 2
+  excluded:
+    - id
+    - ok
+type_name:
+  min_length: 3
+reporter: "xcode"

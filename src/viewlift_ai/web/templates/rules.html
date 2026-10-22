@@ -1,0 +1,111 @@
+{% extends "base.html" %}
+{% block content %}
+<section class="rules-page">
+  <div class="pane-head">
+    <span>Rules</span>
+    <span class="muted">Allowlist, map local/remote, rewrite, throttle, breakpoints — off by default</span>
+  </div>
+
+  <div class="rules-grid">
+    <section class="rules-block" id="block-allowlist">
+      <h2>Allowlist</h2>
+      <p class="muted">TLS decrypt / capture hosts (glob). Empty = deny all.</p>
+      <textarea id="allowlist-text" class="rules-textarea" rows="4" placeholder="*.example.com"></textarea>
+      <button type="button" class="btn" id="btn-save-allowlist">Save allowlist</button>
+    </section>
+
+    <section class="rules-block" id="block-map-root">
+      <h2>Map local root</h2>
+      <p class="muted">Files served only under this directory.</p>
+      <input id="map-root" type="text" class="rules-input" placeholder="/path/to/fixtures" autocomplete="off">
+      <button type="button" class="btn" id="btn-save-root">Save root</button>
+    </section>
+
+    <section class="rules-block" id="block-map-local">
+      <h2>Map local</h2>
+      <div class="rules-form">
+        <input id="ml-method" type="text" placeholder="Method *" value="*">
+        <input id="ml-host" type="text" placeholder="Host glob" value="*">
+        <input id="ml-path" type="text" placeholder="Path glob" value="*">
+        <input id="ml-rel" type="text" placeholder="Relative file path" class="grow">
+        <button type="button" class="btn" id="btn-add-ml">Add</button>
+      </div>
+      <table class="rules-table"><thead><tr>
+        <th>On</th><th>Order</th><th>Match</th><th>File</th><th></th>
+      </tr></thead><tbody id="ml-rows"></tbody></table>
+    </section>
+
+    <section class="rules-block" id="block-map-remote">
+      <h2>Map remote</h2>
+      <div class="rules-form">
+        <input id="mr-method" type="text" placeholder="Method *" value="*">
+        <input id="mr-host" type="text" placeholder="Host glob" value="*">
+        <input id="mr-path" type="text" placeholder="Path glob" value="*">
+        <input id="mr-target" type="text" placeholder="https://target.example/" class="grow">
+        <button type="button" class="btn" id="btn-add-mr">Add</button>
+      </div>
+      <table class="rules-table"><thead><tr>
+        <th>On</th><th>Order</th><th>Match</th><th>Target</th><th></th>
+      </tr></thead><tbody id="mr-rows"></tbody></table>
+    </section>
+
+    <section class="rules-block" id="block-rewrite">
+      <h2>Rewrite</h2>
+      <div class="rules-form">
+        <input id="rw-method" type="text" placeholder="Method *" value="*">
+        <input id="rw-host" type="text" placeholder="Host glob" value="*">
+        <input id="rw-path" type="text" placeholder="Path glob" value="*">
+        <select id="rw-kind">
+          <option value="set_header">set_header</option>
+          <option value="remove_header">remove_header</option>
+          <option value="set_status">set_status</option>
+          <option value="replace_body_literal">replace_body_literal</option>
+          <option value="replace_body_regex">replace_body_regex</option>
+        </select>
+        <input id="rw-a" type="text" placeholder="header / find / status" class="grow">
+        <input id="rw-b" type="text" placeholder="value / replace" class="grow">
+        <button type="button" class="btn" id="btn-add-rw">Add</button>
+      </div>
+      <table class="rules-table"><thead><tr>
+        <th>On</th><th>Order</th><th>Match</th><th>Actions</th><th></th>
+      </tr></thead><tbody id="rw-rows"></tbody></table>
+    </section>
+
+    <section class="rules-block" id="block-throttle">
+      <h2>Throttle</h2>
+      <div class="rules-form">
+        <input id="th-host" type="text" placeholder="Host glob or *" value="*">
+        <input id="th-latency" type="number" placeholder="Latency ms" value="0">
+        <input id="th-up" type="number" placeholder="Up kbps">
+        <input id="th-down" type="number" placeholder="Down kbps">
+        <label class="check"><input id="th-offline" type="checkbox"> Offline</label>
+        <button type="button" class="btn" id="btn-add-th">Add</button>
+      </div>
+      <table class="rules-table"><thead><tr>
+        <th>On</th><th>Order</th><th>Host</th><th>Limits</th><th></th>
+      </tr></thead><tbody id="th-rows"></tbody></table>
+    </section>
+
+    <section class="rules-block" id="block-breakpoints">
+      <h2>Breakpoints</h2>
+      <p class="muted">Pause request and/or response independently. Disabled by default.</p>
+      <div class="rules-form">
+        <input id="bp-method" type="text" placeholder="Method *" value="*">
+        <input id="bp-host" type="text" placeholder="Host glob" value="*">
+        <input id="bp-path" type="text" placeholder="Path glob" value="*">
+        <label class="check"><input id="bp-req" type="checkbox" checked> Request</label>
+        <label class="check"><input id="bp-res" type="checkbox"> Response</label>
+        <button type="button" class="btn" id="btn-add-bp">Add</button>
+      </div>
+      <table class="rules-table"><thead><tr>
+        <th>On</th><th>Order</th><th>Match</th><th>Stages</th><th></th>
+      </tr></thead><tbody id="bp-rows"></tbody></table>
+    </section>
+  </div>
+</section>
+{% endblock %}
+{% block scripts %}
+<script>
+  document.addEventListener("DOMContentLoaded", () => ViewliftNetwork.initRules());
+</script>
+{% endblock %}

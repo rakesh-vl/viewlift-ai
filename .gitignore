@@ -1,0 +1,48 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+dist/
+*.egg-info/
+.eggs/
+*.egg
+
+# Virtual / tooling
+.venv/
+venv/
+.env
+.env.*
+!.env.example
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.coverage
+htmlcov/
+.uv/
+
+# App secrets and runtime (outside repo by default; ignore if linked)
+*.db
+*.sqlite
+*.sqlite3
+session/
+certs/
+*.pem
+*.key
+*.p12
+*.mobileconfig
+secret.key
+.viewlift-ai.log
+
+# SwiftPM
+ios/**/.build/
+.swiftpm/
+
+# IDE / OS
+.idea/
+.vscode/
+*.swp
+.DS_Store
+Thumbs.db

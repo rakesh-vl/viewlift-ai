@@ -1,0 +1,203 @@
+{% extends "base.html" %}
+{% block title %}Remote Debug Suite · Viewlift AI{% endblock %}
+{% block content %}
+<link rel="stylesheet" href="/static/css/debug.css?v=2">
+<section class="debug-session-bar">
+  <label>Device
+    <select id="debug-client"></select>
+  </label>
+  <button type="button" class="btn ghost" id="debug-refresh">Refresh</button>
+  <span id="debug-client-status" class="muted">Waiting for a debug build…</span>
+</section>
+
+<nav class="debug-tabs" id="debug-tabs">
+  {% for tab in ["ott", "analytics", "hangs", "performance", "memory", "ui", "swiftui", "assets", "accessibility",
+                 "storage", "flags", "bug", "macro", "runtime", "push", "network-tools"] %}
+  <button type="button" class="btn ghost" data-debug-tab="{{ tab }}">{{ tab }}</button>
+  {% endfor %}
+</nav>
+
+<section class="debug-panel" data-panel="ott">
+  <div class="panel-title"><h2>OTT runtime snapshot</h2>
+    <button class="btn ghost" data-command="ott.snapshot">Refresh snapshot</button>
+    <button class="btn ghost" id="ott-spm-refresh" type="button">Load SPM pins</button>
+  </div>
+  <p class="muted">Guest + logged-in + TVE flows: session, geo, parental, plan, profiles, filters, modules/metadataMap. Tokens/PIN never leave device.</p>
+  <div id="ott-summary" class="metric-grid"></div>
+  <div id="ott-sections" class="ott-sections"></div>
+  <h3>SPM packages (Mac Package.resolved)</h3>
+  <div id="ott-spm" class="debug-result"></div>
+</section>
+
+<section class="debug-panel hidden" data-panel="analytics">
+  <div class="panel-title"><h2>Beacons &amp; VLAnalytics traffic</h2>
+    <button class="btn ghost" id="analytics-refresh" type="button">Refresh traffic</button>
+    <button class="btn ghost" data-command="ott.snapshot">Device clients</button>
+  </div>
+  <p class="muted">User beacon, player beacon, and VLAnalytics SDK clients (AppsFlyer, CleverTap, Adobe, …). Params from query + body.</p>
+  <div id="analytics-summary" class="metric-grid"></div>
+  <div class="analytics-filters row-actions">
+    <button type="button" class="btn ghost active" data-analytics-filter="all">All</button>
+    <button type="button" class="btn ghost" data-analytics-filter="user_beacon">User beacon</button>
+    <button type="button" class="btn ghost" data-analytics-filter="player_beacon">Player beacon</button>
+    <button type="button" class="btn ghost" data-analytics-filter="clients">Clients</button>
+  </div>
+  <div id="analytics-clients" class="ott-card" style="display:none"></div>
+  <div id="analytics-rows" class="debug-result"></div>
+</section>
+
+<section class="debug-panel hidden" data-panel="hangs">
+  <div class="panel-title"><h2>Hangs and crashes</h2>
+    <button class="btn ghost" data-command="hang.list">Hang stacks</button>
+    <button class="btn ghost" data-command="crash.list">Crash / exception stacks</button>
+  </div>
+  <p class="muted">Frames show class / file / line when debug symbols present. Fatal SIG* after death still need device crash reports.</p>
+  <div id="hangs-result" class="debug-result"></div>
+</section>
+
+<section class="debug-panel hidden" data-panel="performance">
+  <div class="panel-title"><h2>Live performance</h2>
+    <button class="btn ghost" data-command="performance.snapshot">Snapshot</button>
+  </div>
+  <div class="metric-grid" id="performance-metrics"></div>
+  <canvas id="performance-chart" width="1100" height="280"></canvas>
+</section>
+
+<section class="debug-panel hidden" data-panel="memory">
+  <div class="panel-title"><h2>Leak tracker and memory graph</h2>
+    <button class="btn ghost" data-command="memory.snapshot">Leaks</button>
+    <button class="btn ghost" data-command="memory.graph">Graph</button>
+  </div>
+  <canvas id="memory-graph" width="1100" height="500"></canvas>
+  <div id="memory-result" class="debug-result"></div>
+</section>
+
+<section class="debug-panel hidden" data-panel="ui">
+  <div class="panel-title"><h2>UI inspector and 3D hierarchy</h2>
+    <button class="btn ghost" data-command="ui.hierarchy">Capture hierarchy</button>
+    <button class="btn ghost" data-command="ui.screenshot">Screenshot</button>
+    <button class="btn ghost" id="ui-expand" type="button">Expand all</button>
+    <button class="btn ghost" id="ui-collapse" type="button">Collapse all</button>
+    <button class="btn ghost" id="ui-zoom-out" type="button">Shrink</button>
+    <button class="btn ghost" id="ui-zoom-in" type="button">Expand</button>
+  </div>
+  <div class="inspector-split">
+    <div id="ui-tree" class="tree"></div>
+    <canvas id="ui-3d" width="800" height="520"></canvas>
+    <div id="ui-properties" class="debug-result">Select a view.</div>
+  </div>
+</section>
+
+<section class="debug-panel hidden" data-panel="swiftui">
+  <div class="panel-title"><h2>SwiftUI render probes</h2>
+    <button class="btn ghost" data-command="swiftui.renders">Refresh</button>
+  </div>
+  <p class="muted">Only views using <code>viewliftRenderProbe</code> are measurable.</p>
+  <div id="swiftui-result" class="debug-result"></div>
+</section>
+
+<section class="debug-panel hidden" data-panel="assets">
+  <div class="panel-title"><h2>Asset audit</h2>
+    <button class="btn ghost" data-command="assets.audit">Run audit</button>
+  </div>
+  <div id="assets-result" class="debug-result"></div>
+</section>
+
+<section class="debug-panel hidden" data-panel="accessibility">
+  <div class="panel-title"><h2>Accessibility scan</h2>
+    <button class="btn ghost" data-command="accessibility.audit">Scan live UI</button>
+  </div>
+  <div id="accessibility-result" class="debug-result"></div>
+</section>
+
+<section class="debug-panel hidden" data-panel="storage">
+  <h2>Storage and state</h2>
+  <div class="storage-actions">
+    <button class="btn ghost" data-command="storage.defaults">UserDefaults</button>
+    <button class="btn ghost" data-command="storage.keychain_metadata">Keychain metadata</button>
+    <form data-command-form="storage.files">
+      <input name="path" placeholder="Library or Documents">
+      <button class="btn ghost">Browse files</button>
+    </form>
+    <form data-command-form="storage.sqlite_schema">
+      <input name="path" placeholder="Library/app.sqlite">
+      <button class="btn ghost">SQLite schema</button>
+    </form>
+    <form data-command-form="storage.sqlite_query">
+      <input name="path" placeholder="Library/app.sqlite">
+      <input name="query" placeholder="SELECT * FROM table LIMIT 100">
+      <button class="btn ghost">Read-only SQL</button>
+    </form>
+    <form data-command-form="storage.snapshot_create">
+      <input name="paths" placeholder="Documents/a.json,Library/b.plist">
+      <button class="btn ghost">Create snapshot</button>
+    </form>
+  </div>
+  <p class="muted">Keychain values never leave the device. File paths are jailed to the app sandbox.</p>
+  <div id="storage-result" class="debug-result"></div>
+</section>
+
+<section class="debug-panel hidden" data-panel="flags">
+  <div class="panel-title"><h2>Feature flags</h2>
+    <button class="btn ghost" data-command="feature_flags.list">Refresh</button>
+  </div>
+  <div id="flags-result" class="debug-result"></div>
+</section>
+
+<section class="debug-panel hidden" data-panel="bug">
+  <div class="panel-title"><h2>Bug reporter</h2>
+    <button class="btn ghost" data-command="bug.capture">Capture bundle</button>
+    <button class="btn ghost" id="bug-clear">Clear marks</button>
+    <button class="btn ghost" id="bug-download">Download annotated PNG</button>
+  </div>
+  <canvas id="bug-canvas" width="1100" height="600"></canvas>
+  <div id="bug-result" class="debug-result"></div>
+</section>
+
+<section class="debug-panel hidden" data-panel="macro">
+  <div class="panel-title"><h2>Macro recorder</h2>
+    <button class="btn ghost" data-command="macro.record_start">Start</button>
+    <button class="btn ghost" data-command="macro.record_stop">Stop</button>
+    <button class="btn ghost" data-command="macro.list">Refresh</button>
+    <button class="btn ghost" id="macro-replay">Replay current</button>
+  </div>
+  <div id="macro-result" class="debug-result"></div>
+</section>
+
+<section class="debug-panel hidden" data-panel="runtime">
+  <h2>Objective-C runtime browser</h2>
+  <form data-command-form="runtime.search">
+    <input name="query" placeholder="Class name">
+    <button class="btn">Search</button>
+  </form>
+  <div id="runtime-result" class="debug-result"></div>
+</section>
+
+<section class="debug-panel hidden" data-panel="push">
+  <h2>Local notification tester</h2>
+  <form data-command-form="push.local" data-mutating="true">
+    <input name="title" placeholder="Title">
+    <input name="body" placeholder="Body">
+    <input name="delay" type="number" value="1" min="1">
+    <button class="btn">Schedule</button>
+  </form>
+  <div id="push-result" class="debug-result"></div>
+</section>
+
+<section class="debug-panel hidden" data-panel="network-tools">
+  <h2>Mac-side network and device tools</h2>
+  <div id="profile-buttons" class="row-actions"></div>
+  <p id="profile-status" class="muted"></p>
+  <div id="waterfall" class="waterfall"></div>
+  <form id="deeplink-form" class="filters">
+    <input id="deeplink-udid" value="booted" placeholder="Simulator UDID">
+    <input id="deeplink-url" placeholder="myapp://home">
+    <button class="btn">Open deeplink</button>
+  </form>
+  <p id="deeplink-status" class="muted"></p>
+</section>
+{% endblock %}
+{% block scripts %}
+<script src="/static/js/debug.js?v=6"></script>
+<script>document.addEventListener("DOMContentLoaded", () => ViewliftDebug.init());</script>
+{% endblock %}

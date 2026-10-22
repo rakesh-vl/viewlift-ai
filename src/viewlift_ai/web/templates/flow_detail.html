@@ -1,0 +1,28 @@
+{% extends "base.html" %}
+{% block content %}
+<section class="detail-page">
+  <div class="pane-head">
+    <a href="/" class="btn ghost">← Network</a>
+    <span id="detail-title">{{ flow.method }} {{ flow.host }}{{ flow.path }}</span>
+    <div class="row-actions">
+      <button type="button" id="btn-replay" class="btn ghost">Replay</button>
+      <button type="button" id="btn-curl" class="btn ghost">Copy cURL</button>
+      <a class="btn ghost" href="/api/flows/{{ flow_id }}/har">HAR</a>
+    </div>
+  </div>
+  <div id="detail-body" class="detail-body detail-page-body"></div>
+</section>
+{% endblock %}
+{% block scripts %}
+<script>
+  document.addEventListener("DOMContentLoaded", () => {
+    ViewliftNetwork.renderDetail({{ flow | tojson }}, document.getElementById("detail-body"));
+    document.getElementById("btn-curl").addEventListener("click", () => {
+      ViewliftNetwork.copyCurl({{ flow_id | tojson }});
+    });
+    document.getElementById("btn-replay").addEventListener("click", () => {
+      ViewliftNetwork.replayFlow({{ flow_id | tojson }});
+    });
+  });
+</script>
+{% endblock %}

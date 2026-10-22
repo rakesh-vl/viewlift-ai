@@ -1,0 +1,54 @@
+[project]
+name = "viewlift-ai"
+version = "0.1.0"
+description = "Local iOS/tvOS debug console: HTTP proxy, logs, and SDK capture."
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+    "fastapi==0.156.8",
+    "uvicorn==0.54.0",
+    "jinja2==3.1.6",
+    "mitmproxy==12.2.3",
+    "pynacl==1.6.2",
+    "pymobiledevice3==11.40.3",
+    "python-multipart==0.0.32",
+    "platformdirs==4.13.5",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest==9.1.1",
+    "pytest-asyncio==1.4.0",
+    "httpx==0.28.1",
+    "ruff==0.17.1",
+]
+
+[project.scripts]
+viewlift-ai = "viewlift_ai.app:main"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/viewlift_ai"]
+
+[tool.hatch.build.targets.wheel.sources]
+"src/viewlift_ai" = "viewlift_ai"
+
+[tool.hatch.build.targets.wheel.force-include]
+"src/viewlift_ai/web/templates" = "viewlift_ai/web/templates"
+"src/viewlift_ai/web/static" = "viewlift_ai/web/static"
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]
+pythonpath = ["src"]
+
+[tool.ruff]
+target-version = "py312"
+line-length = 100
+src = ["src", "tests"]
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B"]

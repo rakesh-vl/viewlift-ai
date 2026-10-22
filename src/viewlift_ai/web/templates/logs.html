@@ -1,0 +1,73 @@
+{% extends "base.html" %}
+{% block content %}
+<section class="filters" id="log-controls">
+  <label>Source
+    <select id="log-source" class="rules-input">
+      <option value="simulator">Simulator</option>
+      <option value="device">Device (USB/Wi-Fi)</option>
+    </select>
+  </label>
+  <label class="grow">UDID
+    <select id="log-udid" class="rules-input grow"></select>
+  </label>
+  <label title="Only stream this process (e.g. your app executable). Empty = whole device, very noisy.">Process
+    <input id="log-process" class="rules-input" type="text" placeholder="NESN" autocomplete="off">
+  </label>
+  <button type="button" id="btn-log-start" class="btn">Start</button>
+  <button type="button" id="btn-log-stop" class="btn ghost">Stop</button>
+  <button type="button" id="btn-log-refresh-sources" class="btn ghost">Refresh sources</button>
+  <span id="log-stream-status" class="muted">idle</span>
+</section>
+
+<section class="filters" id="log-filters">
+  <label>Level <input id="lf-level" type="text" placeholder="info" autocomplete="off"></label>
+  <label>Source <input id="lf-source" type="text" placeholder="simulator|device|sdk" autocomplete="off"></label>
+  <label>Subsystem / bundle id <input id="lf-subsystem" type="text" placeholder="com.nesn.nesngo" autocomplete="off"></label>
+  <label class="grow">Text <input id="lf-text" type="text" placeholder="message…" autocomplete="off"></label>
+  <button type="button" id="btn-log-apply" class="btn">Filter</button>
+  <button type="button" id="btn-log-clear" class="btn ghost">Clear</button>
+</section>
+
+<p class="muted setup-note" id="log-private-note">
+  TestFlight <code>os_log</code> privacy fields often arrive as <code>&lt;private&gt;</code>.
+  Expected for distribution builds. Use a debug install or ViewliftNetworkCapture LogService for full messages.
+</p>
+
+<section class="split">
+  <div class="pane list-pane">
+    <div class="pane-head">
+      <span>Logs</span>
+      <span id="log-count" class="muted">0</span>
+      <span id="log-pending" class="muted"></span>
+      <button type="button" id="btn-log-pause" class="btn ghost">Pause</button>
+    </div>
+    <div class="table-wrap">
+      <table class="flow-table">
+        <thead>
+          <tr>
+            <th>Time</th>
+            <th>Level</th>
+            <th>Source</th>
+            <th>Subsystem</th>
+            <th>Message</th>
+          </tr>
+        </thead>
+        <tbody id="log-rows"></tbody>
+      </table>
+    </div>
+  </div>
+  <div class="pane detail-pane" id="log-detail-pane">
+    <div class="pane-head">
+      <span id="log-detail-title">Detail</span>
+    </div>
+    <div id="log-detail-body" class="detail-body">
+      <p class="muted empty">Select a log</p>
+    </div>
+  </div>
+</section>
+{% endblock %}
+{% block scripts %}
+<script>
+  document.addEventListener("DOMContentLoaded", () => ViewliftNetwork.initLogs());
+</script>
+{% endblock %}
