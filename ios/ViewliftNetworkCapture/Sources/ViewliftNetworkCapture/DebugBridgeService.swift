@@ -20,17 +20,12 @@ public final class DebugBridgeService: @unchecked Sendable {
     private var task: Task<Void, Never>?
     private var transport: DebugTransporting?
     private var configuration: CaptureConfiguration?
+    private var lifecycleMonitor: ConnectionLifecycleMonitor?
+    private var wakeReason: String?
     private let clientId: String
 
-    private init() {
-        let key = "com.viewlift.networkcapture.client-id"
-        if let existing = UserDefaults.standard.string(forKey: key) {
-            clientId = existing
-        } else {
-            let generated = UUID().uuidString
-            UserDefaults.standard.set(generated, forKey: key)
-            clientId = generated
-        }
+    private init(identity: ClientIdentityProviding = UserDefaultsClientIdentity.shared) {
+        clientId = identity.clientId
     }
 
     public func start(
@@ -50,31 +45,52 @@ public final class DebugBridgeService: @unchecked Sendable {
         task = Task { [weak self] in
             await self?.run()
         }
+        let monitor = ConnectionLifecycleMonitor { [weak self] event in
+            self?.handle(event)
+        }
+        monitor.start()
+        lock.lock()
+        lifecycleMonitor = monitor
+        lock.unlock()
     }
 
     public func stop() {
         lock.lock()
         let active = task
+        let monitor = lifecycleMonitor
         task = nil
+        lifecycleMonitor = nil
+        wakeReason = nil
         transport = nil
         configuration = nil
         lock.unlock()
         active?.cancel()
+        monitor?.stop()
         performance.stop()
     }
 
     private func run() async {
         var registered = false
+        var resumeReason: String?
         var lastPerformance = Date.distantPast
         while !Task.isCancelled {
             guard let transport = currentTransport(), let config = currentConfiguration() else {
                 return
             }
+            if let reason = takeWakeReason() {
+                registered = false
+                resumeReason = reason
+            }
             do {
                 if !registered {
-                    try await transport.register(client: registration(config))
+                    let device = await MainActor.run { DeviceIdentity.current() }
+                    try await transport.register(client: registration(config, device: device))
                     registered = true
                     Self.log.info("Remote debug bridge registered")
+                    if let reason = resumeReason {
+                        resumeReason = nil
+                        await announceResume(reason: reason, transport: transport)
+                    }
                 }
                 if config.debugModules.contains(.performance),
                    Date().timeIntervalSince(lastPerformance)
@@ -93,13 +109,17 @@ public final class DebugBridgeService: @unchecked Sendable {
                 for command in commands where command.expiresAt > Date().timeIntervalSince1970 {
                     await execute(command, transport: transport, config: config)
                 }
-                try? await Task.sleep(nanoseconds: 500_000_000)
+                await interruptibleSleep(milliseconds: 500)
+            } catch let error as TransportError where error.isWaitingForSession {
+                // Transport is still starting or re-pairing. Check again shortly instead of backing off.
+                registered = false
+                await interruptibleSleep(milliseconds: 250)
             } catch {
                 registered = false
                 Self.log.error(
                     "Debug bridge connection failed: \(String(describing: error), privacy: .public)"
                 )
-                try? await Task.sleep(nanoseconds: 2_000_000_000)
+                await interruptibleSleep(milliseconds: 2_000)
             }
         }
     }
@@ -142,11 +162,11 @@ public final class DebugBridgeService: @unchecked Sendable {
         }
     }
 
-    private func registration(_ config: CaptureConfiguration) -> DebugClientRegistration {
-        let info = Bundle.main.infoDictionary
-        let name = (info?["CFBundleDisplayName"] as? String)
-            ?? (info?["CFBundleName"] as? String)
-            ?? "Unknown"
+    private func registration(
+        _ config: CaptureConfiguration,
+        device: DeviceIdentity
+    ) -> DebugClientRegistration {
+        let identity = AppIdentity.current()
         #if os(tvOS)
         let platform = "tvOS"
         #elseif os(iOS)
@@ -156,11 +176,17 @@ public final class DebugBridgeService: @unchecked Sendable {
         #endif
         return DebugClientRegistration(
             clientId: clientId,
-            appName: name,
-            bundleId: Bundle.main.bundleIdentifier ?? "",
+            appName: identity.appName,
+            bundleId: identity.bundleId,
             platform: platform,
             osVersion: ProcessInfo.processInfo.operatingSystemVersionString,
-            capabilities: capabilities(config)
+            capabilities: capabilities(config),
+            appVersion: identity.appVersion,
+            build: identity.build,
+            executable: identity.executable,
+            urlSchemes: identity.urlSchemes,
+            frameworks: identity.frameworks,
+            device: device
         )
     }
 
@@ -199,6 +225,84 @@ public final class DebugBridgeService: @unchecked Sendable {
         defer { lock.unlock() }
         return configuration
     }
+}
 
+/// Foreground, background, and network-change handling for the bridge loop.
+extension DebugBridgeService {
+    fileprivate func handle(_ event: ConnectionLifecycleEvent) {
+        switch event {
+        case .foreground:
+            resume(reason: "foreground")
+        case .networkChanged:
+            resume(reason: "network")
+        case .background:
+            Task { [weak self] in
+                await self?.announceBackground()
+            }
+        }
+    }
+
+    /// Back from background or on a new network: drop stale sockets and register again at once.
+    private func resume(reason: String) {
+        lock.lock()
+        wakeReason = reason
+        let active = transport
+        lock.unlock()
+        Self.log.info("Resuming: \(reason, privacy: .public)")
+        (active as? ConnectionRecovering)?.reconnect(reason: reason)
+    }
+
+    /// Tells the dashboard this app is suspended, not gone. iOS gives a few seconds to send it.
+    private func announceBackground() async {
+        guard let active = currentTransport() else { return }
+        #if os(iOS)
+        let grace = BackgroundGrace()
+        await grace.begin()
+        defer { grace.end() }
+        #endif
+        let event = DebugEvent(
+            module: "lifecycle",
+            kind: "background",
+            payload: ["reason": .string("didEnterBackground")]
+        )
+        try? await active.send(event: event, clientId: clientId)
+    }
+
+    /// Reports the return, with the connection failures seen meanwhile so a stuck reconnect is diagnosable.
+    fileprivate func announceResume(reason: String, transport: DebugTransporting) async {
+        let failures = (transport as? ConnectionRecovering)?.takeDiagnostics() ?? []
+        let event = DebugEvent(
+            module: "lifecycle",
+            kind: reason == "network" ? "network" : "foreground",
+            payload: [
+                "reason": .string(reason),
+                "recent_failures": .array(failures.map { JSONValue.string($0) })
+            ]
+        )
+        try? await transport.send(event: event, clientId: clientId)
+    }
+
+    fileprivate func takeWakeReason() -> String? {
+        lock.lock()
+        defer { lock.unlock() }
+        let reason = wakeReason
+        wakeReason = nil
+        return reason
+    }
+
+    private func hasPendingWake() -> Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        return wakeReason != nil
+    }
+
+    fileprivate func interruptibleSleep(milliseconds: UInt64) async {
+        var waited: UInt64 = 0
+        while waited < milliseconds, !Task.isCancelled {
+            if hasPendingWake() { return }
+            try? await Task.sleep(nanoseconds: 50_000_000)
+            waited += 50
+        }
+    }
 }
 #endif

@@ -1,49 +1,113 @@
 {% extends "base.html" %}
 {% block title %}Remote Debug Suite · Viewlift AI{% endblock %}
 {% block content %}
-<link rel="stylesheet" href="/static/css/debug.css?v=2">
+<link rel="stylesheet" href="/static/css/debug.css?v=5">
 <section class="debug-session-bar">
-  <label>Device
-    <select id="debug-client"></select>
-  </label>
-  <button type="button" class="btn ghost" id="debug-refresh">Refresh</button>
+  <span id="debug-client-name" class="debug-client-name">No app selected</span>
+  <button type="button" class="btn ghost" id="debug-refresh">Refresh apps</button>
   <span id="debug-client-status" class="muted">Waiting for a debug build…</span>
 </section>
 
-<nav class="debug-tabs" id="debug-tabs">
-  {% for tab in ["ott", "analytics", "hangs", "performance", "memory", "ui", "swiftui", "assets", "accessibility",
-                 "storage", "flags", "bug", "macro", "runtime", "push", "network-tools"] %}
-  <button type="button" class="btn ghost" data-debug-tab="{{ tab }}">{{ tab }}</button>
+<nav class="debug-tabs" id="debug-tabs" aria-label="Debug tools">
+  {% for tab, label in [("ott", "OTT"), ("analytics", "Analytics"), ("hangs", "Hangs"), ("performance", "Performance"),
+                        ("memory", "Memory"), ("ui", "UI"), ("swiftui", "SwiftUI"), ("assets", "Assets"),
+                        ("accessibility", "Accessibility"), ("storage", "Storage"), ("flags", "Flags"),
+                        ("bug", "Bug report"), ("macro", "Macros"), ("runtime", "Runtime"), ("push", "Push"),
+                        ("network-tools", "Network tools")] %}
+  <button type="button" class="btn ghost" data-debug-tab="{{ tab }}">{{ label }}</button>
   {% endfor %}
 </nav>
 
 <section class="debug-panel" data-panel="ott">
-  <div class="panel-title"><h2>OTT runtime snapshot</h2>
+  <div class="panel-title"><h2>App runtime snapshot</h2>
     <button class="btn ghost" data-command="ott.snapshot">Refresh snapshot</button>
-    <button class="btn ghost" id="ott-spm-refresh" type="button">Load SPM pins</button>
+    <button class="btn ghost" id="ott-spm-refresh" type="button">Detect packages</button>
   </div>
-  <p class="muted">Guest + logged-in + TVE: session, geo, parental, plan, entitlements (SVOD/TVOD/TVE), live player/video + entitlement API, devices, watchlist/history, site features, DRM/SSO, nav catalog, modules/metadataMap. Tokens/PIN/stream URLs never leave device (host-only).</p>
+  <p class="muted">Sections come from the paired app's snapshot provider. Tokens, PINs and stream URLs stay on the device.</p>
+  <div id="app-identity" class="metric-grid"></div>
   <div id="ott-summary" class="metric-grid"></div>
   <div id="ott-sections" class="ott-sections"></div>
-  <h3>SPM packages (Mac Package.resolved)</h3>
+  <h3>Swift packages</h3>
+  <p class="muted" id="ott-spm-source">Detected from the paired app's newest Xcode build.</p>
   <div id="ott-spm" class="debug-result"></div>
+  <h3>Frameworks loaded at runtime</h3>
+  <div id="ott-frameworks" class="debug-result"></div>
 </section>
 
 <section class="debug-panel hidden" data-panel="analytics">
-  <div class="panel-title"><h2>Beacons &amp; VLAnalytics traffic</h2>
+  <div class="panel-title"><h2>Beacons &amp; analytics traffic</h2>
     <button class="btn ghost" id="analytics-refresh" type="button">Refresh traffic</button>
     <button class="btn ghost" data-command="ott.snapshot">Device clients</button>
   </div>
-  <p class="muted">User beacon, player beacon, and VLAnalytics SDK clients (AppsFlyer, CleverTap, Adobe, …). Params from query + body.</p>
+  <p class="muted">Beacon URLs and analytics clients come from the paired app's snapshot. Select a row for params, request, and body.</p>
   <div id="analytics-summary" class="metric-grid"></div>
-  <div class="analytics-filters row-actions">
-    <button type="button" class="btn ghost active" data-analytics-filter="all">All</button>
-    <button type="button" class="btn ghost" data-analytics-filter="user_beacon">User beacon</button>
-    <button type="button" class="btn ghost" data-analytics-filter="player_beacon">Player beacon</button>
-    <button type="button" class="btn ghost" data-analytics-filter="clients">Clients</button>
+  <div class="filters analytics-filters" id="analytics-filters">
+    <label>Kind
+      <select id="af-kind">
+        <option value="">All</option>
+        <option value="user_beacon">User beacon</option>
+        <option value="player_beacon">Player beacon</option>
+        <option value="beacon">Other beacon</option>
+      </select>
+    </label>
+    <label>Method
+      <select id="af-method">
+        <option value="">Any</option>
+        <option value="GET">GET</option>
+        <option value="POST">POST</option>
+        <option value="PUT">PUT</option>
+        <option value="PATCH">PATCH</option>
+        <option value="DELETE">DELETE</option>
+        <option value="HEAD">HEAD</option>
+        <option value="OPTIONS">OPTIONS</option>
+      </select>
+    </label>
+    <label>Status
+      <select id="af-status"><option value="">Any</option></select>
+    </label>
+    <label>Host
+      <select id="af-host"><option value="">Any</option></select>
+    </label>
+    <label class="grow">Event or param
+      <input id="af-text" type="text" placeholder="event name, param…" autocomplete="off">
+    </label>
   </div>
   <div id="analytics-clients" class="ott-card" style="display:none"></div>
-  <div id="analytics-rows" class="debug-result"></div>
+  <section class="split analytics-split">
+    <div class="pane list-pane">
+      <div class="pane-head">
+        <span>Traffic</span>
+        <span id="analytics-count" class="muted">0</span>
+        <div class="row-actions">
+          <button type="button" class="btn ghost" id="analytics-follow" aria-pressed="false">Follow latest</button>
+        </div>
+      </div>
+      <div class="table-wrap">
+        <table class="flow-table">
+          <thead>
+            <tr>
+              <th class="log-col-time" scope="col">Time</th>
+              <th scope="col">Kind</th>
+              <th class="col-method" scope="col">Method</th>
+              <th class="col-status" scope="col">Status</th>
+              <th class="col-host" scope="col">Host</th>
+              <th scope="col">Path</th>
+              <th scope="col">Event</th>
+            </tr>
+          </thead>
+          <tbody id="analytics-rows"></tbody>
+        </table>
+      </div>
+    </div>
+    <div class="pane detail-pane">
+      <div class="pane-head">
+        <span id="analytics-detail-title">Detail</span>
+      </div>
+      <div id="analytics-detail" class="detail-body">
+        <p class="muted empty">Select a beacon or client call to see params, request, and body.</p>
+      </div>
+    </div>
+  </section>
 </section>
 
 <section class="debug-panel hidden" data-panel="hangs">
@@ -80,11 +144,14 @@
     <button class="btn ghost" id="ui-collapse" type="button">Collapse all</button>
     <button class="btn ghost" id="ui-zoom-out" type="button">Shrink</button>
     <button class="btn ghost" id="ui-zoom-in" type="button">Expand</button>
+    <button class="btn ghost" id="ui-3d-flat" type="button">Flat</button>
+    <button class="btn ghost" id="ui-3d-reset" type="button">3D</button>
+    <label class="muted">Spacing <input id="ui-3d-spacing" type="range" min="0" max="120" value="18"></label>
   </div>
   <div class="inspector-split">
     <div id="ui-tree" class="tree"></div>
     <canvas id="ui-3d" width="800" height="520"></canvas>
-    <div id="ui-properties" class="debug-result">Select a view.</div>
+    <div id="ui-properties" class="debug-result">Select a view to see its class, properties, and whether it is UIKit or SwiftUI.</div>
   </div>
 </section>
 
@@ -111,30 +178,34 @@
 </section>
 
 <section class="debug-panel hidden" data-panel="storage">
-  <h2>Storage and state</h2>
-  <div class="storage-actions">
+  <div class="panel-title">
+    <h2>Storage and state</h2>
     <button class="btn ghost" data-command="storage.defaults">UserDefaults</button>
     <button class="btn ghost" data-command="storage.keychain_metadata">Keychain metadata</button>
-    <form data-command-form="storage.files">
-      <input name="path" placeholder="Library or Documents">
-      <button class="btn ghost">Browse files</button>
-    </form>
-    <form data-command-form="storage.sqlite_schema">
-      <input name="path" placeholder="Library/app.sqlite">
-      <button class="btn ghost">SQLite schema</button>
-    </form>
-    <form data-command-form="storage.sqlite_query">
-      <input name="path" placeholder="Library/app.sqlite">
-      <input name="query" placeholder="SELECT * FROM table LIMIT 100">
-      <button class="btn ghost">Read-only SQL</button>
-    </form>
-    <form data-command-form="storage.snapshot_create">
-      <input name="paths" placeholder="Documents/a.json,Library/b.plist">
-      <button class="btn ghost">Create snapshot</button>
-    </form>
+    <button class="btn ghost" id="storage-snapshot" type="button">Snapshot selected</button>
   </div>
-  <p class="muted">Keychain values never leave the device. File paths are jailed to the app sandbox.</p>
-  <div id="storage-result" class="debug-result"></div>
+  <p class="muted">Keychain values never leave the device. Click a folder to open it. Paths stay inside the app sandbox.</p>
+  <nav id="storage-crumb" class="storage-crumb" aria-label="Sandbox path"></nav>
+  <div class="table-wrap storage-browser">
+    <table class="flow-table">
+      <thead>
+        <tr>
+          <th class="col-check" scope="col"></th>
+          <th scope="col">Name</th>
+          <th class="col-size" scope="col">Size</th>
+          <th class="col-time" scope="col">Modified</th>
+        </tr>
+      </thead>
+      <tbody id="storage-files"></tbody>
+    </table>
+  </div>
+  <form id="storage-sql" class="storage-sql">
+    <span id="storage-sql-path" class="muted">Select a database</span>
+    <input id="storage-sql-query" type="text" placeholder="SELECT * FROM table LIMIT 100" autocomplete="off">
+    <button class="btn ghost" type="submit">Read-only SQL</button>
+    <button class="btn ghost" id="storage-sql-schema" type="button">SQLite schema</button>
+  </form>
+  <div id="storage-inspector" class="debug-result"></div>
 </section>
 
 <section class="debug-panel hidden" data-panel="flags">
@@ -190,14 +261,14 @@
   <p id="profile-status" class="muted"></p>
   <div id="waterfall" class="waterfall"></div>
   <form id="deeplink-form" class="filters">
-    <input id="deeplink-udid" value="booted" placeholder="Simulator UDID">
-    <input id="deeplink-url" placeholder="myapp://home">
+    <input id="deeplink-udid" placeholder="Simulator UDID (selected app's simulator, else booted)">
+    <input id="deeplink-url" placeholder="scheme://path">
     <button class="btn">Open deeplink</button>
   </form>
   <p id="deeplink-status" class="muted"></p>
 </section>
 {% endblock %}
 {% block scripts %}
-<script src="/static/js/debug.js?v=6"></script>
+<script src="/static/js/debug.js?v=10"></script>
 <script>document.addEventListener("DOMContentLoaded", () => ViewliftDebug.init());</script>
 {% endblock %}

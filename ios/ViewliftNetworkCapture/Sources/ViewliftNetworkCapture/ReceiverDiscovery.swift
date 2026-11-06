@@ -20,22 +20,39 @@ struct DiscoveredReceiver: Sendable, Equatable {
     let port: Int
     let fingerprint: String
     let debugKey: String
+    /// Other addresses for the same dashboard, such as its Tailscale address.
+    let alternates: [String]
+
+    /// Primary address first, then each usable alternate once.
+    var candidateHosts: [String] {
+        var hosts = [host]
+        for alternate in alternates where !hosts.contains(alternate) {
+            hosts.append(alternate)
+        }
+        return hosts
+    }
 
     static func parse(
         ip: String,
         portText: String,
         fingerprint: String,
-        debugKey: String
+        debugKey: String,
+        alternates: String = ""
     ) -> DiscoveredReceiver? {
         guard let port = Int(portText), port > 0 else { return nil }
         guard !fingerprint.isEmpty, !debugKey.isEmpty else { return nil }
         let host = ip.trimmingCharacters(in: .whitespacesAndNewlines)
         guard ReceiverAddress.shouldAdopt(currentHost: nil, discovered: host) else { return nil }
+        let extras = alternates
+            .split(separator: ",")
+            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .filter { ReceiverAddress.shouldAdopt(currentHost: host, discovered: $0) }
         return DiscoveredReceiver(
             host: host,
             port: port,
             fingerprint: fingerprint,
-            debugKey: debugKey
+            debugKey: debugKey,
+            alternates: extras
         )
     }
 }
@@ -50,6 +67,7 @@ final class ReceiverDiscovery: @unchecked Sendable {
     private let lock = NSLock()
     private var browser: NWBrowser?
     private var resolving = false
+    private var lastResults: Set<NWBrowser.Result> = []
     private let onFound: @Sendable (DiscoveredReceiver) -> Void
     private var resolver: ReceiverTXTResolver?
 
@@ -73,39 +91,53 @@ final class ReceiverDiscovery: @unchecked Sendable {
         lock.unlock()
     }
 
+    /// Browsers go stale while the app is suspended or the network changes. Start a fresh one.
+    func restart() {
+        stop()
+        start()
+    }
+
     func stop() {
         lock.lock()
         let active = browser
         browser = nil
+        lastResults = []
+        resolving = false
         lock.unlock()
         active?.cancel()
     }
 
     private func accept(_ results: Set<NWBrowser.Result>) {
-        guard let result = results.first else { return }
         lock.lock()
+        lastResults = results
         if resolving {
             lock.unlock()
             return
         }
-        resolving = true
+        resolving = !results.isEmpty
         lock.unlock()
-        if let record = Self.record(from: result) {
-            finish(record)
-            return
+        guard !results.isEmpty else { return }
+        for result in results {
+            if let record = Self.record(from: result) {
+                finish(record)
+                return
+            }
         }
-        guard case let .service(name, type, domain, _) = result.endpoint else {
+        guard let result = results.first,
+              case let .service(name, type, domain, _) = result.endpoint else {
             markIdle()
+            scheduleRetry()
             return
         }
         resolveTXT(name: name, type: type, domain: domain)
+        armWatchdog()
     }
 
     private func resolveTXT(name: String, type: String, domain: String) {
         let resolver = ReceiverTXTResolver(name: name, type: type, domain: domain) { [weak self] record in
             self?.finish(record)
         } onFailure: { [weak self] in
-            self?.markIdle()
+            self?.failResolve()
         }
         lock.lock()
         self.resolver = resolver
@@ -123,7 +155,8 @@ final class ReceiverDiscovery: @unchecked Sendable {
             ip: txt["ip"] ?? "",
             portText: txt["port"] ?? "",
             fingerprint: txt["fp"] ?? "",
-            debugKey: txt["key"] ?? ""
+            debugKey: txt["key"] ?? "",
+            alternates: txt["alt"] ?? ""
         )
     }
 
@@ -131,6 +164,37 @@ final class ReceiverDiscovery: @unchecked Sendable {
         lock.lock()
         resolving = false
         lock.unlock()
+    }
+
+    /// NetService callbacks never arrive when the browse result stays unchanged.
+    /// Retry until the TXT record is adopted or the browser stops.
+    private func scheduleRetry() {
+        lock.lock()
+        let alive = browser != nil
+        lock.unlock()
+        guard alive else { return }
+        DispatchQueue.global(qos: .utility).asyncAfter(deadline: .now() + 2) { [weak self] in
+            guard let self else { return }
+            self.lock.lock()
+            let results = self.lastResults
+            self.lock.unlock()
+            self.accept(results)
+        }
+    }
+
+    private func armWatchdog() {
+        DispatchQueue.global(qos: .utility).asyncAfter(deadline: .now() + 6) { [weak self] in
+            self?.failResolve()
+        }
+    }
+
+    private func failResolve() {
+        lock.lock()
+        let stuck = resolving
+        lock.unlock()
+        guard stuck else { return }
+        markIdle()
+        scheduleRetry()
     }
 }
 
@@ -149,14 +213,20 @@ final class ReceiverTXTResolver: NSObject, NetServiceDelegate {
         self.onRecord = onRecord
         self.onFailure = onFailure
         super.init()
-        let serviceType = type.hasSuffix(".") ? type : "\(type)."
-        let serviceDomain = domain.hasSuffix(".") ? domain : "\(domain)."
-        let resolved = NetService(domain: serviceDomain, type: serviceType, name: name)
-        resolved.delegate = self
-        service = resolved
-        DispatchQueue.main.async {
+        let start = { [weak self] in
+            guard let self else { return }
+            let serviceType = type.hasSuffix(".") ? type : "\(type)."
+            let serviceDomain = domain.hasSuffix(".") ? domain : "\(domain)."
+            let resolved = NetService(domain: serviceDomain, type: serviceType, name: name)
+            resolved.delegate = self
+            self.service = resolved
             resolved.schedule(in: .main, forMode: .common)
             resolved.resolve(withTimeout: 5)
+        }
+        if Thread.isMainThread {
+            start()
+        } else {
+            DispatchQueue.main.async(execute: start)
         }
     }
 
@@ -166,7 +236,8 @@ final class ReceiverTXTResolver: NSObject, NetServiceDelegate {
             ip: Self.text("ip", fields),
             portText: Self.text("port", fields),
             fingerprint: Self.text("fp", fields),
-            debugKey: Self.text("key", fields)
+            debugKey: Self.text("key", fields),
+            alternates: Self.text("alt", fields)
         )
         sender.stop()
         if let record {

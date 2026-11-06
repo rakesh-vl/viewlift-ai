@@ -62,6 +62,12 @@ public enum JSONValue: Codable, Sendable, Equatable {
     }
 }
 
+public struct DebugFramework: Codable, Sendable, Equatable {
+    public let id: String
+    public let version: String
+    public let name: String
+}
+
 public struct DebugClientRegistration: Codable, Sendable {
     public let clientId: String
     public let appName: String
@@ -69,6 +75,48 @@ public struct DebugClientRegistration: Codable, Sendable {
     public let platform: String
     public let osVersion: String
     public let capabilities: [String: DebugCapability]
+    public let appVersion: String
+    public let build: String
+    public let executable: String
+    public let urlSchemes: [String]
+    public let frameworks: [DebugFramework]
+    public let deviceKey: String
+    public let deviceName: String
+    public let deviceModel: String
+    public let isSimulator: Bool
+    public let sdkVersion: String
+
+    public init(
+        clientId: String,
+        appName: String,
+        bundleId: String,
+        platform: String,
+        osVersion: String,
+        capabilities: [String: DebugCapability],
+        appVersion: String = "",
+        build: String = "",
+        executable: String = "",
+        urlSchemes: [String] = [],
+        frameworks: [DebugFramework] = [],
+        device: DeviceIdentity? = nil
+    ) {
+        self.deviceKey = device?.deviceKey ?? ""
+        self.deviceName = device?.deviceName ?? ""
+        self.deviceModel = device?.deviceModel ?? ""
+        self.isSimulator = device?.isSimulator ?? false
+        self.sdkVersion = DeviceIdentity.sdkVersion
+        self.clientId = clientId
+        self.appName = appName
+        self.bundleId = bundleId
+        self.platform = platform
+        self.osVersion = osVersion
+        self.capabilities = capabilities
+        self.appVersion = appVersion
+        self.build = build
+        self.executable = executable
+        self.urlSchemes = urlSchemes
+        self.frameworks = frameworks
+    }
 
     enum CodingKeys: String, CodingKey {
         case clientId = "client_id"
@@ -77,6 +125,16 @@ public struct DebugClientRegistration: Codable, Sendable {
         case platform
         case osVersion = "os_version"
         case capabilities
+        case appVersion = "app_version"
+        case build
+        case executable
+        case urlSchemes = "url_schemes"
+        case frameworks
+        case deviceKey = "device_key"
+        case deviceName = "device_name"
+        case deviceModel = "device_model"
+        case isSimulator = "is_simulator"
+        case sdkVersion = "sdk_version"
     }
 }
 

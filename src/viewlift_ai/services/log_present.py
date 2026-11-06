@@ -14,6 +14,8 @@ def log_summary(log: LogRecord) -> dict[str, object]:
         "created_at": log.created_at.isoformat(),
         "request_id": log.request_id,
         "source": log.source,
+        "client_id": log.client_id,
+        "udid": log.udid,
     }
 
 
@@ -26,6 +28,8 @@ def log_detail(log: LogRecord) -> dict[str, object]:
         "created_at": log.created_at.isoformat(),
         "request_id": log.request_id,
         "source": log.source,
+        "client_id": log.client_id,
+        "udid": log.udid,
         "testflight_private_note": (
             "TestFlight os_log privacy fields often arrive as <private>. "
             "That is expected for App Store distribution builds; use a debug "

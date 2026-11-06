@@ -25,6 +25,7 @@ from viewlift_ai.proxy.redact import RedactionService
 from viewlift_ai.services.bind_policy import (
     InterfaceLister,
     SetupValidationError,
+    interface_scope,
     is_loopback_ip,
     preferred_lan_host,
     validate_port,
@@ -57,6 +58,30 @@ class PairingToken:
 class SessionToken:
     token: str
     expires_at: float
+    client_id: str | None = None
+    device_key: str | None = None
+
+
+class ClientMismatchError(PermissionError):
+    """Session token is bound to a different app instance (HTTP 403, no re-pair)."""
+
+
+@dataclass(slots=True)
+class ClientActivity:
+    flows: int = 0
+    logs: int = 0
+    last_at: str | None = None
+    last_path: str | None = None
+    peer: str | None = None
+
+    def as_dict(self) -> dict[str, object]:
+        return {
+            "flows": self.flows,
+            "logs": self.logs,
+            "last_at": self.last_at,
+            "last_path": self.last_path,
+            "peer": self.peer,
+        }
 
 
 @dataclass(slots=True)
@@ -64,6 +89,7 @@ class IngestActivity:
     """Counters for the Setup/Network UI so a silent SDK is diagnosable."""
 
     last_client: str | None = None
+    last_client_id: str | None = None
     last_seen_at: str | None = None
     last_path: str | None = None
     last_error: str | None = None
@@ -71,10 +97,12 @@ class IngestActivity:
     flows: int = 0
     logs: int = 0
     rejected: int = 0
+    per_client: dict[str, ClientActivity] = field(default_factory=dict)
 
     def as_dict(self) -> dict[str, object]:
         return {
             "last_client": self.last_client,
+            "last_client_id": self.last_client_id,
             "last_seen_at": self.last_seen_at,
             "last_path": self.last_path,
             "last_error": self.last_error,
@@ -82,6 +110,7 @@ class IngestActivity:
             "flows": self.flows,
             "logs": self.logs,
             "rejected": self.rejected,
+            "clients": {key: value.as_dict() for key, value in self.per_client.items()},
         }
 
 
@@ -91,6 +120,9 @@ class IngestBindState:
     host: str = "127.0.0.1"
     port: int = DEFAULT_INGEST_PORT
     iface: str = ""
+    # Also listen on VPN addresses (Tailscale, NetBird) and advertise them as alternates.
+    include_vpn: bool = False
+    extra_hosts: tuple[str, ...] = ()
 
 
 @dataclass(slots=True)
@@ -126,6 +158,9 @@ class IngestService:
     _key_path: Path | None = field(default=None, init=False)
     _server_thread: threading.Thread | None = field(default=None, init=False, repr=False)
     _server: Any = field(default=None, init=False, repr=False)
+    _extra_servers: list[tuple[Any, threading.Thread]] = field(
+        default_factory=list, init=False, repr=False
+    )
     _manual_disable: bool = field(default=False, init=False)
     _watch_stop: threading.Event = field(default_factory=threading.Event, init=False, repr=False)
     _watch_thread: threading.Thread | None = field(default=None, init=False, repr=False)
@@ -155,6 +190,9 @@ class IngestService:
             "port": self._bind.port if self._bind.enabled else None,
             "iface": self._bind.iface if self._bind.enabled else None,
             "receiver_url": self.receiver_url(),
+            "receiver_urls": self.receiver_urls(),
+            "include_vpn": self._bind.include_vpn,
+            "extra_hosts": list(self._bind.extra_hosts),
             "pairing_token": pairing,
             "pinned_fingerprint": self._fingerprint,
             "debug_key": self.debug_key() if self._bind.enabled else None,
@@ -178,27 +216,75 @@ class IngestService:
         with self._lock:
             return self._activity.as_dict()
 
-    def record_request(self, client: str, path: str, *, error: str | None = None) -> None:
+    def record_request(
+        self,
+        client: str,
+        path: str,
+        *,
+        error: str | None = None,
+        client_id: str | None = None,
+    ) -> None:
         with self._lock:
             act = self._activity
+            now = datetime.now(UTC).isoformat()
             act.last_client = client
-            act.last_seen_at = datetime.now(UTC).isoformat()
+            act.last_seen_at = now
             act.last_path = path
+            if client_id:
+                act.last_client_id = client_id
             if error is not None:
                 act.last_error = f"{path}: {error}"
                 act.rejected += 1
                 return
+            per = act.per_client.setdefault(client_id, ClientActivity()) if client_id else None
+            if per is not None:
+                per.last_at = now
+                per.last_path = path
+                per.peer = client
             if path == "/v1/pair":
                 act.pairings += 1
             elif path == "/v1/flows":
                 act.flows += 1
+                if per is not None:
+                    per.flows += 1
             elif path == "/v1/logs":
                 act.logs += 1
+                if per is not None:
+                    per.logs += 1
+
+    def forget_client_activity(self, client_id: str | None = None) -> None:
+        with self._lock:
+            if client_id is None:
+                self._activity.per_client.clear()
+            else:
+                self._activity.per_client.pop(client_id, None)
 
     def receiver_url(self) -> str | None:
         if not self._bind.enabled:
             return None
         return f"https://{self._bind.host}:{self._bind.port}"
+
+    def receiver_urls(self) -> list[str]:
+        """Primary receiver first, then VPN alternates."""
+        if not self._bind.enabled:
+            return []
+        hosts = [self._bind.host, *self._bind.extra_hosts]
+        return [f"https://{host}:{self._bind.port}" for host in hosts]
+
+    def vpn_hosts(self, rows: list[dict[str, str]], *, primary: str) -> tuple[str, ...]:
+        """VPN interface addresses other than the primary bind. Each must pass bind policy."""
+        found: list[str] = []
+        for row in rows:
+            ip = str(row.get("ip") or "")
+            if not ip or ip == primary or ip in found:
+                continue
+            if interface_scope(str(row.get("iface") or ""), ip) != "vpn":
+                continue
+            try:
+                found.append(validate_receiver_bind_ip(ip, interfaces=rows))
+            except SetupValidationError:
+                continue
+        return tuple(found)
 
     def desired_bind_host(self) -> str:
         """LAN address when one exists, otherwise localhost."""
@@ -211,11 +297,18 @@ class IngestService:
             return self._bind.host
         rows = (self.interface_lister or list_ipv4_interfaces)()
         current = next((row for row in rows if row.get("iface") == self._bind.iface), None)
-        if current is not None and str(current.get("ip") or "") != self._bind.host:
+        primary = str(current.get("ip") or "") if current is not None else self._bind.host
+        extras_changed = (
+            current is not None
+            and self._bind.include_vpn
+            and self.vpn_hosts(rows, primary=primary) != self._bind.extra_hosts
+        )
+        if (current is not None and primary != self._bind.host) or extras_changed:
             self.enable(
-                host=str(current.get("ip") or ""),
+                host=primary,
                 port=self._bind.port,
                 iface=self._bind.iface,
+                include_vpn=self._bind.include_vpn,
             )
         self._publish_receiver()
         return self._bind.host
@@ -254,6 +347,7 @@ class IngestService:
         host: str,
         port: int = DEFAULT_INGEST_PORT,
         iface: str | None = None,
+        include_vpn: bool = False,
     ) -> dict[str, object]:
         self._manual_disable = False
         rows = (self.interface_lister or list_ipv4_interfaces)()
@@ -273,10 +367,13 @@ class IngestService:
                 "lo0" if is_loopback_ip(ip) else "",
             )
         validated_port = validate_port(port)
+        extras = self.vpn_hosts(rows, primary=ip) if include_vpn else ()
         self._ensure_tls_material()
         with self._lock:
             requires_rebind = self._server is not None and (
-                self._bind.host != ip or self._bind.port != validated_port
+                self._bind.host != ip
+                or self._bind.port != validated_port
+                or self._bind.extra_hosts != extras
             )
         if requires_rebind:
             self.stop_https_server()
@@ -286,6 +383,8 @@ class IngestService:
                 host=ip,
                 port=validated_port,
                 iface=chosen_iface,
+                include_vpn=bool(include_vpn),
+                extra_hosts=extras,
             )
             self._mint_pairing_locked()
         self.start_https_server()
@@ -325,6 +424,7 @@ class IngestService:
             self._bind.port,
             fingerprint=self._fingerprint,
             debug_key=self.debug_key(),
+            alt=self._bind.extra_hosts,
         )
 
     def debug_key(self) -> str:
@@ -353,7 +453,13 @@ class IngestService:
             token = self._mint_pairing_locked()
         return {"pairing_token": token, "expires_in": int(self.pairing_ttl)}
 
-    def exchange_pairing(self, pairing_token: str) -> dict[str, object]:
+    def exchange_pairing(
+        self,
+        pairing_token: str,
+        *,
+        client_id: str | None = None,
+        device_key: str | None = None,
+    ) -> dict[str, object]:
         if not self._bind.enabled:
             msg = "SDK receiver is disabled"
             raise PermissionError(msg)
@@ -374,6 +480,8 @@ class IngestService:
             self._sessions[session] = SessionToken(
                 token=session,
                 expires_at=now + self.session_ttl,
+                client_id=_client_identifier(client_id),
+                device_key=(device_key or "").strip()[:200] or None,
             )
         return {
             "session_token": session,
@@ -400,7 +508,36 @@ class IngestService:
                 raise OverflowError(msg)
         return token
 
-    def ingest_flow(self, payload: dict[str, Any]) -> dict[str, object]:
+    def bind_client(self, token: str, presented: str | None) -> str | None:
+        """
+        Resolve the app instance for a session. First presented id binds an unbound
+        session; a different id later is rejected so one app cannot write as another.
+        """
+        candidate = _client_identifier(presented)
+        with self._lock:
+            entry = self._sessions.get(token)
+            if entry is None:
+                msg = "invalid or expired session token"
+                raise PermissionError(msg)
+            if entry.client_id is None:
+                entry.client_id = candidate
+                return candidate
+            if candidate is not None and candidate != entry.client_id:
+                msg = "session is bound to a different client"
+                raise ClientMismatchError(msg)
+            return entry.client_id
+
+    def session_device_key(self, token: str) -> str | None:
+        with self._lock:
+            entry = self._sessions.get(token)
+            return entry.device_key if entry is not None else None
+
+    def ingest_flow(
+        self,
+        payload: dict[str, Any],
+        *,
+        client_id: str | None = None,
+    ) -> dict[str, object]:
         flow_id = str(payload.get("id") or uuid.uuid4())
         method = str(payload.get("method") or "GET").upper()
         url = str(payload.get("url") or "")
@@ -437,11 +574,23 @@ class IngestService:
             created_at=datetime.now(UTC),
             record_bodies=True,
             source=FlowSource.SDK,
+            client_id=client_id,
         )
         flow = self.capture.persist_http(snapshot)
+        self._touch(client_id)
         return {"ok": True, "id": flow.id, "source": FlowSource.SDK.value}
 
-    def ingest_log(self, payload: dict[str, Any]) -> dict[str, object]:
+    def _touch(self, client_id: str | None) -> None:
+        """An upload proves the app is alive even when the command poll is stalled."""
+        if self.debug_sessions is not None:
+            self.debug_sessions.touch(client_id)
+
+    def ingest_log(
+        self,
+        payload: dict[str, Any],
+        *,
+        client_id: str | None = None,
+    ) -> dict[str, object]:
         message = str(payload.get("message") or "")
         if len(message.encode("utf-8")) > self.max_json_bytes:
             msg = "log message exceeds size cap"
@@ -453,7 +602,9 @@ class IngestService:
             source="sdk",
             request_id=str(payload["request_id"]) if payload.get("request_id") else None,
             log_id=str(payload["id"]) if payload.get("id") else None,
+            client_id=client_id,
         )
+        self._touch(client_id)
         return {"ok": True, "id": record.id, "source": "sdk"}
 
     def ssl_context(self) -> ssl.SSLContext:
@@ -482,11 +633,18 @@ class IngestService:
             def log_message(self, fmt: str, *args: Any) -> None:  # noqa: A003
                 return
 
+            _client_id: str | None = None
+
             def _no_store(self, code: int, payload: dict[str, object]) -> None:
                 path = self.path.split("?", 1)[0]
                 if path != "/health":
                     error = None if code < 400 else f"{code} {payload.get('detail') or ''}".strip()
-                    service.record_request(self.client_address[0], path, error=error)
+                    service.record_request(
+                        self.client_address[0],
+                        path,
+                        error=error,
+                        client_id=self._client_id,
+                    )
                 body = json_mod.dumps(payload).encode("utf-8")
                 self.send_response(code)
                 self.send_header("Content-Type", "application/json")
@@ -507,6 +665,13 @@ class IngestService:
                     raise ValueError("JSON object required")
                 return data
 
+            def _authorized_client(self) -> str | None:
+                token = service.require_session(self.headers.get("Authorization"))
+                self._client_id = service.bind_client(
+                    token, self.headers.get("X-Viewlift-Client-ID")
+                )
+                return self._client_id
+
             def do_POST(self) -> None:  # noqa: N802
                 path = self.path.split("?", 1)[0]
                 try:
@@ -518,35 +683,49 @@ class IngestService:
                     if path == "/v1/pair":
                         body = self._read_json()
                         token = str(body.get("pairing_token") or "")
-                        result = service.exchange_pairing(token)
+                        result = service.exchange_pairing(
+                            token,
+                            client_id=str(body.get("client_id") or "") or None,
+                            device_key=str(body.get("device_key") or "") or None,
+                        )
+                        self._client_id = _client_identifier(body.get("client_id"))
                         self._no_store(200, result)
                         return
                     if path in {"/v1/flows", "/v1/logs"}:
-                        service.require_session(self.headers.get("Authorization"))
+                        client_id = self._authorized_client()
                         body = self._read_json()
                         if path == "/v1/flows":
-                            self._no_store(200, service.ingest_flow(body))
+                            self._no_store(200, service.ingest_flow(body, client_id=client_id))
                         else:
-                            self._no_store(200, service.ingest_log(body))
+                            self._no_store(200, service.ingest_log(body, client_id=client_id))
                         return
                     if path == "/v1/debug/register":
-                        service.require_session(self.headers.get("Authorization"))
+                        body = self._read_json()
+                        token = service.require_session(self.headers.get("Authorization"))
+                        self._client_id = service.bind_client(
+                            token, str(body.get("client_id") or "")
+                        )
                         debug = service.debug_sessions
                         if debug is None:
                             raise RuntimeError("debug session service unavailable")
-                        self._no_store(200, debug.register(self._read_json()))
+                        if self._client_id and not body.get("client_id"):
+                            body["client_id"] = self._client_id
+                        if not body.get("device_key"):
+                            body["device_key"] = service.session_device_key(token) or ""
+                        self._no_store(200, debug.register(body))
                         return
                     if path == "/v1/debug/events":
-                        service.require_session(self.headers.get("Authorization"))
+                        client_id = self._authorized_client() or ""
                         debug = service.debug_sessions
                         if debug is None:
                             raise RuntimeError("debug session service unavailable")
-                        client_id = self.headers.get("X-Viewlift-Client-ID") or ""
                         self._no_store(200, debug.ingest_event(client_id, self._read_json()))
                         return
                     self._no_store(404, {"ok": False, "detail": "not found"})
                 except LookupError as exc:
                     self._no_store(404, {"ok": False, "detail": str(exc)})
+                except ClientMismatchError as exc:
+                    self._no_store(403, {"ok": False, "detail": str(exc)})
                 except PermissionError as exc:
                     self._no_store(401, {"ok": False, "detail": str(exc)})
                 except TimeoutError as exc:
@@ -568,14 +747,15 @@ class IngestService:
                     return
                 if path == "/v1/debug/commands":
                     try:
-                        service.require_session(self.headers.get("Authorization"))
+                        client_id = self._authorized_client() or ""
                         debug = service.debug_sessions
                         if debug is None:
                             raise RuntimeError("debug session service unavailable")
-                        client_id = self.headers.get("X-Viewlift-Client-ID") or ""
                         self._no_store(200, {"commands": debug.poll(client_id)})
                     except LookupError as exc:
                         self._no_store(404, {"ok": False, "detail": str(exc)})
+                    except ClientMismatchError as exc:
+                        self._no_store(403, {"ok": False, "detail": str(exc)})
                     except PermissionError as exc:
                         self._no_store(401, {"ok": False, "detail": str(exc)})
                     except Exception as exc:
@@ -583,24 +763,33 @@ class IngestService:
                     return
                 self._no_store(404, {"ok": False, "detail": "not found"})
 
-        server = ThreadingHTTPServer((self._bind.host, self._bind.port), Handler)
-        server.socket = self.ssl_context().wrap_socket(server.socket, server_side=True)
-        self._server = server
-
-        def _serve() -> None:
+        context = self.ssl_context()
+        for index, host in enumerate((self._bind.host, *self._bind.extra_hosts)):
             try:
-                server.serve_forever(poll_interval=0.5)
-            except Exception:
-                pass
-
-        self._server_thread = threading.Thread(
-            target=_serve,
-            name="sdk-ingest-https",
-            daemon=True,
-        )
-        self._server_thread.start()
+                server = ThreadingHTTPServer((host, self._bind.port), Handler)
+            except OSError:
+                if index == 0:
+                    raise
+                continue  # A VPN address that cannot bind must not take the LAN receiver down.
+            server.socket = context.wrap_socket(server.socket, server_side=True)
+            thread = threading.Thread(
+                target=_serve_forever,
+                args=(server,),
+                name="sdk-ingest-https" if index == 0 else f"sdk-ingest-https-{index}",
+                daemon=True,
+            )
+            if index == 0:
+                self._server = server
+                self._server_thread = thread
+            else:
+                self._extra_servers.append((server, thread))
+            thread.start()
 
     def stop_https_server(self) -> None:
+        extras = self._extra_servers
+        self._extra_servers = []
+        for extra_server, extra_thread in extras:
+            _stop_server(extra_server, extra_thread)
         server = self._server
         self._server = None
         if server is not None:
@@ -679,6 +868,23 @@ class IngestService:
         )
 
 
+def _serve_forever(server: Any) -> None:
+    try:
+        server.serve_forever(poll_interval=0.5)
+    except Exception:
+        pass
+
+
+def _stop_server(server: Any, thread: threading.Thread) -> None:
+    for action in (server.shutdown, server.server_close):
+        try:
+            action()
+        except Exception:
+            pass
+    if thread.is_alive():
+        thread.join(timeout=2.0)
+
+
 def _generate_self_signed(cert_path: Path, key_path: Path) -> None:
     key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
     subject = issuer = x509.Name(
@@ -708,6 +914,13 @@ def _generate_self_signed(cert_path: Path, key_path: Path) -> None:
     import os
 
     os.chmod(key_path, 0o600)
+
+
+def _client_identifier(value: object) -> str | None:
+    text = str(value or "").strip()[:128]
+    if text and all(char.isalnum() or char in "._-" for char in text):
+        return text
+    return None
 
 
 def _bearer(authorization: str | None) -> str | None:

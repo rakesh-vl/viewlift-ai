@@ -14,6 +14,7 @@ from viewlift_ai.proxy.addon import ViewliftCaptureAddon
 from viewlift_ai.proxy.allowlist import HostAllowlist
 from viewlift_ai.proxy.breakpoints import BreakpointRegistry
 from viewlift_ai.services.capture import CaptureService
+from viewlift_ai.services.proxy_clients import ProxyClientRegistry
 from viewlift_ai.services.rule_engine import RuleEngine
 
 logger = logging.getLogger(__name__)
@@ -43,7 +44,9 @@ class ProxyRunner:
         rule_engine: RuleEngine | None = None,
         breakpoints: BreakpointRegistry | None = None,
         proxy_auth: tuple[str, str] | None = None,
+        proxy_clients: ProxyClientRegistry | None = None,
     ) -> None:
+        self._proxy_clients = proxy_clients
         self._listen_host = listen_host
         self._listen_port = listen_port
         self._confdir = confdir
@@ -131,6 +134,7 @@ class ProxyRunner:
                     self._capture,
                     rule_engine=self._rule_engine,
                     breakpoints=self._breakpoints,
+                    proxy_clients=self._proxy_clients,
                 ),
             )
             if self._proxy_auth is not None:

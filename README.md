@@ -47,15 +47,19 @@ SDK capture is inspection-only. Breakpoints, mapping, rewriting, and throttling 
 the proxy path. SDK mode does not capture WebSocket frames, `WKWebView`,
 Network.framework, third-party sockets, or background `URLSession`.
 
+## Documentation
+
+Developer guides live in [docs/](docs/README.md): getting started, architecture,
+data flows, configuration, API reference, security model, rules, multi-app scope,
+MCP server, web UI, the iOS/tvOS SDK, AppCMS integration and contributing.
+
 ## Layout
 
-- `src/viewlift_ai/config.py` — data dirs, retention, secret key loading
-- `src/viewlift_ai/services/` — capture, encrypted storage, rules, setup, logs, ingest
-- `src/viewlift_ai/proxy/` — thin mitmproxy hooks and runner
-- `src/viewlift_ai/api/` — local HTTP and WebSocket routes
-- `src/viewlift_ai/web/` — local-only templates and assets
+- `src/viewlift_ai/` — Python console (`api/`, `services/`, `proxy/`, `models/`, `web/`, `mcp_server/`)
 - `ios/ViewliftNetworkCapture/` — iOS/tvOS Swift package
 - `tests/` — Python service and API tests
+
+See [docs/architecture.md](docs/architecture.md) for a module-by-module map.
 
 ## Security and cleanup
 
@@ -65,6 +69,24 @@ Network.framework, third-party sockets, or background `URLSession`.
 - Remove the Wi-Fi proxy and debug CA when capture is finished.
 - Never enable `VIEWLIFT_CAPTURE_ENABLED` for an App Store build.
 
-## Future MCP
+## Agent MCP
 
-A stdio MCP server is not part of this build. Services return plain data objects and do not import FastAPI so a later MCP layer can call the same code. Future tools should stay read-only and use the same redaction unless a local unlock is on; no tool should turn on rewrite.
+`scripts/viewlift-ai.sh start` starts the console and a loopback MCP server.
+The companion listens on `127.0.0.1` port `VIEWLIFT_AI_MCP_PORT` (default 8742), path `/mcp`.
+`scripts/viewlift-ai.sh stop` stops both.
+The `mcp` extra is the official Python SDK 1.22. MCP 2 cannot be installed next to this
+project's mitmproxy pin.
+`uv run --extra mcp viewlift-ai-mcp` with no transport env stays on stdio for a manual Cursor command.
+Several apps on one device stay separate clients. Tools require `client_id`.
+Mutating tools require `confirm: true`. They do not enable proxy rewrite.
+Raw flow bodies and replay work only when reveal is already unlocked in the console.
+
+```json
+{
+  "mcpServers": {
+    "viewlift-ai": {
+      "url": "http://127.0.0.1:8742/mcp"
+    }
+  }
+}
+```

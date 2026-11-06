@@ -9,7 +9,9 @@ from fastapi import APIRouter, HTTPException, Query, Request
 from fastapi.responses import HTMLResponse
 from fastapi.templating import Jinja2Templates
 
+from viewlift_ai.api.scope import debug_sessions, resolve_client_ids
 from viewlift_ai.services.log_present import log_detail, log_summary
+from viewlift_ai.services.log_tail import AppAttribution
 
 WEB_ROOT = Path(__file__).resolve().parent.parent / "web"
 TEMPLATES = Jinja2Templates(directory=str(WEB_ROOT / "templates"))
@@ -64,10 +66,23 @@ async def start_logs(request: Request) -> dict[str, object]:
     source = str(body.get("source") or "")
     udid = body.get("udid")
     process = body.get("process")
+    attribution = None
+    client = _scoped_client(request, body.get("client_id"))
+    if client is not None:
+        executable = str(client.get("executable") or "")
+        if not udid and client.get("is_simulator"):
+            udid = client.get("device_key")
+        if not source:
+            source = "simulator" if client.get("is_simulator") else "device"
+        if not process and executable:
+            process = executable
+        if executable:
+            attribution = AppAttribution(client_id=str(client["id"]), executable=executable)
     result = _tail(request).start(
         source,
         udid=str(udid) if udid else None,
         process=str(process) if process else None,
+        attribution=attribution,
     )
     if not result.get("ok"):
         raise HTTPException(status_code=400, detail=str(result.get("detail") or "start failed"))
@@ -92,6 +107,12 @@ def stop_logs(request: Request) -> dict[str, object]:
     return _tail(request).stop()
 
 
+@router.post("/api/logs/delete")
+def delete_logs(request: Request) -> dict[str, int]:
+    """Delete every stored log. Flows and rules are kept."""
+    return {"deleted": _store(request).delete_logs()}
+
+
 @router.get("/api/logs")
 def list_logs(
     request: Request,
@@ -100,6 +121,8 @@ def list_logs(
     subsystem: Annotated[str | None, Query()] = None,
     text: Annotated[str | None, Query()] = None,
     limit: Annotated[int, Query(ge=1, le=1000)] = 200,
+    client_id: Annotated[list[str] | None, Query()] = None,
+    device_key: Annotated[str | None, Query()] = None,
 ) -> dict[str, object]:
     logs = _store(request).list_logs(
         limit=limit,
@@ -107,6 +130,7 @@ def list_logs(
         level=level or None,
         subsystem=subsystem or None,
         text=text or None,
+        client_ids=resolve_client_ids(request, client_id, device_key),
     )
     return {"logs": [log_summary(item) for item in logs]}
 
@@ -119,9 +143,21 @@ def get_log(request: Request, log_id: str) -> dict[str, object]:
     detail = log_detail(log)
     flow_id = None
     if log.request_id:
-        flow_id = _store(request).flow_id_for_request(log.request_id)
+        flow_id = _store(request).flow_id_for_request(
+            log.request_id, client_id=log.client_id
+        )
     detail["linked_flow_id"] = flow_id
     return detail
+
+
+def _scoped_client(request: Request, client_id: object) -> dict[str, object] | None:
+    sessions = debug_sessions(request)
+    if sessions is None or not client_id:
+        return None
+    try:
+        return sessions.get_client(str(client_id))
+    except LookupError:
+        return None
 
 
 async def _json_body(request: Request) -> dict[str, Any]:

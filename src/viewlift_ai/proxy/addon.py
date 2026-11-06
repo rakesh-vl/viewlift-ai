@@ -17,6 +17,7 @@ from viewlift_ai.proxy.rules import (
     flow_error_with_breakpoint_mark,
 )
 from viewlift_ai.services.capture import CaptureService, HttpCaptureSnapshot
+from viewlift_ai.services.proxy_clients import ProxyClientRegistry
 from viewlift_ai.services.rule_engine import RuleEngine
 
 logger = logging.getLogger(__name__)
@@ -31,7 +32,9 @@ class ViewliftCaptureAddon:
         capture: CaptureService,
         rule_engine: RuleEngine | None = None,
         breakpoints: BreakpointRegistry | None = None,
+        proxy_clients: ProxyClientRegistry | None = None,
     ) -> None:
+        self._proxy_clients = proxy_clients
         self._allowlist = allowlist
         self._capture = capture
         self._rules = rule_engine
@@ -49,8 +52,13 @@ class ViewliftCaptureAddon:
     def tls_failed_server(self, data: tls.TlsData) -> None:
         self._record_tls_failure(data)
 
+    def http_connect(self, flow: http.HTTPFlow) -> None:
+        """HTTPS tunnels never reach `request`; the CONNECT still names the app and device."""
+        self._observe_client(flow)
+
     async def request(self, flow: http.HTTPFlow) -> None:
         """Throttle → map local → map remote → request breakpoint (before forward)."""
+        self._observe_client(flow)
         if self._rules is None:
             return
         await apply_request_rules(
@@ -92,6 +100,21 @@ class ViewliftCaptureAddon:
         if flow.websocket is None or not flow.websocket.messages:
             return
         self._persist_http(flow, record_bodies=True)
+
+    def _observe_client(self, flow: http.HTTPFlow) -> None:
+        """Remember which device and app sent this request. Never lets detection break capture."""
+        if self._proxy_clients is None:
+            return
+        try:
+            peername = flow.client_conn.peername
+            peer = peername[0] if peername else ""
+            self._proxy_clients.observe(
+                peer=peer,
+                user_agent=str(flow.request.headers.get("User-Agent", "")),
+                host=_flow_host(flow),
+            )
+        except Exception:
+            logger.debug("proxy client observe failed", exc_info=True)
 
     def _record_tls_failure(self, data: tls.TlsData) -> None:
         host = _tls_host(data)

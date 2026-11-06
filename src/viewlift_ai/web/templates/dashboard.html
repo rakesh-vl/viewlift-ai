@@ -1,14 +1,29 @@
 {% extends "base.html" %}
 {% block content %}
 <section class="filters" id="filters">
-  <label>Method <input id="f-method" type="text" placeholder="GET" autocomplete="off"></label>
+  <label>Method
+    <select id="f-method">
+      <option value="">Any</option>
+      <option value="GET">GET</option>
+      <option value="POST">POST</option>
+      <option value="PUT">PUT</option>
+      <option value="PATCH">PATCH</option>
+      <option value="DELETE">DELETE</option>
+      <option value="HEAD">HEAD</option>
+      <option value="OPTIONS">OPTIONS</option>
+    </select>
+  </label>
   <label>Host <input id="f-host" type="text" placeholder="api.example.com" autocomplete="off"></label>
   <label>Status <input id="f-status" type="number" placeholder="200" autocomplete="off"></label>
   <label>Content-Type <input id="f-ctype" type="text" placeholder="json" autocomplete="off"></label>
   <label class="grow">Text <input id="f-text" type="text" placeholder="path, header, body…" autocomplete="off"></label>
-  <button type="button" id="btn-apply" class="btn">Filter</button>
-  <button type="button" id="btn-clear" class="btn ghost">Clear</button>
+  <button type="button" id="btn-apply" class="btn">Apply filters</button>
+  <button type="button" id="btn-clear" class="btn ghost" hidden>Clear</button>
   <button type="button" id="btn-har" class="btn ghost">Export HAR</button>
+  <div class="view-switch" role="group" aria-label="Flow view">
+    <button type="button" id="view-list" class="btn ghost active" data-flow-view="list" aria-pressed="true">List</button>
+    <button type="button" id="view-urls" class="btn ghost" data-flow-view="urls" aria-pressed="false" title="Group requests that share a host and path">Base URL</button>
+  </div>
 </section>
 <section class="filters reveal-bar" id="reveal-bar">
   <label class="grow">Session reveal token
@@ -23,22 +38,39 @@
 <section class="split">
   <div class="pane list-pane">
     <div class="pane-head">
-      <span>Flows</span>
+      <button type="button" id="group-back" class="btn ghost" hidden>All URLs</button>
+      <span id="flow-heading">Flows</span>
       <span id="flow-count" class="muted">0</span>
       <span id="capture-status" class="muted"></span>
+      <div class="row-actions">
+        <button type="button" class="btn ghost" id="btn-follow-latest" aria-pressed="false">Follow latest</button>
+      </div>
     </div>
-    <div class="table-wrap">
+    <div class="table-wrap" id="group-wrap" hidden>
+      <table class="flow-table group-table">
+        <thead>
+          <tr>
+            <th scope="col">Base URL</th>
+            <th class="col-count" scope="col">Count</th>
+            <th class="col-status" scope="col">Status</th>
+            <th class="col-type" scope="col">Methods</th>
+          </tr>
+        </thead>
+        <tbody id="group-rows"></tbody>
+      </table>
+    </div>
+    <div class="table-wrap" id="flow-wrap">
       <table class="flow-table">
         <thead>
           <tr>
-            <th>Method</th>
-            <th>Host</th>
-            <th>Path</th>
-            <th>Status</th>
-            <th>Type</th>
-            <th>Time</th>
-            <th>Size</th>
-            <th>Stage</th>
+            <th class="col-method" scope="col">Method</th>
+            <th class="col-host" scope="col">Host</th>
+            <th scope="col">Path</th>
+            <th class="col-status" scope="col">Status</th>
+            <th class="col-type" scope="col">Type</th>
+            <th class="col-time" scope="col">Time</th>
+            <th class="col-size" scope="col">Size</th>
+            <th class="col-stage" scope="col">Stage</th>
           </tr>
         </thead>
         <tbody id="flow-rows"></tbody>
@@ -55,7 +87,7 @@
       </div>
     </div>
     <div id="detail-body" class="detail-body">
-      <p class="muted empty">Select a flow</p>
+      <p class="muted empty">Select a request to inspect its headers, body, and timing.</p>
     </div>
   </div>
 </section>

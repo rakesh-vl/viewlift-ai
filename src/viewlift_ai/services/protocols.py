@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from datetime import datetime, timedelta
 from typing import Protocol, runtime_checkable
 
@@ -24,6 +25,7 @@ class FlowStoreProtocol(Protocol):
         status: int | None = None,
         content_type: str | None = None,
         text: str | None = None,
+        client_ids: Sequence[str] | None = None,
     ) -> list[FlowRecord]: ...
 
     def wipe_session(self) -> int: ...
@@ -43,11 +45,47 @@ class LogStoreProtocol(Protocol):
         level: str | None = None,
         subsystem: str | None = None,
         text: str | None = None,
+        client_ids: Sequence[str] | None = None,
     ) -> list[LogRecord]: ...
 
-    def logs_for_request(self, request_id: str, *, limit: int = 100) -> list[LogRecord]: ...
+    def logs_for_request(
+        self,
+        request_id: str,
+        *,
+        limit: int = 100,
+        client_id: str | None = None,
+    ) -> list[LogRecord]: ...
 
-    def flow_id_for_request(self, request_id: str) -> str | None: ...
+    def delete_logs(self) -> int: ...
+
+    def flow_id_for_request(
+        self, request_id: str, *, client_id: str | None = None
+    ) -> str | None: ...
+
+
+@runtime_checkable
+class ClientStoreProtocol(Protocol):
+    """Persisted app-instance registry plus per-app data housekeeping."""
+
+    def save_client(
+        self,
+        *,
+        client_id: str,
+        device_key: str,
+        bundle_id: str,
+        payload: dict[str, object],
+        first_seen: float,
+        last_seen: float,
+        superseded_by: str | None = None,
+    ) -> None: ...
+
+    def list_clients(self) -> list[dict[str, object]]: ...
+
+    def delete_clients(self, client_ids: Sequence[str]) -> int: ...
+
+    def delete_client_data(self, client_id: str) -> int: ...
+
+    def client_counts(self) -> dict[str, dict[str, int]]: ...
 
 
 @runtime_checkable

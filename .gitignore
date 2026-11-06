@@ -35,8 +35,10 @@ certs/
 *.mobileconfig
 secret.key
 .viewlift-ai.log
+.viewlift-ai-mcp.log
 
 # SwiftPM
+.build/
 ios/**/.build/
 .swiftpm/
 

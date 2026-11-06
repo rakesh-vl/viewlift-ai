@@ -21,10 +21,14 @@ from viewlift_ai.services.setup import SetupValidationError
 class _Advertiser:
     def __init__(self) -> None:
         self.published: list[tuple[str, int, str, str]] = []
+        self.alternates: list[tuple[str, ...]] = []
         self.stopped = 0
 
-    def publish(self, host: str, port: int, *, fingerprint: str, debug_key: str) -> None:
+    def publish(
+        self, host: str, port: int, *, fingerprint: str, debug_key: str, alt: tuple[str, ...] = ()
+    ) -> None:
         self.published.append((host, port, fingerprint, debug_key))
+        self.alternates.append(tuple(alt))
 
     def stop(self) -> None:
         self.stopped += 1

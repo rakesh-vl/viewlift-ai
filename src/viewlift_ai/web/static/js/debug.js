@@ -13,18 +13,34 @@
     selectedView: null,
     hierarchy: [],
     collapsed: new Set(),
-    hierarchyZoom: 0.45,
+    hierarchyZoom: 1,
+    hierarchyParents: new Map(),
+    hierarchyShot: null,
+    hierarchyDrawn: [],
+    describeId: "",
+    hierarchyView: { yaw: 0.55, pitch: 0.2, spacing: 18, panX: 0, panY: 0 },
     macro: null,
     bugImage: null,
     drawing: false,
     analytics: null,
-    analyticsFilter: "all",
     analyticsBeaconUrls: { user: "", player: "" },
+    selectedAnalyticsId: "",
+    analyticsFollow: false,
+    analyticsFollowSig: "",
+    analyticsFlowWs: null,
+    storagePath: "",
+    storageDbPath: "",
+    selectedStoragePath: "",
   };
 
   const escapeHtml = (value) => String(value ?? "")
     .replaceAll("&", "&amp;").replaceAll("<", "&lt;")
     .replaceAll(">", "&gt;").replaceAll('"', "&quot;");
+  const escapeAttr = (value) => escapeHtml(value).replaceAll("'", "&#39;");
+  const humanize = (key) => String(key)
+    .replace(/([a-z0-9])([A-Z])/g, "$1 $2")
+    .replace(/[_-]+/g, " ")
+    .replace(/^\w/, (char) => char.toUpperCase());
 
   const Debug = {
     async init() {
@@ -32,26 +48,41 @@
       this.bindCommands();
       this.bindForms();
       this.bindBugCanvas();
-      document.getElementById("debug-refresh").addEventListener("click", () => this.loadClients());
-      document.getElementById("debug-client").addEventListener("change", (event) => {
-        state.clientId = event.target.value;
-        state.client = JSON.parse(event.target.selectedOptions[0]?.dataset.client || "null");
-        this.renderClientStatus();
-        this.loadEvents();
+      document.getElementById("debug-refresh").addEventListener("click", async () => {
+        if (window.VLScope) await window.VLScope.refresh();
+        await this.loadClients();
       });
+      document.addEventListener("vl:scope-change", async () => {
+        await this.loadClients();
+        this.loadAnalyticsTraffic();
+        this.loadWaterfall();
+      });
+      document.addEventListener("vl:apps-change", () => this.loadClients());
       document.getElementById("macro-replay").addEventListener("click", () => {
         this.sendCommand("macro.replay", state.macro || { actions: [] });
       });
       document.getElementById("ott-spm-refresh")?.addEventListener("click", () => this.loadSpm());
       document.getElementById("analytics-refresh")?.addEventListener("click", () => this.loadAnalyticsTraffic());
-      document.querySelectorAll("[data-analytics-filter]").forEach((button) => {
-        button.addEventListener("click", () => {
-          document.querySelectorAll("[data-analytics-filter]").forEach((item) => item.classList.remove("active"));
-          button.classList.add("active");
-          state.analyticsFilter = button.dataset.analyticsFilter || "all";
+      ["af-kind", "af-method", "af-status", "af-host"].forEach((id) => {
+        document.getElementById(id)?.addEventListener("change", () => {
           this.renderAnalyticsTraffic();
+          this.followAnalytics();
         });
       });
+      document.getElementById("af-text")?.addEventListener("input", () => {
+        this.renderAnalyticsTraffic();
+        this.followAnalytics();
+      });
+      document.getElementById("analytics-follow")?.addEventListener("click", () => {
+        this.setAnalyticsFollow(!state.analyticsFollow);
+      });
+      document.getElementById("analytics-rows")?.addEventListener("click", (event) => {
+        const row = event.target.closest("tr[data-id]");
+        if (!row) return;
+        this.setAnalyticsFollow(false);
+        this.selectAnalytics(row.dataset.id);
+      });
+      this.bindStorage();
       document.getElementById("ui-expand").addEventListener("click", () => {
         state.collapsed.clear();
         this.drawHierarchy();
@@ -63,17 +94,17 @@
         this.drawHierarchy();
       });
       document.getElementById("ui-zoom-in").addEventListener("click", () => {
-        state.hierarchyZoom = Math.min(2, state.hierarchyZoom * 1.25);
-        this.drawHierarchy();
+        state.hierarchyZoom = Math.min(6, state.hierarchyZoom * 1.25);
+        this.drawHierarchy3D();
       });
       document.getElementById("ui-zoom-out").addEventListener("click", () => {
-        state.hierarchyZoom = Math.max(0.12, state.hierarchyZoom / 1.25);
-        this.drawHierarchy();
+        state.hierarchyZoom = Math.max(0.25, state.hierarchyZoom / 1.25);
+        this.drawHierarchy3D();
       });
+      this.bindHierarchyCanvas();
       await this.loadClients();
       await this.loadProfiles();
       await this.loadWaterfall();
-      await this.loadSpm();
       await this.loadAnalyticsTraffic();
       this.connectWebSocket();
     },
@@ -88,6 +119,13 @@
         document.querySelectorAll("[data-panel]").forEach((panel) => {
           panel.classList.toggle("hidden", panel.dataset.panel !== button.dataset.debugTab);
         });
+        if (button.dataset.debugTab === "storage") this.openStorage(state.storagePath || "");
+        if (button.dataset.debugTab === "analytics" && state.analyticsFollow) {
+          this.ensureAnalyticsFlowSocket();
+          this.loadAnalyticsTraffic();
+        } else if (state.analyticsFollow) {
+          this.closeAnalyticsFlowSocket();
+        }
       });
       tabs.querySelector("[data-debug-tab]")?.classList.add("active");
     },
@@ -125,6 +163,7 @@
           body: JSON.stringify({
             udid: document.getElementById("deeplink-udid").value.trim(),
             url: document.getElementById("deeplink-url").value.trim(),
+            client_id: state.clientId || null,
           }),
         });
         const data = await response.json();
@@ -132,40 +171,161 @@
       });
     },
 
+    /*
+     * Debug commands always target exactly one app. The global scope picks it; with
+     * "All apps" or a device scope, the only online app in that scope is used, otherwise
+     * the user must choose so two apps on one simulator never receive each other's commands.
+     */
+    targetClientId() {
+      const scope = window.VLScope;
+      if (!scope) return "";
+      const selected = scope.clientId();
+      if (selected) return selected;
+      const online = scope.onlineApps().filter((app) => scope.matches(app.id));
+      return online.length === 1 ? online[0].id : "";
+    },
+
     async loadClients() {
-      const data = await (await fetch("/api/debug/clients")).json();
-      const select = document.getElementById("debug-client");
       const previous = state.clientId;
-      select.innerHTML = (data.clients || []).map((client) => {
-        const label = `${client.app_name} · ${client.platform} ${client.os_version} · ${client.online ? "online" : "offline"}`;
-        return `<option value="${escapeHtml(client.id)}" data-client="${escapeHtml(JSON.stringify(client))}">${escapeHtml(label)}</option>`;
-      }).join("");
-      if (previous && [...select.options].some((option) => option.value === previous)) {
-        select.value = previous;
+      const next = this.targetClientId();
+      if (next !== previous) this.resetClientState();
+      state.clientId = next;
+      state.client = null;
+      if (next) {
+        try {
+          const response = await fetch(`/api/debug/app?client_id=${encodeURIComponent(next)}`);
+          if (response.ok) state.client = (await response.json()).client;
+        } catch (_) {
+          state.client = null;
+        }
+        if (!state.client && window.VLScope) state.client = window.VLScope.app(next);
       }
-      state.clientId = select.value || "";
-      state.client = select.selectedOptions[0]
-        ? JSON.parse(select.selectedOptions[0].dataset.client)
-        : null;
       this.renderClientStatus();
-      if (state.clientId) await this.loadEvents();
+      if (next !== previous) {
+        if (state.clientId) await this.loadEvents();
+        await this.loadSpm();
+        const storageOpen = document.querySelector('[data-panel="storage"]:not(.hidden)');
+        if (storageOpen && state.clientId) this.openStorage("");
+      }
+    },
+
+    resetClientState() {
+      Object.assign(state, {
+        samples: [],
+        selectedView: null,
+        hierarchy: [],
+        collapsed: new Set(),
+        hierarchyParents: new Map(),
+        hierarchyShot: null,
+        hierarchyDrawn: [],
+        describeId: "",
+        macro: null,
+        bugImage: null,
+        analytics: null,
+        analyticsBeaconUrls: { user: "", player: "" },
+        selectedAnalyticsId: "",
+        storagePath: "",
+        storageDbPath: "",
+        selectedStoragePath: "",
+      });
+      const clearIds = [
+        "ott-summary", "ott-sections", "ott-spm", "ott-frameworks", "analytics-clients",
+        "hangs-result", "performance-metrics", "memory-result", "ui-tree", "ui-properties",
+        "swiftui-result", "assets-result", "accessibility-result", "storage-inspector",
+        "storage-files", "flags-result", "bug-result", "macro-result", "runtime-result", "push-result",
+      ];
+      clearIds.forEach((id) => {
+        const node = document.getElementById(id);
+        if (node) node.innerHTML = "";
+      });
+      ["performance-chart", "memory-graph", "ui-3d", "bug-canvas"].forEach((id) => {
+        const canvas = document.getElementById(id);
+        if (canvas) canvas.getContext("2d").clearRect(0, 0, canvas.width, canvas.height);
+      });
+      const clients = document.getElementById("analytics-clients");
+      if (clients) clients.style.display = "none";
+      const detail = document.getElementById("analytics-detail");
+      if (detail) {
+        detail.innerHTML = `<p class="muted empty">Select a beacon or client call to see params, request, and body.</p>`;
+      }
+      const title = document.getElementById("analytics-detail-title");
+      if (title) title.textContent = "Detail";
+      const count = document.getElementById("analytics-count");
+      if (count) count.textContent = "0";
+      const crumb = document.getElementById("storage-crumb");
+      if (crumb) crumb.innerHTML = "";
+      const sqlPath = document.getElementById("storage-sql-path");
+      if (sqlPath) sqlPath.textContent = "Select a database";
+    },
+
+    renderChooser() {
+      const scope = window.VLScope;
+      const node = document.getElementById("debug-client-status");
+      const online = scope ? scope.onlineApps().filter((app) => scope.matches(app.id)) : [];
+      if (!online.length) {
+        node.textContent = "No debug app is online. Run a debug build that links ViewliftNetworkCapture.";
+        return;
+      }
+      node.innerHTML = `<span>${online.length} apps are online. Pick one to run debug tools:</span>`
+        + online.map((app) => `<button type="button" class="btn ghost" data-pick-app="${escapeHtml(app.id)}">`
+          + `${escapeHtml(app.app_name)} · ${escapeHtml(app.device_name || app.platform || "")}</button>`).join("");
+      node.querySelectorAll("[data-pick-app]").forEach((button) => {
+        button.addEventListener("click", () => scope.set(`c:${button.dataset.pickApp}`));
+      });
     },
 
     renderClientStatus() {
       const node = document.getElementById("debug-client-status");
+      const name = document.getElementById("debug-client-name");
+      this.renderIdentity();
       if (!state.client) {
-        node.textContent = "No debug app is paired. Build and run AppCMS Debug.";
+        if (name) name.textContent = "No app selected";
+        this.renderChooser();
         return;
+      }
+      if (name) {
+        const where = state.client.device_name || state.client.device_model || state.client.platform || "";
+        name.innerHTML = `${window.VLScope ? window.VLScope.badge(state.client.id) : ""}`
+          + `${escapeHtml(state.client.app_name)}${where ? ` <span class="muted">on ${escapeHtml(where)}</span>` : ""}`;
+      }
+      const udidInput = document.getElementById("deeplink-udid");
+      if (udidInput && !udidInput.value && state.client.is_simulator && state.client.device_key) {
+        udidInput.value = state.client.device_key;
       }
       const capabilities = Object.entries(state.client.capabilities || {})
         .map(([name, status]) => `<span class="capability ${escapeHtml(status)}">${escapeHtml(name)}: ${escapeHtml(status)}</span>`)
         .join(" · ");
       node.innerHTML = capabilities;
+      const schemes = state.client.url_schemes || [];
+      const deeplink = document.getElementById("deeplink-url");
+      if (deeplink && schemes.length) deeplink.placeholder = `${schemes[0]}://`;
+    },
+
+    renderIdentity() {
+      const target = document.getElementById("app-identity");
+      if (!target) return;
+      const client = state.client;
+      if (!client) {
+        target.innerHTML = "";
+        return;
+      }
+      const rows = [
+        ["App", client.app_name],
+        ["Device", [client.device_name, client.device_model].filter(Boolean).join(" · ")],
+        ["Bundle id", client.bundle_id],
+        ["Version", [client.app_version, client.build ? `(${client.build})` : ""].filter(Boolean).join(" ")],
+        ["Platform", [client.platform, client.os_version].filter(Boolean).join(" ")],
+        ["Executable", client.executable],
+        ["Capture SDK", client.sdk_version],
+      ].filter(([, value]) => value);
+      target.innerHTML = rows
+        .map(([label, value]) => `<div class="metric"><span class="muted">${escapeHtml(label)}</span><strong>${escapeHtml(value)}</strong></div>`)
+        .join("");
     },
 
     async sendCommand(name, payload) {
       if (!state.clientId) {
-        alert("No paired debug app.");
+        alert("Choose one app in Scope first. Several apps may be running on this device.");
         return;
       }
       let confirmation = null;
@@ -203,7 +363,7 @@
       socket.addEventListener("message", (event) => {
         let data;
         try { data = JSON.parse(event.data); } catch (_) { return; }
-        if (data.type === "debug-client") this.loadClients();
+        if (data.type === "debug-client" && data.client?.id === state.clientId) this.loadClients();
         if (data.type === "debug-event" && data.event?.client_id === state.clientId) {
           this.handleEvent(data.event);
         }
@@ -229,6 +389,10 @@
       if (event.kind !== "command-result") return;
       const data = event.payload || {};
       if (!data.ok) {
+        if (data.name === "ui.describe") {
+          this.renderDescribe({ found: false, error: data.error || "Command failed" });
+          return;
+        }
         this.renderError(event.module, data.error || "Command failed");
         return;
       }
@@ -244,6 +408,7 @@
       if (name === "hang.list" || name === "crash.list") return this.renderStacks(name, result);
       if (name.startsWith("memory.")) return this.renderMemory(result);
       if (name === "ui.hierarchy") return this.renderHierarchy(result);
+      if (name === "ui.describe") return this.renderDescribe(result);
       if (name === "ui.screenshot") return this.renderScreenshot(result, "ui-properties");
       if (name === "swiftui.renders") return this.renderTable("swiftui-result", result.components || []);
       if (name === "assets.audit") return this.renderTable("assets-result", result.assets || []);
@@ -273,35 +438,35 @@
         return;
       }
       host.style.display = "block";
-      host.innerHTML = `<h3>Device-registered VLAnalytics clients</h3>`
+      host.innerHTML = `<h3>Analytics clients reported by the app</h3>`
         + this.kvHtml({
           configured: analytics.configured,
           clients: (clients || []).join(", "),
           user_beacon_url: beacons.user_beacon_url || "",
           player_beacon_url: beacons.player_beacon_url || "",
-          clever_tap: analytics.flags?.clever_tap,
-          apps_flyer: analytics.flags?.apps_flyer,
-          braze: analytics.flags?.braze,
-          adobe: analytics.flags?.adobe,
-          comscore: analytics.flags?.comscore,
-          conviva: analytics.flags?.conviva,
-          airship: analytics.flags?.airship,
-          data_dog: analytics.flags?.data_dog,
-          facebook: analytics.flags?.facebook,
+          ...(analytics.flags || {}),
         });
       this.loadAnalyticsTraffic();
     },
 
     async loadAnalyticsTraffic() {
+      const gen = (state.analyticsGen = (state.analyticsGen || 0) + 1);
       const params = new URLSearchParams({ limit: "400" });
       if (state.analyticsBeaconUrls.user) params.set("user_beacon_url", state.analyticsBeaconUrls.user);
       if (state.analyticsBeaconUrls.player) params.set("player_beacon_url", state.analyticsBeaconUrls.player);
+      if (window.VLScope) window.VLScope.applyTo(params);
       try {
-        state.analytics = await (await fetch(`/api/debug/analytics/traffic?${params}`)).json();
+        const data = await (await fetch(`/api/debug/analytics/traffic?${params}`)).json();
+        if (gen !== state.analyticsGen) return;
+        state.analytics = data;
         this.renderAnalyticsTraffic();
+        this.followAnalytics();
       } catch (error) {
+        if (gen !== state.analyticsGen) return;
         const target = document.getElementById("analytics-rows");
-        if (target) target.textContent = String(error);
+        if (target) {
+          target.innerHTML = `<tr><td colspan="7" class="muted">${escapeHtml(error)}</td></tr>`;
+        }
       }
     },
 
@@ -321,182 +486,324 @@
           .map(([label, value]) => `<div class="metric"><span class="muted">${escapeHtml(label)}</span><strong>${escapeHtml(value)}</strong></div>`)
           .join("");
       }
-      let rows = [];
-      if (state.analyticsFilter === "user_beacon") rows = data.user_beacon || [];
-      else if (state.analyticsFilter === "player_beacon") rows = data.player_beacon || [];
-      else if (state.analyticsFilter === "clients") rows = data.clients || [];
-      else {
-        rows = [
-          ...(data.user_beacon || []),
-          ...(data.player_beacon || []),
-          ...(data.beacon || []),
-          ...(data.clients || []),
-        ];
-      }
-      rows = rows.slice().sort((a, b) => String(b.created_at).localeCompare(String(a.created_at)));
+      const all = this.allAnalyticsRows();
+      this.syncAnalyticsSelects(all);
+      const rows = this.filterAnalytics(all);
+      const count = document.getElementById("analytics-count");
+      if (count) count.textContent = String(rows.length);
       const target = document.getElementById("analytics-rows");
       if (!target) return;
       if (!rows.length) {
-        target.innerHTML = `<p class="muted">No matching analytics traffic in captured flows. Play content / navigate, then refresh.</p>`;
+        target.innerHTML = `<tr><td colspan="7" class="muted">No matching analytics traffic. Play content or navigate, then refresh.</td></tr>`;
         return;
       }
-      target.innerHTML = rows.map((row) => {
-        const params = row.params || {};
-        const paramHtml = Object.keys(params).length
-          ? `<dl class="ott-kv">${Object.entries(params).map(([key, value]) => {
-            const text = typeof value === "object" ? JSON.stringify(value) : String(value);
-            return `<dt>${escapeHtml(key)}</dt><dd>${escapeHtml(text)}</dd>`;
-          }).join("")}</dl>`
-          : `<p class="muted">No parsed params</p>`;
-        return `<div class="stack-event">
-          <h4>${escapeHtml(row.category)} · ${escapeHtml(row.event_hint || "")} · ${escapeHtml(row.method)} ${escapeHtml(row.status ?? "")}</h4>
-          <p><a href="/flows/${encodeURIComponent(row.id)}">${escapeHtml(row.host)}${escapeHtml(row.path || "")}</a>
-          <span class="muted"> · ${escapeHtml(row.source || "")} · ${escapeHtml(row.created_at || "")}</span></p>
-          ${paramHtml}
-        </div>`;
-      }).join("");
-      // #region agent log
-      fetch('http://127.0.0.1:7666/ingest/82fbf0b7-a054-4463-8681-d068ac48fa59',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'93a126'},body:JSON.stringify({sessionId:'93a126',location:'debug.js:renderAnalyticsTraffic',message:'analytics rows rendered',data:{filter:state.analyticsFilter,rows:rows.length,total:data.total||0,counts},timestamp:Date.now(),hypothesisId:'H1-analytics'})}).catch(()=>{});
-      // #endregion
+      target.innerHTML = rows.map((row) => `
+        <tr data-id="${escapeAttr(row.id)}"${row.id === state.selectedAnalyticsId ? ' class="active"' : ""}>
+          <td>${escapeHtml(String(row.created_at || "").replace("T", " ").slice(0, 19))}</td>
+          <td>${escapeHtml(this.kindLabel(row.category))}</td>
+          <td class="method ${escapeAttr(row.method)}">${escapeHtml(row.method || "")}</td>
+          <td>${escapeHtml(row.status ?? "")}</td>
+          <td title="${escapeAttr(row.host || "")}">${escapeHtml(row.host || "")}</td>
+          <td title="${escapeAttr(row.path || "")}">${escapeHtml(row.path || "")}</td>
+          <td title="${escapeAttr(row.event_hint || "")}">${escapeHtml(row.event_hint || "")}</td>
+        </tr>`).join("");
+    },
+
+    allAnalyticsRows() {
+      const data = state.analytics || {};
+      return [
+        ...(data.user_beacon || []),
+        ...(data.player_beacon || []),
+        ...(data.beacon || []),
+        ...(data.clients || []),
+      ].sort((a, b) => String(b.created_at).localeCompare(String(a.created_at)));
+    },
+
+    kindLabel(category) {
+      if (category === "user_beacon") return "User beacon";
+      if (category === "player_beacon") return "Player beacon";
+      if (category === "beacon") return "Other beacon";
+      if (String(category || "").startsWith("client:")) return category.slice("client:".length);
+      return category || "";
+    },
+
+    syncAnalyticsSelects(rows) {
+      const statuses = [...new Set(rows.map((row) => row.status).filter((value) => value != null && value !== ""))]
+        .map(String)
+        .sort((a, b) => Number(a) - Number(b) || a.localeCompare(b));
+      const hosts = [...new Set(rows.map((row) => row.host).filter(Boolean))].sort((a, b) => a.localeCompare(b));
+      const clients = [...new Set(
+        rows.map((row) => row.category).filter((value) => String(value || "").startsWith("client:"))
+      )].sort((a, b) => this.kindLabel(a).localeCompare(this.kindLabel(b)));
+      this.fillSelect("af-status", statuses.map((value) => ({ value, label: value })));
+      this.fillSelect("af-host", hosts.map((value) => ({ value, label: value })));
+      this.fillSelect("af-kind", clients.map((value) => ({ value, label: this.kindLabel(value) })), true);
+    },
+
+    fillSelect(id, entries, keepExisting) {
+      const el = document.getElementById(id);
+      if (!el) return;
+      const current = el.value;
+      const head = [];
+      if (keepExisting) {
+        [...el.options].forEach((option) => {
+          if (!String(option.value).startsWith("client:")) head.push(option.outerHTML);
+        });
+      } else {
+        const first = el.options[0];
+        head.push(first && first.value === ""
+          ? `<option value="">${escapeHtml(first.textContent)}</option>`
+          : `<option value="">Any</option>`);
+      }
+      el.innerHTML = head.join("") + entries
+        .map((entry) => `<option value="${escapeAttr(entry.value)}">${escapeHtml(entry.label)}</option>`)
+        .join("");
+      const allowed = new Set([...el.options].map((option) => option.value));
+      el.value = allowed.has(current) ? current : "";
+    },
+
+    filterAnalytics(rows) {
+      const kind = document.getElementById("af-kind")?.value || "";
+      const method = (document.getElementById("af-method")?.value || "").toUpperCase();
+      const status = document.getElementById("af-status")?.value || "";
+      const host = document.getElementById("af-host")?.value || "";
+      const text = (document.getElementById("af-text")?.value || "").trim().toLowerCase();
+      return rows.filter((row) => {
+        if (kind && row.category !== kind) return false;
+        if (method && String(row.method || "").toUpperCase() !== method) return false;
+        if (status && String(row.status ?? "") !== status) return false;
+        if (host && row.host !== host) return false;
+        if (text) {
+          const hay = [
+            row.event_hint, row.path, row.host, row.query, JSON.stringify(row.params || {}),
+          ].join(" ").toLowerCase();
+          if (!hay.includes(text)) return false;
+        }
+        return true;
+      });
+    },
+
+    async selectAnalytics(id) {
+      const gen = (state.analyticsDetailGen = (state.analyticsDetailGen || 0) + 1);
+      state.selectedAnalyticsId = id;
+      document.querySelectorAll("#analytics-rows tr").forEach((row) => {
+        row.classList.toggle("active", row.dataset.id === id);
+      });
+      const row = this.allAnalyticsRows().find((item) => item.id === id);
+      const title = document.getElementById("analytics-detail-title");
+      const detail = document.getElementById("analytics-detail");
+      if (!row || !detail) return;
+      if (title) title.textContent = `${row.method || ""} ${row.host || ""}${row.path || ""}`;
+      const query = row.query ? `<p class="muted">?${escapeHtml(row.query)}</p>` : "";
+      detail.innerHTML = `
+        <h3>Params</h3>
+        ${query}
+        ${this.paramsHtml(row.params)}
+        <p><a href="/flows/${encodeURIComponent(row.id)}">Open flow page</a></p>
+        <h3>Request</h3>
+        <div id="analytics-flow"><p class="muted">Loading request…</p></div>
+      `;
+      this.scrollAnalyticsRow(id);
+      try {
+        const response = await fetch(`/api/flows/${encodeURIComponent(id)}`);
+        const host = document.getElementById("analytics-flow");
+        if (!host || state.analyticsDetailGen !== gen || state.selectedAnalyticsId !== id) return;
+        if (!response.ok) {
+          host.innerHTML = `<p class="muted">Flow not found</p>`;
+          return;
+        }
+        const flow = await response.json();
+        if (state.analyticsDetailGen !== gen || state.selectedAnalyticsId !== id) return;
+        if (window.ViewliftNetwork && typeof ViewliftNetwork.renderDetail === "function") {
+          ViewliftNetwork.renderDetail(flow, host);
+        } else {
+          host.textContent = JSON.stringify(flow, null, 2);
+        }
+      } catch (error) {
+        const host = document.getElementById("analytics-flow");
+        if (host && state.analyticsDetailGen === gen && state.selectedAnalyticsId === id) host.textContent = String(error);
+      }
+    },
+
+    setAnalyticsFollow(on) {
+      state.analyticsFollow = on;
+      const button = document.getElementById("analytics-follow");
+      if (button) {
+        button.classList.toggle("active", on);
+        button.setAttribute("aria-pressed", on ? "true" : "false");
+        button.textContent = on ? "Following" : "Follow latest";
+      }
+      if (!on) {
+        this.closeAnalyticsFlowSocket();
+        return;
+      }
+      if (this.analyticsTabVisible()) this.ensureAnalyticsFlowSocket();
+      this.loadAnalyticsTraffic();
+    },
+
+    analyticsTabVisible() {
+      const panel = document.querySelector('[data-panel="analytics"]');
+      return !!panel && !panel.classList.contains("hidden");
+    },
+
+    followAnalytics() {
+      if (!state.analyticsFollow) return;
+      const latest = this.filterAnalytics(this.allAnalyticsRows())[0];
+      if (!latest) return;
+      const sig = `${latest.id}|${latest.status}|${latest.created_at}|${Object.keys(latest.params || {}).length}`;
+      if (sig === state.analyticsFollowSig && latest.id === state.selectedAnalyticsId) {
+        this.scrollAnalyticsRow(latest.id);
+        return;
+      }
+      state.analyticsFollowSig = sig;
+      this.selectAnalytics(latest.id);
+    },
+
+    scrollAnalyticsRow(id) {
+      const row = document.querySelector(`#analytics-rows tr[data-id="${CSS.escape(id)}"]`);
+      if (row) row.scrollIntoView({ block: "nearest", inline: "nearest" });
+    },
+
+    ensureAnalyticsFlowSocket() {
+      const current = state.analyticsFlowWs;
+      if (current && (current.readyState === 0 || current.readyState === 1)) return;
+      const proto = location.protocol === "https:" ? "wss" : "ws";
+      const socket = new WebSocket(`${proto}://${location.host}/ws/flows`);
+      state.analyticsFlowWs = socket;
+      socket.addEventListener("message", () => {
+        if (!state.analyticsFollow) return;
+        clearTimeout(state.analyticsFollowTimer);
+        state.analyticsFollowTimer = setTimeout(() => this.loadAnalyticsTraffic(), 200);
+      });
+      socket.addEventListener("close", () => {
+        if (state.analyticsFlowWs !== socket) return;
+        state.analyticsFlowWs = null;
+        if (state.analyticsFollow && this.analyticsTabVisible()) {
+          setTimeout(() => this.ensureAnalyticsFlowSocket(), 1500);
+        }
+      });
+    },
+
+    closeAnalyticsFlowSocket() {
+      const socket = state.analyticsFlowWs;
+      state.analyticsFlowWs = null;
+      clearTimeout(state.analyticsFollowTimer);
+      if (!socket) return;
+      try { socket.close(); } catch (_) { /* already closed */ }
+    },
+
+    paramsHtml(params) {
+      const entries = Object.entries(params || {});
+      if (!entries.length) return `<p class="muted">No parsed params</p>`;
+      return `<dl class="ott-kv">${entries.map(([key, value]) => {
+        const text = value && typeof value === "object" ? JSON.stringify(value, null, 2) : String(value);
+        const body = text.includes("\n") ? `<pre class="pre">${escapeHtml(text)}</pre>` : escapeHtml(text);
+        return `<dt>${escapeHtml(key)}</dt><dd>${body}</dd>`;
+      }).join("")}</dl>`;
     },
 
     async loadSpm() {
       const target = document.getElementById("ott-spm");
+      const source = document.getElementById("ott-spm-source");
+      const frameworks = document.getElementById("ott-frameworks");
       if (!target) return;
+      const params = new URLSearchParams();
+      if (state.clientId) params.set("client_id", state.clientId);
       try {
-        const data = await (await fetch("/api/debug/ott/spm")).json();
+        const data = await (await fetch(`/api/debug/packages?${params}`)).json();
+        this.renderRuntimeFrameworks(frameworks, data.runtime_frameworks || []);
         if (!data.ok) {
-          target.textContent = data.error || "SPM load failed";
+          if (source) source.textContent = data.error || "No packages detected.";
+          target.innerHTML = "";
           return;
         }
+        const app = data.app || {};
+        const how = data.source === "workspace-state" ? "Xcode resolved state" : "Package.resolved";
+        const sdk = data.capture_sdk;
+        if (sdk && state.client && !state.client.sdk_version) {
+          state.client.sdk_version = sdk.version || sdk.branch || (sdk.revision || "").slice(0, 8);
+          this.renderIdentity();
+        }
+        if (source) {
+          source.textContent = [
+            `${data.count} packages`,
+            `${app.bundle_id || app.executable} ${app.configuration ? `(${app.configuration})` : ""}`.trim(),
+            `matched by ${app.matched_by}`,
+            `built ${app.built_at ? new Date(app.built_at).toLocaleString() : "unknown"}`,
+            `from ${how}`,
+            data.workspace || data.derived_data,
+          ].filter(Boolean).join(" · ");
+        }
         const rows = (data.packages || []).map((pkg) => ({
-          identity: pkg.identity,
-          version: pkg.version || pkg.revision,
+          package: pkg.identity,
+          version: pkg.version,
+          revision: pkg.revision,
           location: pkg.location,
         }));
-        target.innerHTML = `<p class="muted">${escapeHtml(data.count)} packages · ${escapeHtml(data.path)}</p>`
-          + this.tableHtml(rows);
+        target.innerHTML = this.tableHtml(rows);
       } catch (error) {
         target.textContent = String(error);
       }
     },
 
+    renderRuntimeFrameworks(target, frameworks) {
+      if (!target) return;
+      if (!frameworks.length) {
+        target.innerHTML = `<p class="muted">The paired app has not reported loaded frameworks. Update ViewliftNetworkCapture in the app.</p>`;
+        return;
+      }
+      target.innerHTML = this.tableHtml(frameworks.map((item) => ({
+        framework: item.name || item.id,
+        bundle_id: item.id,
+        version: item.version || "",
+      })));
+    },
+
     renderOtt(result) {
-      const flow = result.flow || {};
-      const session = result.session || {};
-      const user = result.user || {};
-      const parental = result.parental || {};
-      const sub = result.subscription || {};
-      const entitlements = result.entitlements_v2 || {};
-      const entitlementCache = result.entitlement_cache || {};
-      const tve = result.tve || {};
-      const page = result.page || {};
-      const player = result.player || {};
-      const geo = result.geo || {};
-      const site = result.site_features || {};
-      const lists = result.user_lists || {};
-      const summary = [
-        ["Platform", result.platform || result.device?.platform || "—"],
-        ["Flow", flow.name || (user.logged_in ? "logged_in" : "guest")],
-        ["Guest", String(flow.is_guest ?? !(user.logged_in))],
-        ["Logged in", String(flow.is_logged_in ?? user.logged_in ?? false)],
-        ["Subscribed", String(entitlements.is_subscribed ?? sub.is_user_subscribed_effective ?? sub.is_subscribed ?? false)],
-        ["SVOD", String(entitlements.has_svod ?? false)],
-        ["Plan", entitlements.svod_plan_id || sub.plan_id || sub.subscription_plan || "—"],
-        ["TVOD buys", String(entitlements.purchased_content_count ?? sub.purchased_content_ids_count ?? 0)],
-        ["TVE", String(tve.signed_in_via_tve ?? false)],
-        ["MVPD", tve.selected_provider_title || tve.mvpd_provider || "—"],
-        ["Player", player.visible ? (player.title || player.content_id || "on") : "off"],
-        ["Entitlement API", player.entitlement?.is_success != null ? String(player.entitlement.is_success) : `cache ${entitlementCache.bulk_key_count ?? 0}`],
-        ["Country", geo.country_code || user.country_code || "—"],
-        ["Auth token", session.auth_token_present ? "present" : "missing"],
-        ["Parental", parental.user_enabled ? `on (${parental.rating || "no rating"})` : "off"],
-        ["Page modules", String(page.module_count ?? 0)],
-        ["Watchlist", String(lists.watchlist_count ?? 0)],
-      ];
-      document.getElementById("ott-summary").innerHTML = summary
-        .map(([label, value]) => `<div class="metric"><span class="muted">${escapeHtml(label)}</span><strong>${escapeHtml(value)}</strong></div>`)
+      const snapshot = result || {};
+      const isScalar = (value) => value === null || ["string", "number", "boolean"].includes(typeof value);
+      const summarySource = snapshot.summary && typeof snapshot.summary === "object"
+        ? snapshot.summary
+        : Object.fromEntries(Object.entries(snapshot).filter(([, value]) => isScalar(value)));
+      document.getElementById("ott-summary").innerHTML = Object.entries(summarySource)
+        .filter(([, value]) => isScalar(value) && value !== "")
+        .map(([key, value]) => `<div class="metric"><span class="muted">${escapeHtml(humanize(key))}</span><strong>${escapeHtml(String(value))}</strong></div>`)
         .join("");
-      const sections = [
-        ["Flow (guest / login / TVE)", flow],
-        ["Session (tokens metadata only)", session],
-        ["User", user],
-        ["Geo / locale", geo],
-        ["Parental", parental],
-        ["Subscription / plan", sub],
-        ["Entitlements v2 (SVOD/TVOD/TVE)", entitlements],
-        ["Entitlement API cache (/v3/entitlement)", entitlementCache],
-        ["Plan feature gates", result.plan_features || {}],
-        ["TVE", tve],
-        ["Profiles", result.profiles || {}],
-        ["Personalization", result.personalization || {}],
-        ["Devices", result.devices || {}],
-        ["Watchlist / history", lists],
-        ["Live player / video", player],
-        ["Player prefs", result.player_prefs || {}],
-        ["Content filter", result.content_filter || {}],
-        ["Theme", result.theme || {}],
-        ["Config", result.config || {}],
-        ["Site features", site],
-        ["DRM", result.drm || {}],
-        ["SSO", result.sso || {}],
-        ["Navigation", result.navigation || {}],
-        ["Navigation catalog", result.navigation_catalog || {}],
-        ["Device / app", result.device || result.bundle || {}],
-        ["Analytics clients", result.analytics || {}],
-        ["Page", {
-          page_id: page.page_id,
-          page_path: page.page_path,
-          page_title: page.page_title,
-          module_count: page.module_count,
-          visible: page.visible,
-          source: page.source,
-          platform: page.platform,
-          top_vc: page.top_vc,
-          note: page.note,
-        }],
-      ];
-      let html = sections.map(([title, data]) => this.ottCard(title, data)).join("");
-      const modules = page.modules || [];
-      if (modules.length) {
-        html += `<div class="ott-card"><h3>Modules (${modules.length})</h3>`;
-        html += modules.map((mod, index) => {
-          const meta = mod.metadata_map || {};
-          const layout = mod.layout || {};
-          return `<details><summary>${escapeHtml(index + 1)}. ${escapeHtml(mod.module_type || "?")} · ${escapeHtml(mod.module_title || mod.module_id || "")}</summary>`
-            + this.kvHtml({
-              module_id: mod.module_id,
-              content_type: mod.content_type,
-              items: mod.item_count,
-              layout_view: layout.view,
-              layout_type: layout.type,
-              block_name: layout.block_name,
-              metadata_keys: Object.keys(meta).join(", "),
-            })
-            + (Object.keys(meta).length ? `<h4>metadataMap</h4>${this.kvHtml(meta)}` : "")
-            + (layout.settings ? `<h4>layout.settings</h4><pre>${escapeHtml(JSON.stringify(layout.settings, null, 2))}</pre>` : "")
-            + (layout.font_settings ? `<h4>font_settings</h4><pre>${escapeHtml(JSON.stringify(layout.font_settings, null, 2))}</pre>` : "")
-            + `</details>`;
-        }).join("");
-        html += `</div>`;
-      }
-      if (player.visible && player.stream) {
-        html += `<div class="ott-card"><h3>Player stream (no secrets)</h3>${this.kvHtml(player.stream)}`
-          + (player.entitlement ? `<h4>Entitlement response</h4>${this.kvHtml(player.entitlement)}` : "")
-          + `</div>`;
-      }
-      if (Array.isArray(result.frameworks) && result.frameworks.length) {
-        html += `<div class="ott-card"><h3>Linked frameworks (${result.frameworks.length})</h3>`
-          + `<pre>${escapeHtml(result.frameworks.join("\n"))}</pre></div>`;
-      }
-      document.getElementById("ott-sections").innerHTML = html;
-      // #region agent log
-      fetch('http://127.0.0.1:7666/ingest/82fbf0b7-a054-4463-8681-d068ac48fa59',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'93a126'},body:JSON.stringify({sessionId:'93a126',location:'debug.js:renderOtt',message:'ott snapshot rendered',data:{flow:flow.name,guest:!!flow.is_guest,logged_in:!!flow.is_logged_in,modules:modules.length,subscribed:!!(sub.is_user_subscribed_effective||sub.is_subscribed),has_svod:!!entitlements.has_svod,player_visible:!!player.visible,entitlement_cache:entitlementCache.bulk_key_count||0,tve:!!tve.signed_in_via_tve,auth_present:!!session.auth_token_present,pin_exposed:parental.pin_value_exposed===true,token_exposed:session.token_values_exposed===true,platform:result.platform||null},timestamp:Date.now(),hypothesisId:'H-expand'})}).catch(()=>{});
-      // #endregion
+      const sections = Object.entries(snapshot).filter(([key, value]) => key !== "summary" && !isScalar(value));
+      document.getElementById("ott-sections").innerHTML = sections.length
+        ? sections.map(([key, value]) => this.ottCard(humanize(key), value)).join("")
+        : `<p class="muted">The snapshot has no sections.</p>`;
     },
 
     ottCard(title, data) {
-      return `<div class="ott-card"><h3>${escapeHtml(title)}</h3>${this.kvHtml(data)}</div>`;
+      if (Array.isArray(data)) {
+        return `<div class="ott-card"><h3>${escapeHtml(title)} (${data.length})</h3>${this.listHtml(data)}</div>`;
+      }
+      const flat = {};
+      const nested = [];
+      Object.entries(data || {}).forEach(([key, value]) => {
+        if (value && typeof value === "object" && (Array.isArray(value) ? value.some((item) => item && typeof item === "object") : true)) {
+          nested.push([key, value]);
+        } else {
+          flat[key] = Array.isArray(value) ? value.join(", ") : value;
+        }
+      });
+      const nestedHtml = nested.map(([key, value]) => {
+        const label = Array.isArray(value) ? `${humanize(key)} (${value.length})` : humanize(key);
+        const body = Array.isArray(value) ? this.listHtml(value) : this.kvHtml(value);
+        return `<details><summary>${escapeHtml(label)}</summary>${body}</details>`;
+      }).join("");
+      return `<div class="ott-card"><h3>${escapeHtml(title)}</h3>${this.kvHtml(flat)}${nestedHtml}</div>`;
+    },
+
+    listHtml(items) {
+      if (!items.length) return `<p class="muted">empty</p>`;
+      return items.map((item, index) => {
+        if (!item || typeof item !== "object") return `<div class="mono">${escapeHtml(String(item))}</div>`;
+        const label = item.name || item.title || item.id || item.module_type || `#${index + 1}`;
+        return `<details><summary>${escapeHtml(index + 1)}. ${escapeHtml(String(label))}</summary>`
+          + `<pre>${escapeHtml(JSON.stringify(item, null, 2))}</pre></details>`;
+      }).join("");
     },
 
     kvHtml(data) {
@@ -536,10 +843,6 @@
             }).join("")
             + `</div>`;
         }).join("");
-      // #region agent log
-      const withLine = events.reduce((n, ev) => n + (ev.frames || []).filter((f) => f.line != null).length, 0);
-      fetch('http://127.0.0.1:7666/ingest/82fbf0b7-a054-4463-8681-d068ac48fa59',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'93a126'},body:JSON.stringify({sessionId:'93a126',location:'debug.js:renderStacks',message:'stacks rendered',data:{name,events:events.length,withLine},timestamp:Date.now(),hypothesisId:'H1/H3'})}).catch(()=>{});
-      // #endregion
     },
 
     tableHtml(rows) {
@@ -633,10 +936,318 @@
 
     renderHierarchy(result) {
       state.hierarchy = result.windows || [];
-      state.collapsed = new Set(this.hierarchyNodes()
-        .filter(({ node, depth }) => depth >= 2 && (node.children || []).length)
+      state.selectedView = null;
+      state.describeId = "";
+      const flat = this.hierarchyNodes();
+      state.hierarchyParents = new Map();
+      flat.forEach(({ node }) => {
+        (node.children || []).forEach((child) => state.hierarchyParents.set(String(child.id), String(node.id)));
+      });
+      state.collapsed = new Set(flat
+        .filter(({ node, depth }) => depth >= 10 && (node.children || []).length)
         .map(({ node }) => String(node.id)));
+      state.hierarchyShot = null;
+      const shot = result.screenshot;
+      if (shot && shot.base64) {
+        const image = new Image();
+        const entry = { image, width: Number(shot.width) || 0, height: Number(shot.height) || 0 };
+        image.onload = () => {
+          if (state.hierarchyShot === entry) this.drawHierarchy3D();
+        };
+        image.src = `data:${shot.mime || "image/jpeg"};base64,${shot.base64}`;
+        state.hierarchyShot = entry;
+      }
+      const props = document.getElementById("ui-properties");
+      if (props) {
+        const notes = [];
+        if (result.truncated) notes.push("Hierarchy truncated at the SDK node budget.");
+        if (!shot) notes.push("No screenshot in payload; layers show colors only. Update the SDK for textures.");
+        notes.push("Select a view in the tree or click a layer.");
+        props.textContent = notes.join(" ");
+      }
       this.drawHierarchy();
+    },
+
+    findHierarchyNode(id) {
+      const match = this.hierarchyNodes().find(({ node }) => String(node.id) === id);
+      return match ? match.node : null;
+    },
+
+    selectView(id, reveal) {
+      const node = this.findHierarchyNode(id);
+      if (!node) return;
+      state.selectedView = node;
+      if (reveal) {
+        let parent = state.hierarchyParents.get(id);
+        while (parent) {
+          state.collapsed.delete(parent);
+          parent = state.hierarchyParents.get(parent);
+        }
+      }
+      this.drawHierarchy();
+      if (reveal) {
+        document.querySelector(`#ui-tree [data-view-id="${CSS.escape(id)}"]`)
+          ?.scrollIntoView({ block: "nearest" });
+      }
+      state.describeId = id;
+      this.paintViewSheet(node, null, "");
+      this.sendCommand("ui.describe", { id });
+    },
+
+    renderDescribe(result) {
+      if (!state.describeId) return;
+      if (result.id && String(result.id) !== String(state.describeId)) return;
+      const node = this.findHierarchyNode(state.describeId);
+      if (!node) return;
+      this.paintViewSheet(node, result.found ? result : null, result.error || "");
+    },
+
+    paintViewSheet(node, detail, error) {
+      const props = document.getElementById("ui-properties");
+      if (!props) return;
+      const role = (detail && detail.role) || node.role || "uikit";
+      const labels = { uikit: "UIKit", swiftui: "SwiftUI", "uikit-in-swiftui": "UIKit inside SwiftUI" };
+      const title = (detail && detail.title) || node.class || "View";
+      const summary = (detail && detail.summary) || "Reading properties from the app…";
+      const sections = (detail && detail.sections) || this.fallbackSections(node);
+      const body = sections.map((section) => {
+        const rows = (section.rows || []).map((row) =>
+          `<div class="view-row"><span>${escapeHtml(row.label)}</span><strong>${escapeHtml(row.value)}</strong></div>`
+        ).join("");
+        return `<section class="view-section"><h4>${escapeHtml(section.title)}</h4>${rows}</section>`;
+      }).join("");
+      let note = "";
+      if (error) {
+        const stale = String(error).includes("unsupportedCommand");
+        note = stale
+          ? "Full property sheet needs an app rebuild with this SDK. The summary above is from the hierarchy."
+          : error;
+      }
+      props.innerHTML = `<div class="view-sheet"><div class="view-sheet-head"><span class="view-role">${escapeHtml(labels[role] || role)}</span><h3>${escapeHtml(title)}</h3><button class="btn ghost" id="ui-highlight" type="button">Highlight</button></div><p>${escapeHtml(summary)}</p>${note ? `<p class="warn-text">${escapeHtml(note)}</p>` : ""}${body}</div>`;
+      document.getElementById("ui-highlight").onclick = () =>
+        this.sendCommand("ui.highlight", { id: state.describeId });
+    },
+
+    fallbackSections(node) {
+      const frame = `x ${Math.round(node.x || 0)}, y ${Math.round(node.y || 0)}, ${Math.round(node.width || 0)} × ${Math.round(node.height || 0)}`;
+      const rows = [
+        ["Class", node.class || ""],
+        ["Module", node.module || ""],
+        ["Screen", node.controller || ""],
+        ["SwiftUI view", node.swiftui || ""],
+        ["Frame", frame],
+        ["Text", node.text || ""],
+        ["Background", node.background || ""],
+        ["Opacity", `${Math.round(Number(node.alpha ?? 1) * 100)}%`],
+        ["Shown", node.hidden ? "No" : "Yes"],
+        ["Accessibility label", node.accessibility_label || ""],
+        ["Accessibility id", node.accessibility_identifier || ""],
+      ].filter(([, value]) => value !== "");
+      return [{ title: "From the hierarchy", rows: rows.map(([label, value]) => ({ label, value })) }];
+    },
+
+    bindHierarchyCanvas() {
+      const canvas = document.getElementById("ui-3d");
+      if (!canvas) return;
+      const clamp = (value, min, max) => Math.min(max, Math.max(min, value));
+      const point = (event) => {
+        const rect = canvas.getBoundingClientRect();
+        return { x: event.clientX - rect.left - canvas.clientLeft, y: event.clientY - rect.top - canvas.clientTop };
+      };
+      let drag = null;
+      canvas.addEventListener("contextmenu", (event) => event.preventDefault());
+      canvas.addEventListener("pointerdown", (event) => {
+        drag = { x: event.clientX, y: event.clientY, moved: false, pan: event.shiftKey || event.button === 2 };
+        canvas.setPointerCapture(event.pointerId);
+      });
+      canvas.addEventListener("pointermove", (event) => {
+        if (!drag) return;
+        const dx = event.clientX - drag.x;
+        const dy = event.clientY - drag.y;
+        if (!drag.moved && Math.hypot(dx, dy) < 3) return;
+        drag.moved = true;
+        drag.x = event.clientX;
+        drag.y = event.clientY;
+        const view = state.hierarchyView;
+        if (drag.pan) {
+          view.panX += dx;
+          view.panY += dy;
+        } else {
+          view.yaw = clamp(view.yaw + dx * 0.008, -1.4, 1.4);
+          view.pitch = clamp(view.pitch + dy * 0.008, -1.4, 1.4);
+        }
+        this.drawHierarchy3D();
+      });
+      canvas.addEventListener("pointerup", (event) => {
+        const wasClick = drag && !drag.moved;
+        drag = null;
+        if (!wasClick) return;
+        const { x, y } = point(event);
+        const node = this.hitTestHierarchy(x, y);
+        if (node) this.selectView(String(node.id), true);
+      });
+      canvas.addEventListener("pointercancel", () => { drag = null; });
+      canvas.addEventListener("wheel", (event) => {
+        if (!state.hierarchy.length) return;
+        event.preventDefault();
+        if (event.altKey) {
+          state.hierarchyView.spacing = clamp(state.hierarchyView.spacing - event.deltaY * 0.05, 0, 120);
+          this.syncSpacingInput();
+        } else {
+          state.hierarchyZoom = clamp(state.hierarchyZoom * Math.exp(-event.deltaY * 0.0015), 0.25, 6);
+        }
+        this.drawHierarchy3D();
+      }, { passive: false });
+      canvas.addEventListener("dblclick", () => this.setHierarchyView({ yaw: 0.55, pitch: 0.2 }));
+      document.getElementById("ui-3d-flat")?.addEventListener("click", () =>
+        this.setHierarchyView({ yaw: 0, pitch: 0 }));
+      document.getElementById("ui-3d-reset")?.addEventListener("click", () =>
+        this.setHierarchyView({ yaw: 0.55, pitch: 0.2 }));
+      document.getElementById("ui-3d-spacing")?.addEventListener("input", (event) => {
+        state.hierarchyView.spacing = Number(event.target.value) || 0;
+        this.drawHierarchy3D();
+      });
+      if (window.ResizeObserver) new ResizeObserver(() => this.drawHierarchy3D()).observe(canvas);
+    },
+
+    setHierarchyView(angles) {
+      Object.assign(state.hierarchyView, angles, { panX: 0, panY: 0 });
+      state.hierarchyZoom = 1;
+      this.drawHierarchy3D();
+    },
+
+    syncSpacingInput() {
+      const input = document.getElementById("ui-3d-spacing");
+      if (input) input.value = String(Math.round(state.hierarchyView.spacing));
+    },
+
+    hierarchyLayers() {
+      const root = state.hierarchy.find((window) => window.key_window) || state.hierarchy[0];
+      const layers = [];
+      const walk = (node, depth) => {
+        if (node.hidden || Number(node.alpha ?? 1) <= 0.01) return;
+        const drawable = node.width > 0 && node.height > 0;
+        const index = layers.length;
+        if (drawable) layers.push({ node, depth, leaf: true });
+        (node.children || []).forEach((child) => walk(child, depth + 1));
+        if (drawable) layers[index].leaf = layers.length === index + 1;
+      };
+      if (root) walk(root, 0);
+      return { root, layers };
+    },
+
+    hitTestHierarchy(x, y) {
+      for (let i = state.hierarchyDrawn.length - 1; i >= 0; i -= 1) {
+        const { node, m } = state.hierarchyDrawn[i];
+        const [a, b, c, d, e, f] = m;
+        const det = a * d - b * c;
+        if (!det) continue;
+        const u = (d * (x - e) - c * (y - f)) / det;
+        const v = (-b * (x - e) + a * (y - f)) / det;
+        if (u >= node.x && u <= node.x + node.width && v >= node.y && v <= node.y + node.height) return node;
+      }
+      return null;
+    },
+
+    drawHierarchy3D() {
+      const canvas = document.getElementById("ui-3d");
+      if (!canvas) return;
+      const dpr = window.devicePixelRatio || 1;
+      const cssW = canvas.clientWidth || 800;
+      const cssH = canvas.clientHeight || 520;
+      if (canvas.width !== Math.round(cssW * dpr) || canvas.height !== Math.round(cssH * dpr)) {
+        canvas.width = Math.round(cssW * dpr);
+        canvas.height = Math.round(cssH * dpr);
+      }
+      const ctx = canvas.getContext("2d");
+      ctx.setTransform(1, 0, 0, 1, 0, 0);
+      ctx.clearRect(0, 0, canvas.width, canvas.height);
+      state.hierarchyDrawn = [];
+      const { root, layers } = this.hierarchyLayers();
+      ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+      ctx.font = "12px sans-serif";
+      ctx.fillStyle = "#7d8b99";
+      if (!root || !layers.length) {
+        ctx.fillText("Capture hierarchy to render layers.", 16, 24);
+        ctx.setTransform(1, 0, 0, 1, 0, 0);
+        return;
+      }
+      ctx.fillText("Drag rotate · Shift-drag pan · Wheel zoom · Alt-wheel spacing · Click select", 12, cssH - 10);
+      const view = state.hierarchyView;
+      const maxDepth = layers.reduce((max, layer) => Math.max(max, layer.depth), 0);
+      const stack = maxDepth * view.spacing;
+      const cosY = Math.cos(view.yaw);
+      const sinY = Math.sin(view.yaw);
+      const cosP = Math.cos(view.pitch);
+      const sinP = Math.sin(view.pitch);
+      const extentX = Math.abs(cosY) * root.width + Math.abs(sinY) * stack;
+      const extentY = Math.abs(cosP) * root.height + Math.abs(sinY * sinP) * root.width
+        + Math.abs(cosY * sinP) * stack;
+      const fit = Math.min((cssW - 48) / Math.max(1, extentX), (cssH - 56) / Math.max(1, extentY));
+      const scale = fit * state.hierarchyZoom;
+      const cx = root.x + root.width / 2;
+      const cy = root.y + root.height / 2;
+      const ox = cssW / 2 + view.panX;
+      const oy = (cssH - 16) / 2 + view.panY;
+      const matrix = (depth) => {
+        const z = depth * view.spacing - stack / 2;
+        const a = scale * cosY;
+        const b = scale * sinY * sinP;
+        const d = scale * cosP;
+        return [a, b, 0, d, ox + scale * z * sinY - a * cx, oy - scale * z * cosY * sinP - b * cx - d * cy];
+      };
+      const apply = (m) => ctx.setTransform(m[0] * dpr, m[1] * dpr, m[2] * dpr, m[3] * dpr, m[4] * dpr, m[5] * dpr);
+      const shot = state.hierarchyShot;
+      const shotReady = Boolean(shot && shot.image.complete && shot.image.naturalWidth && shot.width);
+      const ratio = shotReady ? shot.image.naturalWidth / shot.width : 1;
+      const rootArea = root.width * root.height;
+      const textured = new Set(["image", "label", "button", "text", "control"]);
+      const drawCrop = (node) => {
+        const x0 = Math.max(0, node.x - root.x);
+        const y0 = Math.max(0, node.y - root.y);
+        const x1 = Math.min(shot.width, node.x - root.x + node.width);
+        const y1 = Math.min(shot.height || root.height, node.y - root.y + node.height);
+        if (x1 <= x0 || y1 <= y0) return;
+        ctx.drawImage(shot.image, x0 * ratio, y0 * ratio, (x1 - x0) * ratio, (y1 - y0) * ratio,
+          root.x + x0, root.y + y0, x1 - x0, y1 - y0);
+      };
+      const selectedId = state.selectedView ? String(state.selectedView.id) : "";
+      let selected = null;
+      layers.forEach((layer) => {
+        const { node, depth, leaf } = layer;
+        const m = matrix(depth);
+        state.hierarchyDrawn.push({ node, m });
+        apply(m);
+        ctx.globalAlpha = Math.max(0.15, Math.min(1, Number(node.alpha ?? 1)));
+        if (node.background) {
+          ctx.fillStyle = node.background;
+          ctx.fillRect(node.x, node.y, node.width, node.height);
+        }
+        const wantsTexture = depth === 0 || (leaf && (textured.has(node.kind) || node.background
+          || node.width * node.height < rootArea * 0.5));
+        if (shotReady && wantsTexture) drawCrop(node);
+        ctx.globalAlpha = 1;
+        ctx.strokeStyle = `hsla(${(depth * 37) % 360}, 65%, 62%, ${depth === 0 ? 0.9 : 0.55})`;
+        ctx.lineWidth = 1 / scale;
+        ctx.strokeRect(node.x, node.y, node.width, node.height);
+        if (String(node.id) === selectedId) selected = { node, m };
+      });
+      if (selected) {
+        const { node, m } = selected;
+        apply(m);
+        ctx.fillStyle = "rgba(255, 176, 32, 0.28)";
+        ctx.fillRect(node.x, node.y, node.width, node.height);
+        ctx.strokeStyle = "#ffb020";
+        ctx.lineWidth = 2.5 / scale;
+        ctx.strokeRect(node.x, node.y, node.width, node.height);
+        ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+        const px = m[0] * node.x + m[2] * node.y + m[4];
+        const py = m[1] * node.x + m[3] * node.y + m[5];
+        ctx.fillStyle = "#ffb020";
+        ctx.fillText(`${node.class} ${Math.round(node.width)}×${Math.round(node.height)}`,
+          Math.max(4, px + 4), Math.max(14, py - 6));
+      }
+      ctx.setTransform(1, 0, 0, 1, 0, 0);
     },
 
     drawHierarchy() {
@@ -654,10 +1265,16 @@
       tree.innerHTML = visible.map(({ node, depth, collapsed, hasChildren }) => {
         const marker = hasChildren ? (collapsed ? "▸" : "▾") : "·";
         const active = String(node.id) === selectedId ? " active" : "";
-        return `<div class="tree-row${active}" data-view-id="${escapeHtml(node.id)}" style="padding-left:${depth * 14 + 4}px"><button type="button" class="tree-toggle" data-toggle="${escapeHtml(node.id)}" ${hasChildren ? "" : "disabled"}>${marker}</button><span>${escapeHtml(node.class)} ${Math.round(node.width)}×${Math.round(node.height)}</span></div>`;
+        const dim = node.hidden || Number(node.alpha ?? 1) <= 0.01 ? " dim" : "";
+        const hint = node.text || node.accessibility_identifier || node.accessibility_label || "";
+        const extra = hint ? ` <em>${escapeHtml(String(hint).slice(0, 40))}</em>` : "";
+        const badge = node.role === "swiftui"
+          ? (node.swiftui || "SwiftUI")
+          : node.role === "uikit-in-swiftui" ? "in SwiftUI" : "";
+        const role = badge ? ` <i class="role-tag">${escapeHtml(badge)}</i>` : "";
+        return `<div class="tree-row${active}${dim}" data-view-id="${escapeHtml(node.id)}" style="padding-left:${depth * 14 + 4}px"><button type="button" class="tree-toggle" data-toggle="${escapeHtml(node.id)}" ${hasChildren ? "" : "disabled"}>${marker}</button><span>${escapeHtml(node.class)} ${Math.round(node.width)}×${Math.round(node.height)}${extra}${role}</span></div>`;
       }).join("");
       tree.scrollTop = scroll;
-      const byId = new Map(visible.map(({ node }) => [String(node.id), node]));
       tree.onclick = (event) => {
         const toggle = event.target.closest("[data-toggle]");
         if (toggle && !toggle.disabled) {
@@ -668,47 +1285,9 @@
           return;
         }
         const row = event.target.closest("[data-view-id]");
-        if (!row) return;
-        state.selectedView = byId.get(row.dataset.viewId);
-        this.drawHierarchy();
-        document.getElementById("ui-properties").innerHTML =
-          `<button class="btn ghost" id="ui-highlight">Highlight</button><pre>${escapeHtml(JSON.stringify(state.selectedView, null, 2))}</pre>`;
-        document.getElementById("ui-highlight").onclick = () =>
-          this.sendCommand("ui.highlight", { id: row.dataset.viewId });
+        if (row) this.selectView(row.dataset.viewId, false);
       };
-      const canvas = document.getElementById("ui-3d");
-      const ctx = canvas.getContext("2d");
-      const scale = state.hierarchyZoom;
-      ctx.clearRect(0, 0, canvas.width, canvas.height);
-      const frame = (node, depth) => ({
-        x: node.x * scale + depth * 6,
-        y: node.y * scale - depth * 4,
-        w: Math.max(2, node.width * scale),
-        h: Math.max(2, node.height * scale),
-      });
-      visible.slice(0, 800).forEach(({ node, depth }) => {
-        if (String(node.id) === selectedId) return;
-        const box = frame(node, depth);
-        ctx.strokeStyle = `hsl(${(depth * 37) % 360} 60% 60%)`;
-        ctx.lineWidth = 1;
-        ctx.strokeRect(box.x, box.y, box.w, box.h);
-      });
-      const selected = visible.find(({ node }) => String(node.id) === selectedId);
-      if (selected) {
-        const box = frame(selected.node, selected.depth);
-        ctx.fillStyle = "rgba(255, 176, 32, 0.28)";
-        ctx.fillRect(box.x, box.y, box.w, box.h);
-        ctx.strokeStyle = "#ffb020";
-        ctx.lineWidth = 3;
-        ctx.strokeRect(box.x, box.y, box.w, box.h);
-        ctx.lineWidth = 1;
-        ctx.font = "12px sans-serif";
-        ctx.fillText(
-          `${selected.node.class} ${Math.round(selected.node.width)}×${Math.round(selected.node.height)}`,
-          box.x + 4,
-          Math.max(14, box.y - 6)
-        );
-      }
+      this.drawHierarchy3D();
     },
 
     renderScreenshot(result, targetId) {
@@ -717,15 +1296,183 @@
     },
 
     renderStorage(name, result) {
-      const target = document.getElementById("storage-result");
+      if (name === "storage.files") return this.renderFileBrowser(result);
+      if (name === "storage.file_read") return this.renderFilePreview(result);
+      const targetId = "storage-inspector";
       if (result.values) {
         const rows = Object.entries(result.values).map(([key, value]) => ({ key, value: JSON.stringify(value) }));
-        return this.renderTable("storage-result", rows);
+        return this.renderTable(targetId, rows);
       }
       for (const key of ["items", "files", "rows"]) {
-        if (Array.isArray(result[key])) return this.renderTable("storage-result", result[key]);
+        if (Array.isArray(result[key])) return this.renderTable(targetId, result[key]);
       }
-      target.textContent = JSON.stringify(result, null, 2);
+      const target = document.getElementById(targetId);
+      if (target) target.textContent = JSON.stringify(result, null, 2);
+    },
+
+    bindStorage() {
+      document.getElementById("storage-crumb")?.addEventListener("click", (event) => {
+        const button = event.target.closest("[data-storage-path]");
+        if (button) this.openStorage(button.dataset.storagePath || "");
+      });
+      document.getElementById("storage-files")?.addEventListener("click", (event) => {
+        const schema = event.target.closest("[data-storage-schema]");
+        if (schema) {
+          const path = schema.dataset.storageSchema || "";
+          this.selectStorageFile(path, path);
+          this.sendCommand("storage.sqlite_schema", { path });
+          return;
+        }
+        if (event.target.closest("input")) return;
+        const row = event.target.closest("tr[data-path]");
+        if (!row) return;
+        if (row.dataset.directory === "true") {
+          this.openStorage(row.dataset.path || "");
+          return;
+        }
+        this.selectStorageFile(row.dataset.path || "", row.dataset.name || "");
+        this.sendCommand("storage.file_read", { path: row.dataset.path || "" });
+      });
+      document.getElementById("storage-snapshot")?.addEventListener("click", () => {
+        const paths = [...document.querySelectorAll("#storage-files input[data-storage-check]:checked")]
+          .map((input) => input.value)
+          .filter(Boolean);
+        if (!paths.length) {
+          alert("Select one or more files first.");
+          return;
+        }
+        this.sendCommand("storage.snapshot_create", { paths });
+      });
+      document.getElementById("storage-sql")?.addEventListener("submit", (event) => {
+        event.preventDefault();
+        if (!state.storageDbPath) {
+          alert("Select a database first.");
+          return;
+        }
+        const query = document.getElementById("storage-sql-query")?.value.trim() || "";
+        if (!query) return;
+        this.sendCommand("storage.sqlite_query", { path: state.storageDbPath, query });
+      });
+      document.getElementById("storage-sql-schema")?.addEventListener("click", () => {
+        if (!state.storageDbPath) {
+          alert("Select a database first.");
+          return;
+        }
+        this.sendCommand("storage.sqlite_schema", { path: state.storageDbPath });
+      });
+    },
+
+    openStorage(path) {
+      state.storagePath = String(path || "").replace(/^\/+|\/+$/g, "");
+      this.renderStorageCrumb();
+      const target = document.getElementById("storage-files");
+      if (!state.clientId) {
+        if (target) {
+          target.innerHTML = `<tr><td colspan="4" class="muted">Choose one app in Scope first.</td></tr>`;
+        }
+        return;
+      }
+      this.sendCommand("storage.files", { path: state.storagePath });
+    },
+
+    renderStorageCrumb() {
+      const crumb = document.getElementById("storage-crumb");
+      if (!crumb) return;
+      const parts = state.storagePath ? state.storagePath.split("/").filter(Boolean) : [];
+      const items = [{ label: "Sandbox", path: "" }];
+      let acc = "";
+      parts.forEach((part) => {
+        acc = acc ? `${acc}/${part}` : part;
+        items.push({ label: part, path: acc });
+      });
+      crumb.innerHTML = items.map((item, index) => {
+        if (index === items.length - 1) return `<span>${escapeHtml(item.label)}</span>`;
+        return `<button type="button" data-storage-path="${escapeAttr(item.path)}">${escapeHtml(item.label)}</button>`;
+      }).join(`<span class="muted">/</span>`);
+    },
+
+    renderFileBrowser(result) {
+      this.renderStorageCrumb();
+      const target = document.getElementById("storage-files");
+      if (!target) return;
+      const files = Array.isArray(result.files) ? result.files.slice() : [];
+      files.sort((a, b) => {
+        if (!!a.directory !== !!b.directory) return a.directory ? -1 : 1;
+        return String(a.name || "").localeCompare(String(b.name || ""));
+      });
+      const rows = [];
+      if (state.storagePath) {
+        const parent = state.storagePath.split("/").slice(0, -1).join("/");
+        rows.push(`<tr data-path="${escapeAttr(parent)}" data-directory="true"><td></td><td class="file-dir">..</td><td></td><td></td></tr>`);
+      }
+      if (!files.length && !state.storagePath) {
+        rows.push(`<tr><td colspan="4" class="muted">Sandbox is empty.</td></tr>`);
+      } else if (!files.length) {
+        rows.push(`<tr><td colspan="4" class="muted">Empty folder.</td></tr>`);
+      }
+      files.forEach((file) => {
+        const directory = !!file.directory;
+        const name = String(file.name || "");
+        const path = String(file.path || "");
+        const db = !directory && /\.(sqlite3?|db)$/i.test(name);
+        const check = directory
+          ? ""
+          : `<input type="checkbox" data-storage-check value="${escapeAttr(path)}" aria-label="Select ${escapeAttr(name)}">`;
+        const schema = db
+          ? `<button type="button" class="btn ghost storage-schema" data-storage-schema="${escapeAttr(path)}">Schema</button>`
+          : "";
+        const active = path === state.selectedStoragePath ? ` class="active"` : "";
+        rows.push(`<tr data-path="${escapeAttr(path)}" data-directory="${directory ? "true" : "false"}" data-name="${escapeAttr(name)}"${active}>
+          <td>${check}</td>
+          <td class="${directory ? "file-dir" : ""}">${escapeHtml(directory ? `${name}/` : name)}${schema}</td>
+          <td>${directory ? "" : escapeHtml(this.fmtBytes(file.bytes))}</td>
+          <td>${escapeHtml(this.fmtTime(file.modified))}</td>
+        </tr>`);
+      });
+      target.innerHTML = rows.join("");
+    },
+
+    selectStorageFile(path, name) {
+      state.selectedStoragePath = path;
+      document.querySelectorAll("#storage-files tr").forEach((row) => {
+        row.classList.toggle("active", row.dataset.path === path);
+      });
+      if (/\.(sqlite3?|db)$/i.test(name || path)) this.useDatabase(path);
+    },
+
+    useDatabase(path) {
+      state.storageDbPath = path;
+      const label = document.getElementById("storage-sql-path");
+      if (label) label.textContent = path || "Select a database";
+    },
+
+    renderFilePreview(result) {
+      const target = document.getElementById("storage-inspector");
+      if (!target) return;
+      const path = result.path || state.selectedStoragePath || "";
+      if (result.encoding === "base64") {
+        const bytes = Math.floor((String(result.content || "").length * 3) / 4);
+        target.innerHTML = `<p><strong>${escapeHtml(path)}</strong></p><p class="muted">binary · ${escapeHtml(this.fmtBytes(bytes))}</p>`;
+        return;
+      }
+      target.innerHTML = `<p><strong>${escapeHtml(path)}</strong></p><pre class="pre">${escapeHtml(result.content || "")}</pre>`;
+    },
+
+    fmtBytes(value) {
+      const size = Number(value);
+      if (!Number.isFinite(size)) return "";
+      if (size < 1024) return `${Math.round(size)} B`;
+      if (size < 1024 * 1024) return `${(size / 1024).toFixed(1)} KB`;
+      return `${(size / (1024 * 1024)).toFixed(1)} MB`;
+    },
+
+    fmtTime(value) {
+      const n = Number(value);
+      if (!n) return "";
+      const ms = n > 1e12 ? n : n * 1000;
+      const date = new Date(ms);
+      if (Number.isNaN(date.getTime())) return "";
+      return date.toLocaleString();
     },
 
     renderFlags(flags) {
@@ -818,7 +1565,7 @@
     renderError(module, message) {
       const targets = {
         memory: "memory-result", ui: "ui-properties", swiftui: "swiftui-result",
-        assets: "assets-result", accessibility: "accessibility-result", storage: "storage-result",
+        assets: "assets-result", accessibility: "accessibility-result", storage: "storage-inspector",
         feature_flags: "flags-result", bug: "bug-result", macro: "macro-result",
         runtime: "runtime-result", push: "push-result",
         ott: "ott-sections", hang: "hangs-result", crash: "hangs-result",
@@ -846,7 +1593,9 @@
     },
 
     async loadWaterfall() {
-      const flows = (await (await fetch("/api/flows?limit=80")).json()).flows || [];
+      const params = new URLSearchParams({ limit: "80" });
+      if (window.VLScope) window.VLScope.applyTo(params);
+      const flows = (await (await fetch(`/api/flows?${params}`)).json()).flows || [];
       const host = document.getElementById("waterfall");
       if (!flows.length) { host.innerHTML = `<p class="muted">No flows.</p>`; return; }
       const start = Math.min(...flows.map((flow) => Date.parse(flow.created_at)));

@@ -1,21 +1,8 @@
-"""OTT Mac-side inspect: SPM pins + stack frame parsing."""
+"""Mac-side stack frame parsing."""
 
 from __future__ import annotations
 
-from viewlift_ai.services.ott_inspect import (
-    enrich_frames,
-    load_spm_packages,
-    parse_stack_frame,
-)
-
-
-def test_load_spm_packages_from_appcms() -> None:
-    result = load_spm_packages()
-    assert result["ok"] is True
-    assert result["count"] >= 50
-    identities = {row["identity"] for row in result["packages"]}
-    assert "apollo-ios" in identities
-    assert "alamofire" in identities
+from viewlift_ai.services.ott_inspect import enrich_frames, parse_stack_frame
 
 
 def test_parse_stack_frame_with_file_line() -> None:

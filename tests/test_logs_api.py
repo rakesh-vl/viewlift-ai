@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import time
 from datetime import UTC, datetime
 from pathlib import Path
 from uuid import uuid4
@@ -34,6 +35,7 @@ def test_logs_page_and_api(tmp_path: Path) -> None:
     with TestClient(create_app(_config(tmp_path))) as client:
         page = client.get("/logs")
         assert page.status_code == 200
+        assert b"Delete logs" in page.content
         assert b"TestFlight" in page.content or b"private" in page.content.lower()
 
         store = client.app.state.store
@@ -81,6 +83,79 @@ def test_logs_page_and_api(tmp_path: Path) -> None:
         sources = client.get("/api/logs/sources")
         assert sources.status_code == 200
         assert "simulators" in sources.json()
+
+        removed = client.post("/api/logs/delete")
+        assert removed.status_code == 200
+        assert removed.json()["deleted"] == 1
+        assert client.get("/api/logs").json()["logs"] == []
+        assert store.get_flow(flow_id) is not None
+
+
+def _sample_log(log_id: str) -> LogRecord:
+    return LogRecord(
+        id=log_id,
+        level=LogLevel.INFO,
+        subsystem="app",
+        message="keep-or-drop",
+        created_at=datetime.now(UTC),
+        source="sdk",
+    )
+
+
+def test_reload_does_not_wipe_capture(tmp_path: Path) -> None:
+    with TestClient(create_app(_config(tmp_path))) as client:
+        client.app.state.capture_wipe_delay = 0.15
+        store = client.app.state.store
+        store.save_log(_sample_log("stay"))
+        assert client.post("/api/session/ping", json={"id": "tab", "page": 1}).status_code == 200
+        assert client.post("/api/session/leave", json={"id": "tab", "page": 1}).json()["scheduled"]
+        assert client.post("/api/session/ping", json={"id": "tab", "page": 2}).status_code == 200
+        time.sleep(0.4)
+        assert any(row.id == "stay" for row in store.list_logs())
+
+
+def test_other_tab_keeps_capture(tmp_path: Path) -> None:
+    with TestClient(create_app(_config(tmp_path))) as client:
+        client.app.state.capture_wipe_delay = 0.05
+        store = client.app.state.store
+        store.save_log(_sample_log("stay"))
+        client.post("/api/session/ping", json={"id": "a", "page": 1})
+        client.post("/api/session/ping", json={"id": "b", "page": 1})
+        left = client.post("/api/session/leave", json={"id": "a", "page": 1})
+        assert left.json()["scheduled"] is False
+        time.sleep(0.2)
+        assert any(row.id == "stay" for row in store.list_logs())
+
+
+def test_last_tab_close_wipes_capture(tmp_path: Path) -> None:
+    with TestClient(create_app(_config(tmp_path))) as client:
+        client.app.state.capture_wipe_delay = 0.05
+        store = client.app.state.store
+        flow_id = str(uuid4())
+        store.save_flow(
+            FlowRecord(
+                id=flow_id,
+                method="GET",
+                host="api.example.com",
+                path="/x",
+                status=200,
+                duration_ms=1.0,
+                size_bytes=4,
+                protocol="HTTPS",
+                source=FlowSource.SDK,
+                created_at=datetime.now(UTC),
+            )
+        )
+        store.save_log(_sample_log("gone"))
+        rules = tmp_path / "rules.json"
+        rules.write_text('{"kept": true}', encoding="utf-8")
+        client.post("/api/session/ping", json={"id": "only", "page": 1})
+        left = client.post("/api/session/leave", json={"id": "only", "page": 1})
+        assert left.json()["scheduled"] is True
+        time.sleep(0.4)
+        assert store.list_logs() == []
+        assert store.list_flows() == []
+        assert rules.read_text(encoding="utf-8") == '{"kept": true}'
 
 
 def test_setup_sdk_status_wired(tmp_path: Path) -> None:

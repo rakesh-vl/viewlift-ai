@@ -67,6 +67,7 @@ class FlowRecord:
     content_type: str | None = None
     query: str | None = None
     timing: FlowTiming = field(default_factory=FlowTiming)
+    client_id: str | None = None
 
     @staticmethod
     def utc_now() -> datetime:

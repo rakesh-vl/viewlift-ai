@@ -27,6 +27,8 @@ class LogCaptureService:
         request_id: str | None = None,
         created_at: datetime | None = None,
         log_id: str | None = None,
+        client_id: str | None = None,
+        udid: str | None = None,
     ) -> LogRecord:
         resolved_level = level if isinstance(level, LogLevel) else _parse_level(level)
         record = LogRecord(
@@ -37,6 +39,8 @@ class LogCaptureService:
             created_at=created_at or datetime.now(UTC),
             request_id=request_id,
             source=source,
+            client_id=client_id,
+            udid=udid,
         )
         self._store.save_log(record)
         self._bus.publish_threadsafe(record)

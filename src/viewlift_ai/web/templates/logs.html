@@ -11,23 +11,48 @@
     <select id="log-udid" class="rules-input grow"></select>
   </label>
   <label title="Only stream this process (e.g. your app executable). Empty = whole device, very noisy.">Process
-    <input id="log-process" class="rules-input" type="text" placeholder="NESN" autocomplete="off">
+    <input id="log-process" class="rules-input" type="text" placeholder="app executable" autocomplete="off">
   </label>
   <button type="button" id="btn-log-start" class="btn">Start</button>
-  <button type="button" id="btn-log-stop" class="btn ghost">Stop</button>
+  <button type="button" id="btn-log-stop" class="btn" hidden>Stop</button>
+  <button type="button" id="btn-log-restart" class="btn ghost" hidden>Restart</button>
   <button type="button" id="btn-log-refresh-sources" class="btn ghost">Refresh sources</button>
   <span id="log-stream-status" class="muted">idle</span>
 </section>
 
 <section class="filters" id="log-filters">
-  <label>Level <input id="lf-level" type="text" placeholder="info" autocomplete="off"></label>
-  <label>Source <input id="lf-source" type="text" placeholder="simulator|device|sdk" autocomplete="off"></label>
-  <label>Subsystem / bundle id <input id="lf-subsystem" type="text" placeholder="com.nesn.nesngo" autocomplete="off"></label>
+  <label>Level
+    <select id="lf-level" class="rules-input">
+      <option value="">Any</option>
+      <option value="debug">debug</option>
+      <option value="info">info</option>
+      <option value="notice">notice</option>
+      <option value="warning">warning</option>
+      <option value="error">error</option>
+      <option value="fault">fault</option>
+    </select>
+  </label>
+  <label>Source
+    <select id="lf-source" class="rules-input">
+      <option value="">Any</option>
+      <option value="simulator">simulator</option>
+      <option value="device">device</option>
+      <option value="sdk">sdk</option>
+    </select>
+  </label>
+  <label>Subsystem / bundle id
+    <select id="lf-subsystem" class="rules-input">
+      <option value="">Any</option>
+    </select>
+  </label>
   <label class="grow">Text <input id="lf-text" type="text" placeholder="message…" autocomplete="off"></label>
   <button type="button" id="btn-log-apply" class="btn">Filter</button>
-  <button type="button" id="btn-log-clear" class="btn ghost">Clear</button>
+  <button type="button" id="btn-log-clear" class="btn ghost" hidden>Clear</button>
 </section>
 
+<p class="muted setup-note">
+  Delete logs removes stored log lines only. Closing the last tab also clears captured requests and debug events. Rules stay.
+</p>
 <p class="muted setup-note" id="log-private-note">
   TestFlight <code>os_log</code> privacy fields often arrive as <code>&lt;private&gt;</code>.
   Expected for distribution builds. Use a debug install or ViewliftNetworkCapture LogService for full messages.
@@ -39,17 +64,20 @@
       <span>Logs</span>
       <span id="log-count" class="muted">0</span>
       <span id="log-pending" class="muted"></span>
-      <button type="button" id="btn-log-pause" class="btn ghost">Pause</button>
+      <div class="row-actions">
+        <button type="button" id="btn-log-pause" class="btn ghost">Pause</button>
+        <button type="button" id="btn-log-delete" class="btn ghost">Delete logs</button>
+      </div>
     </div>
     <div class="table-wrap">
       <table class="flow-table">
         <thead>
           <tr>
-            <th>Time</th>
-            <th>Level</th>
-            <th>Source</th>
-            <th>Subsystem</th>
-            <th>Message</th>
+            <th class="log-col-time" scope="col">Time</th>
+            <th class="log-col-level" scope="col">Level</th>
+            <th class="log-col-source" scope="col">Source</th>
+            <th class="log-col-subsystem" scope="col">Subsystem</th>
+            <th scope="col">Message</th>
           </tr>
         </thead>
         <tbody id="log-rows"></tbody>
@@ -61,7 +89,7 @@
       <span id="log-detail-title">Detail</span>
     </div>
     <div id="log-detail-body" class="detail-body">
-      <p class="muted empty">Select a log</p>
+      <p class="muted empty">Select a log line to see its full message and linked request.</p>
     </div>
   </div>
 </section>

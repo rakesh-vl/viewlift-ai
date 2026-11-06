@@ -24,6 +24,8 @@ class LogRecord:
     created_at: datetime
     request_id: str | None = None
     source: str = "unknown"
+    client_id: str | None = None
+    udid: str | None = None
 
     @staticmethod
     def utc_now() -> datetime:

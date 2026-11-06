@@ -1,0 +1,309 @@
+{% extends "base.html" %}
+{% block content %}
+<link rel="stylesheet" href="/static/css/agent.css?v=1">
+<div class="agent-page">
+  <header class="agent-head">
+    <h1>Debug with an AI agent</h1>
+    <p class="agent-lede">
+      Viewlift AI runs an MCP server next to this console. A coding agent such as Cursor calls its tools
+      to read traffic, logs, and live state from a debug build, and to change that build when you allow it.
+      Every call names one app, so two apps on the same phone never get mixed up.
+    </p>
+    <dl class="agent-status" id="agent-status" data-port="{{ mcp.port }}">
+      <div>
+        <dt>MCP server</dt>
+        <dd>
+          <span class="state-dot{% if mcp.listening %} on{% endif %}" id="mcp-dot" aria-hidden="true"></span>
+          <span id="mcp-state">{% if mcp.listening %}Listening{% else %}Not running{% endif %}</span>
+          <code id="mcp-url">{{ mcp.url }}</code>
+        </dd>
+      </div>
+      <div>
+        <dt>Console</dt>
+        <dd><code>{{ console_url }}</code></dd>
+      </div>
+      <div>
+        <dt>Apps online</dt>
+        <dd><strong id="apps-online">…</strong></dd>
+      </div>
+    </dl>
+  </header>
+
+  <div class="agent-body">
+    <nav class="agent-toc" aria-label="On this page">
+      <p class="toc-title">On this page</p>
+      <a href="#how">How it works</a>
+      <a href="#connect">Connect Cursor</a>
+      <a href="#session">A first session</a>
+      <a href="#apps">Many apps, one device</a>
+      <a href="#tools">Tools</a>
+      <a href="#commands">On-device commands</a>
+      <a href="#rules">Guardrails</a>
+      <a href="#prompts">Prompts to try</a>
+      <a href="#trouble">Troubleshooting</a>
+    </nav>
+
+    <article class="agent-doc">
+      <section id="how" aria-labelledby="how-title">
+        <h2 id="how-title">How it works</h2>
+        <p>
+          The agent never talks to the phone. It calls the MCP server, which calls this console on loopback.
+          The console queues a command for one app. That app's capture SDK picks it up within half a second,
+          runs it, and posts the result back. The MCP tool waits for that result and returns it to the agent.
+        </p>
+        <figure class="path" aria-label="Call path from agent to app">
+          <div class="path-node">
+            <span class="path-name">Cursor agent</span>
+            <span class="path-meta">chat, plans, edits code</span>
+          </div>
+          <div class="path-link" aria-hidden="true"><span>MCP</span></div>
+          <div class="path-node">
+            <span class="path-name">viewlift-ai-mcp</span>
+            <span class="path-meta">127.0.0.1:{{ mcp.port }}/mcp</span>
+          </div>
+          <div class="path-link" aria-hidden="true"><span>HTTP</span></div>
+          <div class="path-node">
+            <span class="path-name">Console</span>
+            <span class="path-meta">flows, logs, command queue</span>
+          </div>
+          <div class="path-link" aria-hidden="true"><span>poll</span></div>
+          <div class="path-device">
+            <span class="path-meta">iPhone 16 simulator</span>
+            <span class="path-app">Alpha <code>app-a</code></span>
+            <span class="path-app">Beta <code>app-b</code></span>
+          </div>
+          <figcaption>Both apps share one device_key. Each keeps its own client_id.</figcaption>
+        </figure>
+      </section>
+
+      <section id="connect" aria-labelledby="connect-title">
+        <h2 id="connect-title">Connect Cursor</h2>
+        <ol class="steps">
+          <li>
+            <p>Start the console and the MCP server together.</p>
+            <div class="snippet">
+              <pre><code id="snip-start">scripts/viewlift-ai.sh start</code></pre>
+              <button type="button" class="btn ghost copy" data-copy="snip-start">Copy</button>
+            </div>
+            <p class="muted">Ctrl+C stops both. <code>stop</code>, <code>restart</code>, and <code>status</code> cover both processes.</p>
+          </li>
+          <li>
+            <p>Add the server to <code>~/.cursor/mcp.json</code> or the project's <code>.cursor/mcp.json</code>.</p>
+            <div class="snippet">
+              <pre><code id="snip-config">{
+  "mcpServers": {
+    "viewlift-ai": {
+      "url": "{{ mcp.url }}"
+    }
+  }
+}</code></pre>
+              <button type="button" class="btn ghost copy" data-copy="snip-config">Copy</button>
+            </div>
+          </li>
+          <li>
+            <p>Open Cursor Settings, then MCP, and turn on <strong>viewlift-ai</strong>. {{ tool_count }} tools should appear.</p>
+          </li>
+          <li>
+            <p>Run a debug build that links ViewliftNetworkCapture. Then ask the agent about it in plain words.</p>
+          </li>
+        </ol>
+        <details class="alt">
+          <summary>Run without the script (stdio)</summary>
+          <p>Cursor starts the server itself. The console still has to be running.</p>
+          <div class="snippet">
+            <pre><code id="snip-stdio">{
+  "mcpServers": {
+    "viewlift-ai": {
+      "command": "uv",
+      "args": ["run", "--extra", "mcp", "--directory", "/path/to/Viewlift_AI", "viewlift-ai-mcp"],
+      "env": { "VIEWLIFT_AI_URL": "{{ console_url }}" }
+    }
+  }
+}</code></pre>
+            <button type="button" class="btn ghost copy" data-copy="snip-stdio">Copy</button>
+          </div>
+        </details>
+      </section>
+
+      <section id="session" aria-labelledby="session-title">
+        <h2 id="session-title">A first session</h2>
+        <p>This is what the agent does for one bug report. You only write the first line.</p>
+        <ol class="transcript" aria-label="Example agent session">
+          <li class="t-user">
+            <span class="t-who">You</span>
+            <p>Alpha on my iPhone 16 simulator shows an empty home screen. Find out why.</p>
+          </li>
+          <li class="t-call">
+            <span class="t-who">Agent</span>
+            <code class="t-tool">list_apps(online_only=true)</code>
+            <pre class="t-result">Alpha  com.viewlift.alpha  app-a  iPhone 16  online
+Beta   com.viewlift.beta   app-b  iPhone 16  online</pre>
+          </li>
+          <li class="t-call">
+            <span class="t-who">Agent</span>
+            <code class="t-tool">list_flows(client_id="app-a", status=401)</code>
+            <pre class="t-result">GET  api.viewlift.com/content/pages?path=/home  401  182 ms</pre>
+          </li>
+          <li class="t-call">
+            <span class="t-who">Agent</span>
+            <code class="t-tool">app_inspect(client_id="app-a", command="ott.snapshot")</code>
+            <pre class="t-result">user.isLoggedIn: true
+user.tokenExpiry: 2026-11-05T14:02:11Z   (expired)</pre>
+          </li>
+          <li class="t-call">
+            <span class="t-who">Agent</span>
+            <code class="t-tool">list_logs(client_id="app-a", level="error")</code>
+            <pre class="t-result">AuthService: refresh skipped, refreshToken is nil</pre>
+          </li>
+          <li class="t-answer">
+            <span class="t-who">Agent</span>
+            <p>
+              The home page request returns 401 because the access token expired and the refresh never ran.
+              <code>AuthService</code> skips refresh when <code>refreshToken</code> is nil, and the app still
+              reports the user as logged in. Beta was not touched.
+            </p>
+          </li>
+        </ol>
+      </section>
+
+      <section id="apps" aria-labelledby="apps-title">
+        <h2 id="apps-title">Many apps, one device</h2>
+        <p>
+          Each install gets its own <code>client_id</code>. Apps on the same simulator or phone share a
+          <code>device_key</code>. The agent must pass a <code>client_id</code>, or a bundle id that matches
+          exactly one online app. With no id, or an ambiguous one, the tool returns the list and does nothing.
+        </p>
+        <div class="live-apps">
+          <div class="live-apps-head">
+            <h3>Apps the agent can target now</h3>
+            <button type="button" class="btn ghost" id="apps-refresh">Refresh list</button>
+          </div>
+          <table class="apps-table">
+            <thead>
+              <tr>
+                <th scope="col">App</th>
+                <th scope="col">Device</th>
+                <th scope="col">client_id</th>
+                <th scope="col">State</th>
+              </tr>
+            </thead>
+            <tbody id="apps-body">
+              <tr><td colspan="4" class="muted">Loading apps…</td></tr>
+            </tbody>
+          </table>
+        </div>
+      </section>
+
+      <section id="tools" aria-labelledby="tools-title">
+        <h2 id="tools-title">Tools</h2>
+        <p>Arguments with a question mark are optional. Rows marked <span class="tag write">changes state</span> need <code>confirm: true</code>.</p>
+        {% for group in tool_groups %}
+        <div class="tool-group" id="tools-{{ group.id }}">
+          <h3>{{ group.title }}</h3>
+          <p class="muted">{{ group.summary }}</p>
+          <table class="tool-table">
+            <thead>
+              <tr>
+                <th scope="col" class="c-name">Tool</th>
+                <th scope="col" class="c-args">Arguments</th>
+                <th scope="col">What it does</th>
+              </tr>
+            </thead>
+            <tbody>
+              {% for tool in group.tools %}
+              <tr>
+                <td><code>{{ tool.name }}</code>{% if tool.changes_state %} <span class="tag write">changes state</span>{% endif %}</td>
+                <td class="mono-args">{{ tool.args or "none" }}</td>
+                <td>{{ tool.summary }}</td>
+              </tr>
+              {% endfor %}
+            </tbody>
+          </table>
+        </div>
+        {% endfor %}
+      </section>
+
+      <section id="commands" aria-labelledby="commands-title">
+        <h2 id="commands-title">On-device commands</h2>
+        <p>
+          <code>app_inspect</code> and <code>app_mutate</code> take a <code>command</code> name. An app only runs a
+          command whose module is turned on in its <code>CaptureConfiguration</code>; <code>get_app</code> lists them.
+        </p>
+        <div class="command-cols">
+          <div>
+            <h3>Read with <code>app_inspect</code></h3>
+            <dl class="command-list">
+              {% for row in read_commands %}
+              <div><dt><code>{{ row.name }}</code></dt><dd>{{ row.note }}</dd></div>
+              {% endfor %}
+            </dl>
+          </div>
+          <div>
+            <h3>Change with <code>app_mutate</code></h3>
+            <dl class="command-list">
+              {% for row in write_commands %}
+              <div><dt><code>{{ row.name }}</code></dt><dd>{{ row.note }}</dd></div>
+              {% endfor %}
+            </dl>
+          </div>
+        </div>
+      </section>
+
+      <section id="rules" aria-labelledby="rules-title">
+        <h2 id="rules-title">Guardrails</h2>
+        <ul class="rules">
+          <li><strong>Loopback only.</strong> The MCP server and the console accept connections from this Mac only.</li>
+          <li><strong>One app per call.</strong> The server never falls back to the most recent app.</li>
+          <li><strong>Writes need confirm.</strong> Without <code>confirm: true</code>, a write tool returns before it sends anything.</li>
+          <li><strong>No rewrite.</strong> No tool turns on map, rewrite, or breakpoints. Use Rules for those.</li>
+          <li><strong>Redacted by default.</strong> Tokens and secrets in flows stay masked. Raw bodies and replay need reveal already unlocked in the console. No tool unlocks it.</li>
+          <li><strong>Keychain values never leave.</strong> Keychain reads return item metadata only.</li>
+          <li><strong>Global throttle.</strong> A network profile slows every proxied app on this Mac, not only the one in the chat.</li>
+        </ul>
+      </section>
+
+      <section id="prompts" aria-labelledby="prompts-title">
+        <h2 id="prompts-title">Prompts to try</h2>
+        <ul class="prompts">
+          <li><q>Which apps are connected right now, and on which devices?</q></li>
+          <li><q>Show the failed requests from Beta in the last few minutes and explain each one.</q></li>
+          <li><q>Take a screenshot of Alpha and run an accessibility audit on that screen.</q></li>
+          <li><q>Alpha froze when I opened the player. List its hangs and point me to the code.</q></li>
+          <li><q>Turn on the newPlayer flag in Alpha only, then tell me what changed in its requests.</q></li>
+          <li><q>Set the network to 3G and check whether Alpha still loads the home page.</q></li>
+          <li><q>Compare the OTT snapshot of Alpha and Beta. Why does only one show the TVE login?</q></li>
+        </ul>
+      </section>
+
+      <section id="trouble" aria-labelledby="trouble-title">
+        <h2 id="trouble-title">Troubleshooting</h2>
+        <dl class="faq">
+          <div>
+            <dt>Cursor shows no tools</dt>
+            <dd>The MCP server is not running. Run <code>scripts/viewlift-ai.sh status</code>, then <code>restart</code>. Its log is <code>.viewlift-ai-mcp.log</code>.</dd>
+          </div>
+          <div>
+            <dt>Tools return "console is not reachable"</dt>
+            <dd>The console is stopped or on another port. Start it, or set <code>VIEWLIFT_AI_URL</code> for the MCP server.</dd>
+          </div>
+          <div>
+            <dt>"client_id is required" or a list of apps</dt>
+            <dd>The agent did not name one app. Tell it which app, or ask it to call <code>list_apps</code> first.</dd>
+          </div>
+          <div>
+            <dt>"debug command timed out"</dt>
+            <dd>The app is in the background, paused in the debugger, or offline. Bring it to the front and retry.</dd>
+          </div>
+          <div>
+            <dt>"module disabled" in the result</dt>
+            <dd>That module is not in the app's <code>debugModules</code>. Add it to the capture configuration and rebuild.</dd>
+          </div>
+        </dl>
+      </section>
+    </article>
+  </div>
+</div>
+{% endblock %}
+{% block scripts %}
+<script src="/static/js/agent.js?v=1"></script>
+{% endblock %}

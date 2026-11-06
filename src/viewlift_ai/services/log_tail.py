@@ -20,6 +20,14 @@ SourceKind = Literal["simulator", "device", "sdk"]
 _PROCESS_NAME = re.compile(r"[A-Za-z0-9 ._-]{1,64}")
 
 
+@dataclass(slots=True, frozen=True)
+class AppAttribution:
+    """Ties Mac-side log lines to one SDK app instance when its process is streamed."""
+
+    client_id: str
+    executable: str
+
+
 @dataclass(slots=True)
 class LogTailService:
     """Start/stop one active external log source (simulator or device)."""
@@ -28,6 +36,7 @@ class LogTailService:
     simulator: SimulatorLogCollectorProtocol = field(default_factory=SimulatorLogCollector)
     device: DeviceLogCollectorProtocol = field(default_factory=DeviceLogCollector)
     _active: SourceKind | None = field(default=None, init=False)
+    _attribution: AppAttribution | None = field(default=None, init=False)
 
     def list_sources(self) -> dict[str, object]:
         sims = self.simulator.list_booted()
@@ -50,11 +59,13 @@ class LogTailService:
         }
 
     def status(self) -> dict[str, object]:
+        client_id = self._attribution.client_id if self._attribution else None
         if self.simulator.running:
             return {
                 "running": True,
                 "source": "simulator",
                 "udid": self.simulator.active_udid,
+                "client_id": client_id,
             }
         if self.device.running:
             return {
@@ -62,8 +73,9 @@ class LogTailService:
                 "source": "device",
                 "udid": self.device.active_udid,
                 "last_error": getattr(self.device, "last_error", None),
+                "client_id": client_id,
             }
-        return {"running": False, "source": None, "udid": None}
+        return {"running": False, "source": None, "udid": None, "client_id": None}
 
     def start(
         self,
@@ -71,6 +83,7 @@ class LogTailService:
         *,
         udid: str | None = None,
         process: str | None = None,
+        attribution: AppAttribution | None = None,
     ) -> dict[str, object]:
         kind = (source or "").strip().lower()
         if kind not in {"simulator", "device"}:
@@ -86,14 +99,22 @@ class LogTailService:
             }
         current = self.status()
         if current.get("running"):
-            self.set_filter(process=process_name or "")
-            return {
-                "ok": True,
-                "detail": (
-                    f"Streaming {current.get('source')} ({current.get('udid')}). "
-                    "Filter updated. Left the USB session up."
-                ),
-            }
+            requested = (udid or "").strip()
+            same_target = current.get("source") == kind and (
+                not requested or requested == current.get("udid")
+            )
+            if same_target:
+                self.set_filter(process=process_name or "")
+                self._attribution = _matching_attribution(attribution, process_name)
+                return {
+                    "ok": True,
+                    "detail": (
+                        f"Streaming {current.get('source')} ({current.get('udid')}). "
+                        "Filter updated. Left the USB session up."
+                    ),
+                }
+            self.stop()
+        self._attribution = _matching_attribution(attribution, process_name)
         if kind == "simulator":
             target = (udid or "").strip()
             if not target:
@@ -117,7 +138,7 @@ class LogTailService:
             result = self.simulator.start(
                 target,
                 on_line=lambda level, subsystem, message: self._on_line(
-                    "simulator", level, subsystem, message
+                    "simulator", level, subsystem, message, process=process_name or ""
                 ),
                 process=process_name,
             )
@@ -144,6 +165,7 @@ class LogTailService:
         if self.device.running or self._active == "device":
             results.append(self.device.stop())
         self._active = None
+        self._attribution = None
         if not results:
             return {"ok": True, "detail": "No log stream was running."}
         # Prefer last detail
@@ -185,13 +207,30 @@ class LogTailService:
         if selector is not None and not selector.allows(process=process, subsystem=subsystem):
             return
         request_id = _extract_request_id(message)
+        udid = self.simulator.active_udid if source == "simulator" else self.device.active_udid
+        attribution = self._attribution
+        client_id = None
+        if attribution is not None and process and process == attribution.executable:
+            client_id = attribution.client_id
         self.capture.persist(
             level=level,
             subsystem=subsystem,
             message=message,
             source=source,
             request_id=request_id,
+            client_id=client_id,
+            udid=udid,
         )
+
+
+def _matching_attribution(
+    attribution: AppAttribution | None,
+    process: str | None,
+) -> AppAttribution | None:
+    """Only attribute when the stream is narrowed to that app's own executable."""
+    if attribution is None or not process or process != attribution.executable:
+        return None
+    return attribution
 
 
 def _extract_request_id(message: str) -> str | None:

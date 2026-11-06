@@ -8,7 +8,7 @@ import inspect
 import json
 import sqlite3
 import threading
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
@@ -45,7 +45,8 @@ CREATE TABLE IF NOT EXISTS flows (
     websocket_messages BLOB NOT NULL,
     content_type TEXT,
     query TEXT,
-    timing_json TEXT
+    timing_json TEXT,
+    client_id TEXT
 );
 
 CREATE INDEX IF NOT EXISTS idx_flows_created_at ON flows(created_at);
@@ -60,7 +61,9 @@ CREATE TABLE IF NOT EXISTS logs (
     message BLOB NOT NULL,
     created_at TEXT NOT NULL,
     request_id TEXT,
-    source TEXT NOT NULL
+    source TEXT NOT NULL,
+    client_id TEXT,
+    udid TEXT
 );
 
 CREATE INDEX IF NOT EXISTS idx_logs_created_at ON logs(created_at);
@@ -77,6 +80,18 @@ CREATE TABLE IF NOT EXISTS debug_events (
 
 CREATE INDEX IF NOT EXISTS idx_debug_events_client_module
 ON debug_events(client_id, module, created_at);
+
+CREATE TABLE IF NOT EXISTS clients (
+    client_id TEXT PRIMARY KEY,
+    device_key TEXT NOT NULL DEFAULT '',
+    bundle_id TEXT NOT NULL DEFAULT '',
+    payload BLOB NOT NULL,
+    first_seen REAL NOT NULL,
+    last_seen REAL NOT NULL,
+    superseded_by TEXT
+);
+
+CREATE INDEX IF NOT EXISTS idx_clients_device_bundle ON clients(device_key, bundle_id);
 
 CREATE TABLE IF NOT EXISTS meta (
     key TEXT PRIMARY KEY,
@@ -137,8 +152,8 @@ class EncryptedSqliteStore:
                 id, method, host, path, status, duration_ms, size_bytes, protocol,
                 source, created_at, request_headers, request_body,
                 response_headers, response_body, error, request_id, tls_failed,
-                websocket_messages, content_type, query, timing_json
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                websocket_messages, content_type, query, timing_json, client_id
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 flow.id,
@@ -162,6 +177,7 @@ class EncryptedSqliteStore:
                 flow.content_type,
                 flow.query,
                 _encode_timing(flow.timing),
+                flow.client_id,
             ),
         )
         self._conn.commit()
@@ -263,9 +279,11 @@ class EncryptedSqliteStore:
         status: int | None = None,
         content_type: str | None = None,
         text: str | None = None,
+        client_ids: Sequence[str] | None = None,
     ) -> list[FlowRecord]:
         clauses: list[str] = []
         params: list[object] = []
+        _client_clause(client_ids, clauses, params)
         if method:
             clauses.append("UPPER(method) = UPPER(?)")
             params.append(method)
@@ -292,19 +310,107 @@ class EncryptedSqliteStore:
             flows = [f for f in flows if _flow_matches_text(f, needle)]
         return flows[:limit]
 
+    def delete_logs(self) -> int:
+        cur = self._conn.execute("DELETE FROM logs")
+        self._conn.commit()
+        return int(cur.rowcount)
+
     def wipe_session(self) -> int:
         cur = self._conn.execute("DELETE FROM flows")
         logs = self._conn.execute("DELETE FROM logs")
         debug = self._conn.execute("DELETE FROM debug_events")
         self._conn.commit()
+        self._conn.execute("VACUUM")
         return int(cur.rowcount) + int(logs.rowcount) + int(debug.rowcount)
+
+    def delete_client_data(self, client_id: str) -> int:
+        """Remove one app instance's flows, logs, and debug events."""
+        flows = self._conn.execute("DELETE FROM flows WHERE client_id = ?", (client_id,))
+        logs = self._conn.execute("DELETE FROM logs WHERE client_id = ?", (client_id,))
+        debug = self._conn.execute("DELETE FROM debug_events WHERE client_id = ?", (client_id,))
+        self._conn.commit()
+        return int(flows.rowcount) + int(logs.rowcount) + int(debug.rowcount)
+
+    def client_counts(self) -> dict[str, dict[str, int]]:
+        """Stored flow and log counts per client_id (unattributed rows are skipped)."""
+        out: dict[str, dict[str, int]] = {}
+        for table, key in (("flows", "flows"), ("logs", "logs")):
+            rows = self._conn.execute(
+                f"SELECT client_id, COUNT(*) AS n FROM {table} "
+                "WHERE client_id IS NOT NULL GROUP BY client_id"
+            ).fetchall()
+            for row in rows:
+                out.setdefault(row["client_id"], {"flows": 0, "logs": 0})[key] = int(row["n"])
+        return out
+
+    def save_client(
+        self,
+        *,
+        client_id: str,
+        device_key: str,
+        bundle_id: str,
+        payload: dict[str, object],
+        first_seen: float,
+        last_seen: float,
+        superseded_by: str | None = None,
+    ) -> None:
+        encoded = json.dumps(payload, separators=(",", ":"), sort_keys=True).encode("utf-8")
+        self._conn.execute(
+            """
+            INSERT OR REPLACE INTO clients (
+                client_id, device_key, bundle_id, payload, first_seen, last_seen, superseded_by
+            ) VALUES (?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                client_id,
+                device_key,
+                bundle_id,
+                self._cipher.encrypt(encoded),
+                first_seen,
+                last_seen,
+                superseded_by,
+            ),
+        )
+        self._conn.commit()
+
+    def list_clients(self) -> list[dict[str, object]]:
+        rows = self._conn.execute(
+            "SELECT * FROM clients ORDER BY last_seen DESC"
+        ).fetchall()
+        out: list[dict[str, object]] = []
+        for row in rows:
+            try:
+                payload = json.loads(self._cipher.decrypt(row["payload"]).decode("utf-8"))
+            except Exception:
+                continue
+            out.append(
+                {
+                    "client_id": row["client_id"],
+                    "device_key": row["device_key"],
+                    "bundle_id": row["bundle_id"],
+                    "payload": payload if isinstance(payload, dict) else {},
+                    "first_seen": float(row["first_seen"]),
+                    "last_seen": float(row["last_seen"]),
+                    "superseded_by": row["superseded_by"],
+                }
+            )
+        return out
+
+    def delete_clients(self, client_ids: Sequence[str]) -> int:
+        ids = [item for item in client_ids if item]
+        if not ids:
+            return 0
+        marks = ",".join("?" for _ in ids)
+        cursor = self._conn.execute(f"DELETE FROM clients WHERE client_id IN ({marks})", ids)
+        self._conn.commit()
+        return int(cursor.rowcount)
 
     def save_log(self, log: LogRecord) -> None:
         self._conn.execute(
             """
             INSERT OR REPLACE INTO logs (
-                id, level, subsystem, message, created_at, request_id, source
-            ) VALUES (?, ?, ?, ?, ?, ?, ?)
+                id, level, subsystem, message, created_at, request_id, source, client_id, udid
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 log.id,
@@ -314,6 +420,8 @@ class EncryptedSqliteStore:
                 _iso(log.created_at),
                 log.request_id,
                 log.source,
+                log.client_id,
+                log.udid,
             ),
         )
         self._conn.commit()
@@ -332,9 +440,11 @@ class EncryptedSqliteStore:
         level: str | None = None,
         subsystem: str | None = None,
         text: str | None = None,
+        client_ids: Sequence[str] | None = None,
     ) -> list[LogRecord]:
         clauses: list[str] = []
         params: list[object] = []
+        _client_clause(client_ids, clauses, params)
         if source:
             clauses.append("source = ?")
             params.append(source)
@@ -364,29 +474,46 @@ class EncryptedSqliteStore:
             ]
         return logs[:limit]
 
-    def logs_for_request(self, request_id: str, *, limit: int = 100) -> list[LogRecord]:
+    def logs_for_request(
+        self,
+        request_id: str,
+        *,
+        limit: int = 100,
+        client_id: str | None = None,
+    ) -> list[LogRecord]:
+        clauses = ["request_id = ?"]
+        params: list[object] = [request_id]
+        if client_id:
+            clauses.append("client_id = ?")
+            params.append(client_id)
+        params.append(limit)
         rows = self._conn.execute(
-            """
+            f"""
             SELECT * FROM logs
-            WHERE request_id = ?
+            WHERE {" AND ".join(clauses)}
             ORDER BY created_at DESC
             LIMIT ?
             """,
-            (request_id, limit),
+            params,
         ).fetchall()
         return [self._row_to_log(row) for row in rows]
 
-    def flow_id_for_request(self, request_id: str) -> str | None:
+    def flow_id_for_request(self, request_id: str, *, client_id: str | None = None) -> str | None:
         if not request_id:
             return None
+        clauses = ["request_id = ?"]
+        params: list[object] = [request_id]
+        if client_id:
+            clauses.append("client_id = ?")
+            params.append(client_id)
         row = self._conn.execute(
-            """
+            f"""
             SELECT id FROM flows
-            WHERE request_id = ?
+            WHERE {" AND ".join(clauses)}
             ORDER BY created_at DESC
             LIMIT 1
             """,
-            (request_id,),
+            params,
         ).fetchone()
         if row is None:
             return None
@@ -432,8 +559,21 @@ class EncryptedSqliteStore:
             self._conn.execute("ALTER TABLE flows ADD COLUMN query TEXT")
         if "timing_json" not in cols:
             self._conn.execute("ALTER TABLE flows ADD COLUMN timing_json TEXT")
+        if "client_id" not in cols:
+            self._conn.execute("ALTER TABLE flows ADD COLUMN client_id TEXT")
+        log_cols = {row[1] for row in self._conn.execute("PRAGMA table_info(logs)")}
+        if "client_id" not in log_cols:
+            self._conn.execute("ALTER TABLE logs ADD COLUMN client_id TEXT")
+        if "udid" not in log_cols:
+            self._conn.execute("ALTER TABLE logs ADD COLUMN udid TEXT")
         self._conn.execute(
             "CREATE INDEX IF NOT EXISTS idx_flows_content_type ON flows(content_type)"
+        )
+        self._conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_flows_client ON flows(client_id, created_at)"
+        )
+        self._conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_logs_client ON logs(client_id, created_at)"
         )
         self._migrate_log_messages()
 
@@ -549,9 +689,11 @@ class EncryptedSqliteStore:
             content_type=content_type,
             query=query,
             timing=_decode_timing(timing_raw),
+            client_id=row["client_id"] if "client_id" in keys else None,
         )
 
     def _row_to_log(self, row: sqlite3.Row) -> LogRecord:
+        keys = set(row.keys())
         return LogRecord(
             id=row["id"],
             level=LogLevel(row["level"]),
@@ -560,7 +702,25 @@ class EncryptedSqliteStore:
             created_at=_parse_iso(row["created_at"]),
             request_id=row["request_id"],
             source=row["source"],
+            client_id=row["client_id"] if "client_id" in keys else None,
+            udid=row["udid"] if "udid" in keys else None,
         )
+
+
+def _client_clause(
+    client_ids: Sequence[str] | None,
+    clauses: list[str],
+    params: list[object],
+) -> None:
+    """None means every app; an empty selection matches nothing."""
+    if client_ids is None:
+        return
+    ids = [item for item in client_ids if item]
+    if not ids:
+        clauses.append("0")
+        return
+    clauses.append(f"client_id IN ({','.join('?' for _ in ids)})")
+    params.extend(ids)
 
 
 def _iso(value: datetime) -> str:

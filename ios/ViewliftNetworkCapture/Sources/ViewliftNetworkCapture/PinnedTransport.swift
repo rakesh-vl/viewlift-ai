@@ -6,21 +6,40 @@ import Security
 /// Package-owned URLSession transport with SHA-256 certificate pin. Never intercepted.
 public final class PinnedHTTPSTransport: NSObject, CaptureTransporting,
     URLSessionDelegate, @unchecked Sendable {
-    private static let log = Logger(subsystem: "com.viewlift.networkcapture", category: "transport")
+    static let log = Logger(subsystem: "com.viewlift.networkcapture", category: "transport")
     private static let maxBackoffSeconds: UInt64 = 30
 
-    private let lock = NSLock()
-    private var configuration: CaptureConfiguration?
-    private var sessionToken: String?
-    private var session: URLSession?
-    private var dripTask: Task<Void, Never>?
+    // Shared with PinnedTransport+Recovery.swift. Always read and written under `lock`.
+    let lock = NSLock()
+    var configuration: CaptureConfiguration?
+    var sessionToken: String?
+    var session: URLSession?
+    var dripTask: Task<Void, Never>?
     #if DEBUG || VIEWLIFT_CAPTURE_ENABLED
-    private var discovery: ReceiverDiscovery?
+    var discovery: ReceiverDiscovery?
     #endif
+    let memory: ReceiverMemoryStoring
+    var route = ReceiverRoute()
+    var wakeRequested = false
 
-    public override init() {
+    private let identity: ClientIdentityProviding
+    private var deviceKey = ""
+
+    init(identity: ClientIdentityProviding, memory: ReceiverMemoryStoring) {
+        self.identity = identity
+        self.memory = memory
         super.init()
     }
+
+    public convenience init(identity: ClientIdentityProviding) {
+        self.init(identity: identity, memory: UserDefaultsReceiverMemory())
+    }
+
+    public override convenience init() {
+        self.init(identity: UserDefaultsClientIdentity.shared)
+    }
+
+    static let clientHeader = "X-Viewlift-Client-ID"
 
     /// Pairing runs inside the drain loop with backoff, so a receiver that is offline at launch,
     /// a pending Local Network prompt, or a dashboard restart (lost session) all recover.
@@ -28,6 +47,7 @@ public final class PinnedHTTPSTransport: NSObject, CaptureTransporting,
         prepareSession(configuration: configuration)
         let receiver = configuration.receiverURL.absoluteString
         Self.log.info("Capture started. Receiver \(receiver, privacy: .public)")
+        restoreRememberedReceiver()
         startDiscovery()
         startDrainLoop()
     }
@@ -62,15 +82,9 @@ public final class PinnedHTTPSTransport: NSObject, CaptureTransporting,
         session = nil
         sessionToken = nil
         configuration = nil
+        route = ReceiverRoute()
+        wakeRequested = false
         lock.unlock()
-    }
-
-    public func send(flow: CapturedHTTPExchange) async throws {
-        try await post(path: "v1/flows", body: flow)
-    }
-
-    public func send(log: CapturedLogEvent) async throws {
-        try await post(path: "v1/logs", body: log)
     }
 
     private func pair(using configuration: CaptureConfiguration) async throws {
@@ -80,10 +94,10 @@ public final class PinnedHTTPSTransport: NSObject, CaptureTransporting,
         request.httpMethod = "POST"
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         CaptureRuntime.markInternal(&request)
-        let payload = ["pairing_token": pairingToken]
+        await refreshDeviceKey()
+        let payload = pairPayload(pairingToken: pairingToken)
         request.httpBody = try JSONSerialization.data(withJSONObject: payload)
-        let session = try requireSession()
-        let (data, response) = try await session.data(for: request)
+        let (data, response) = try await perform(request)
         try Self.requireSuccess(response, onFailure: TransportError.pairingFailed)
         let decoded = try JSONDecoder().decode(PairResponse.self, from: data)
         storeSessionToken(decoded.sessionToken)
@@ -99,8 +113,7 @@ public final class PinnedHTTPSTransport: NSObject, CaptureTransporting,
         request.httpMethod = "POST"
         request.setValue(configuration.debugKey, forHTTPHeaderField: "X-Viewlift-Debug-Key")
         CaptureRuntime.markInternal(&request)
-        let session = try requireSession()
-        let (data, response) = try await session.data(for: request)
+        let (data, response) = try await perform(request)
         try Self.requireSuccess(response, onFailure: TransportError.pairingFailed)
         return try JSONDecoder().decode(DebugPairResponse.self, from: data).pairingToken
     }
@@ -123,6 +136,13 @@ public final class PinnedHTTPSTransport: NSObject, CaptureTransporting,
         lock.lock()
         defer { lock.unlock() }
         return sessionToken != nil
+    }
+
+    /// Debug key arrives from Bonjour after launch. Keep the pair loop short until then.
+    private var waitingForDiscovery: Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        return (configuration?.debugKey ?? "").isEmpty
     }
 
     private func post<T: Encodable>(
@@ -157,13 +177,17 @@ public final class PinnedHTTPSTransport: NSObject, CaptureTransporting,
         }
         CaptureRuntime.markInternal(&request)
         request.httpBody = body
-        let session = try requireSession()
-        let (data, response) = try await session.data(for: request)
+        let (data, response) = try await perform(request)
+        if (response as? HTTPURLResponse)?.statusCode == 401 {
+            // Receiver restarted or the session expired. Drop the token so the loop pairs again.
+            storeSessionToken(nil)
+            requestWake()
+        }
         try Self.requireSuccess(response, onFailure: TransportError.uploadFailed)
         return data
     }
 
-    private func startDrainLoop() {
+    func startDrainLoop() {
         dripTask?.cancel()
         dripTask = Task { [weak self] in
             var backoff: UInt64 = 1
@@ -173,8 +197,13 @@ public final class PinnedHTTPSTransport: NSObject, CaptureTransporting,
                     if await self.pairOnce() {
                         backoff = 1
                     } else {
-                        try? await Task.sleep(nanoseconds: backoff * 1_000_000_000)
-                        backoff = min(backoff * 2, Self.maxBackoffSeconds)
+                        let seconds = self.waitingForDiscovery ? 1 : backoff
+                        // A wake (foreground, new address, network change) cancels the wait and the backoff.
+                        if await self.sleepUnlessWoken(seconds: seconds) {
+                            backoff = 1
+                        } else if !self.waitingForDiscovery {
+                            backoff = min(backoff * 2, Self.maxBackoffSeconds)
+                        }
                     }
                     continue
                 }
@@ -210,7 +239,7 @@ public final class PinnedHTTPSTransport: NSObject, CaptureTransporting,
         }
     }
 
-    private func requireSession() throws -> URLSession {
+    func requireSession() throws -> URLSession {
         lock.lock()
         defer { lock.unlock() }
         guard let session else { throw TransportError.notStarted }
@@ -231,54 +260,6 @@ public final class PinnedHTTPSTransport: NSObject, CaptureTransporting,
         return sessionToken
     }
 
-    public func urlSession(
-        _ session: URLSession,
-        didReceive challenge: URLAuthenticationChallenge,
-        completionHandler: @escaping (URLSession.AuthChallengeDisposition, URLCredential?) -> Void
-    ) {
-        guard challenge.protectionSpace.authenticationMethod == NSURLAuthenticationMethodServerTrust,
-              let trust = challenge.protectionSpace.serverTrust else {
-            completionHandler(.cancelAuthenticationChallenge, nil)
-            return
-        }
-        let expected: String?
-        lock.lock()
-        expected = configuration?.pinnedCertificateSHA256.lowercased()
-        lock.unlock()
-        guard let expected else {
-            completionHandler(.cancelAuthenticationChallenge, nil)
-            return
-        }
-        if evaluatePin(trust: trust, expectedSHA256Hex: expected) {
-            completionHandler(.useCredential, URLCredential(trust: trust))
-        } else {
-            Self.log.error("Receiver certificate does not match pinned SHA-256. Update the fingerprint.")
-            completionHandler(.cancelAuthenticationChallenge, nil)
-        }
-    }
-
-    func evaluatePin(trust: SecTrust, expectedSHA256Hex: String) -> Bool {
-        guard let chain = SecTrustCopyCertificateChain(trust) as? [SecCertificate],
-              let leaf = chain.first else {
-            return false
-        }
-        let data = SecCertificateCopyData(leaf) as Data
-        let normalized = expectedSHA256Hex
-            .replacingOccurrences(of: ":", with: "")
-            .replacingOccurrences(of: " ", with: "")
-            .lowercased()
-        // Exact leaf pin authenticates the dashboard's self-signed certificate.
-        // Requiring system trust here would reject that certificate before pin comparison.
-        return sha256Hex(data) == normalized
-    }
-
-    private func sha256Hex(_ data: Data) -> String {
-        var hash = [UInt8](repeating: 0, count: Int(CC_SHA256_DIGEST_LENGTH))
-        data.withUnsafeBytes { buffer in
-            _ = CC_SHA256(buffer.baseAddress, CC_LONG(buffer.count), &hash)
-        }
-        return hash.map { String(format: "%02x", $0) }.joined()
-    }
 }
 
 extension PinnedHTTPSTransport: DebugTransporting {
@@ -290,7 +271,7 @@ extension PinnedHTTPSTransport: DebugTransporting {
         try await post(
             path: "v1/debug/events",
             body: event,
-            additionalHeaders: ["X-Viewlift-Client-ID": clientId]
+            additionalHeaders: [Self.clientHeader: clientId]
         )
     }
 
@@ -299,7 +280,7 @@ extension PinnedHTTPSTransport: DebugTransporting {
             path: "v1/debug/commands",
             method: "GET",
             body: nil,
-            additionalHeaders: ["X-Viewlift-Client-ID": clientId]
+            additionalHeaders: [Self.clientHeader: clientId]
         )
         return try JSONDecoder().decode(DebugCommandResponse.self, from: data).commands
     }
@@ -330,19 +311,17 @@ extension PinnedHTTPSTransport {
             lock.unlock()
             return
         }
+        route.candidates.replace(with: record.candidateHosts, preferring: record.host)
         let unchanged = updated.receiverURL.host == record.host
             && updated.receiverURL.port == record.port
             && updated.pinnedCertificateSHA256 == fingerprint
             && updated.debugKey == record.debugKey
         if unchanged {
             lock.unlock()
+            remember(record, fingerprint: fingerprint)
             return
         }
-        var parts = URLComponents()
-        parts.scheme = "https"
-        parts.host = record.host
-        parts.port = record.port
-        guard let url = parts.url else {
+        guard let url = Self.receiverURL(host: record.host, port: record.port) else {
             lock.unlock()
             return
         }
@@ -352,30 +331,39 @@ extension PinnedHTTPSTransport {
         configuration = updated
         sessionToken = nil
         lock.unlock()
+        remember(record, fingerprint: fingerprint)
+        requestWake()
         let host = record.host
         let port = record.port
         Self.log.info("Dashboard found at \(host, privacy: .public):\(port, privacy: .public)")
     }
+
 }
 
-private struct PairResponse: Decodable {
-    let sessionToken: String
-    enum CodingKeys: String, CodingKey {
-        case sessionToken = "session_token"
+extension PinnedHTTPSTransport {
+    public func send(flow: CapturedHTTPExchange) async throws {
+        try await post(path: "v1/flows", body: flow, additionalHeaders: clientHeaders)
     }
-}
 
-private struct DebugPairResponse: Decodable {
-    let pairingToken: String
-    enum CodingKeys: String, CodingKey {
-        case pairingToken = "pairing_token"
+    public func send(log: CapturedLogEvent) async throws {
+        try await post(path: "v1/logs", body: log, additionalHeaders: clientHeaders)
     }
-}
 
-enum TransportError: Error {
-    case notStarted
-    case notPaired
-    case missingCredentials
-    case pairingFailed(status: Int)
-    case uploadFailed(status: Int)
+    fileprivate var clientHeaders: [String: String] {
+        [Self.clientHeader: identity.clientId]
+    }
+
+    func pairPayload(pairingToken: String) -> [String: String] {
+        lock.lock()
+        let key = deviceKey
+        lock.unlock()
+        return ["pairing_token": pairingToken, "client_id": identity.clientId, "device_key": key]
+    }
+
+    fileprivate func refreshDeviceKey() async {
+        let device = await MainActor.run { DeviceIdentity.current() }
+        lock.lock()
+        deviceKey = device.deviceKey
+        lock.unlock()
+    }
 }

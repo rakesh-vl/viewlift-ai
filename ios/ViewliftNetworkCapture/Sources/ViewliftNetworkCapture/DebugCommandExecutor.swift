@@ -79,6 +79,8 @@ final class DebugCommandExecutor {
         switch command.name {
         case "ui.hierarchy":
             return await UIInspectionService.hierarchy()
+        case "ui.describe":
+            return await UIInspectionService.describe(id: string(command.payload["id"]))
         case "ui.highlight":
             return await UIInspectionService.highlight(id: string(command.payload["id"]))
         case "ui.edit":

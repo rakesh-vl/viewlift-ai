@@ -7,6 +7,7 @@ import logging
 
 from fastapi import APIRouter, Request, WebSocket, WebSocketDisconnect
 
+from viewlift_ai.api.scope import app_tag
 from viewlift_ai.models.breakpoints import pending_to_dict
 from viewlift_ai.services.flow_present import flow_summary
 from viewlift_ai.services.log_present import log_summary
@@ -62,9 +63,18 @@ async def logs_ws(websocket: WebSocket) -> None:
     if bus is None:
         await websocket.close(code=1011)
         return
+    scope = _scope(websocket)
     try:
         async for log in bus.subscribe():
-            await websocket.send_json({"type": "log", "log": log_summary(log)})
+            if scope is not None and log.client_id not in scope:
+                continue
+            await websocket.send_json(
+                {
+                    "type": "log",
+                    "log": log_summary(log),
+                    "app": app_tag(websocket.app, log.client_id),
+                }
+            )
     except WebSocketDisconnect:
         return
     except asyncio.CancelledError:
@@ -84,8 +94,11 @@ async def debug_ws(websocket: WebSocket) -> None:
     if bus is None:
         await websocket.close(code=1011)
         return
+    scope = _scope(websocket)
     try:
         async for event in bus.subscribe():
+            if scope is not None and not _debug_event_in_scope(event, scope):
+                continue
             await websocket.send_json(event)
     except WebSocketDisconnect:
         return
@@ -100,13 +113,32 @@ async def debug_ws(websocket: WebSocket) -> None:
 
 
 async def _pump_flows(websocket: WebSocket, bus) -> None:
+    scope = _scope(websocket)
     async for flow in bus.subscribe():
+        if scope is not None and flow.client_id not in scope:
+            continue
         await websocket.send_json(
             {
                 "type": "flow",
                 "flow": flow_summary(flow),
+                "app": app_tag(websocket.app, flow.client_id),
             }
         )
+
+
+def _scope(websocket: WebSocket) -> set[str] | None:
+    """Optional `?client_id=` filter (repeatable). Absent means every app."""
+    ids = [item for item in websocket.query_params.getlist("client_id") if item]
+    return set(ids) if ids else None
+
+
+def _debug_event_in_scope(event: dict, scope: set[str]) -> bool:
+    if event.get("type") == "apps-changed":
+        return True
+    nested = event.get("event") if isinstance(event.get("event"), dict) else {}
+    client = event.get("client") if isinstance(event.get("client"), dict) else {}
+    client_id = event.get("client_id") or nested.get("client_id") or client.get("id")
+    return client_id in scope
 
 
 async def _pump_breakpoints(websocket: WebSocket, registry) -> None:

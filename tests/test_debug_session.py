@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import threading
+import time
 from pathlib import Path
 
 import pytest
@@ -9,7 +11,7 @@ from nacl.secret import SecretBox
 
 from viewlift_ai.crypto import SecretBoxCipher
 from viewlift_ai.models.flow import RetentionPolicy
-from viewlift_ai.services.debug_session import DebugSessionService
+from viewlift_ai.services.debug_session import CLIENT_TTL_SECONDS, DebugSessionService
 from viewlift_ai.services.encrypted_store import EncryptedSqliteStore
 from viewlift_ai.services.event_bus import EventBus
 
@@ -35,6 +37,39 @@ def _register(service: DebugSessionService) -> str:
         }
     )
     return str(result["client_id"])
+
+
+def test_register_keeps_reported_app_identity(tmp_path: Path) -> None:
+    service, _ = _service(tmp_path)
+    service.register(
+        {
+            "client_id": "phone-2",
+            "app_name": "Demo",
+            "bundle_id": "com.example.demo",
+            "app_version": "2.4",
+            "build": "77",
+            "executable": "Demo",
+            "url_schemes": ["demo", "demo", "bad scheme"],
+            "frameworks": [
+                {"id": "org.alamofire.Alamofire", "version": "5.9.1", "name": "Alamofire"},
+                {"id": "org.alamofire.Alamofire", "version": "dup"},
+                "com.example.Plain",
+            ],
+        }
+    )
+
+    client = service.get_client("phone-2")
+
+    assert client["app_version"] == "2.4"
+    assert client["executable"] == "Demo"
+    assert client["url_schemes"] == ["demo"]
+    assert client["framework_count"] == 2
+    assert client["frameworks"][1] == {
+        "id": "org.alamofire.Alamofire",
+        "version": "5.9.1",
+        "name": "Alamofire",
+    }
+    assert service.latest_client_id() == "phone-2"
 
 
 def test_register_enqueue_poll_and_event(tmp_path: Path) -> None:
@@ -122,3 +157,117 @@ def test_keychain_values_are_stripped_before_persistence(tmp_path: Path) -> None
     payload = store.list_debug_events(client_id=client)[0]["payload"]
     item = payload["items"][0]
     assert item == {"account": "user", "service": "auth"}
+
+
+def test_two_apps_on_one_device_stay_distinct(tmp_path: Path) -> None:
+    service, _store = _service(tmp_path)
+    shared = {
+        "device_key": "SIM-1",
+        "device_name": "iPhone 16",
+        "device_model": "iPhone17,3",
+        "is_simulator": True,
+        "platform": "iOS",
+        "os_version": "26",
+    }
+    service.register({**shared, "client_id": "app-a", "app_name": "Alpha", "bundle_id": "com.a"})
+    service.register({**shared, "client_id": "app-b", "app_name": "Beta", "bundle_id": "com.b"})
+    service.register(
+        {
+            "client_id": "app-c",
+            "app_name": "Gamma",
+            "bundle_id": "com.c",
+            "device_key": "SIM-2",
+            "device_name": "iPhone 15",
+            "is_simulator": True,
+        }
+    )
+
+    saved = service.get_client("app-a")
+    assert saved["device_key"] == "SIM-1"
+    assert saved["device_name"] == "iPhone 16"
+    assert saved["device_model"] == "iPhone17,3"
+    assert saved["is_simulator"] is True
+
+    grouped = {str(item["device_key"]): item["apps"] for item in service.list_devices()}
+    assert {app["id"] for app in grouped["SIM-1"]} == {"app-a", "app-b"}
+    assert {app["id"] for app in grouped["SIM-2"]} == {"app-c"}
+
+
+def _answer(service: DebugSessionService, client_id: str, result: dict[str, object]) -> None:
+    for _ in range(100):
+        polled = service.poll(client_id)
+        if polled:
+            service.ingest_event(
+                client_id,
+                {
+                    "module": "performance",
+                    "kind": "command-result",
+                    "payload": {
+                        "command_id": polled[0]["id"],
+                        "name": polled[0]["name"],
+                        "ok": True,
+                        "result": result,
+                    },
+                },
+            )
+            return
+        time.sleep(0.01)
+
+
+def test_invoke_returns_matching_event(tmp_path: Path) -> None:
+    service, _store = _service(tmp_path)
+    client = _register(service)
+    threading.Thread(
+        target=_answer,
+        args=(service, client, {"cpu": 1.5}),
+        daemon=True,
+    ).start()
+    result = service.invoke(client_id=client, name="performance.snapshot", payload={}, timeout=2)
+    event = result["event"]
+    assert isinstance(event, dict)
+    assert event["payload"]["command_id"] == result["command"]["id"]
+    assert event["payload"]["result"] == {"cpu": 1.5}
+
+
+def test_invoke_rejects_mutate_without_flag(tmp_path: Path) -> None:
+    service, _store = _service(tmp_path)
+    client = _register(service)
+    with pytest.raises(PermissionError, match="mutate"):
+        service.invoke(
+            client_id=client,
+            name="feature_flags.set",
+            payload={"key": "a", "enabled": True},
+        )
+    assert service.poll(client) == []
+
+
+def test_invoke_with_mutate_flag_waits(tmp_path: Path) -> None:
+    service, _store = _service(tmp_path)
+    client = _register(service)
+    threading.Thread(
+        target=_answer,
+        args=(service, client, {"updated": True}),
+        daemon=True,
+    ).start()
+    result = service.invoke(
+        client_id=client,
+        name="feature_flags.set",
+        payload={"key": "a", "enabled": True},
+        mutate=True,
+        timeout=2,
+    )
+    event = result["event"]
+    assert isinstance(event, dict)
+    assert event["payload"]["result"] == {"updated": True}
+
+
+def test_invoke_rejects_missing_and_offline_clients(tmp_path: Path) -> None:
+    service, _store = _service(tmp_path)
+    with pytest.raises(LookupError, match="required"):
+        service.invoke(client_id="", name="performance.snapshot", payload={})
+    client = _register(service)
+    base = service.time_fn()
+    service.time_fn = lambda: base + CLIENT_TTL_SECONDS + 5
+    with pytest.raises(LookupError, match="offline"):
+        service.invoke(client_id=client, name="performance.snapshot", payload={})
+    assert service.poll(client) == []

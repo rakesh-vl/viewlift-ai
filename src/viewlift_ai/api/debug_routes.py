@@ -2,13 +2,15 @@
 
 from __future__ import annotations
 
+import asyncio
 from pathlib import Path
-from typing import Any
+from typing import Annotated, Any
 
-from fastapi import APIRouter, HTTPException, Request
+from fastapi import APIRouter, HTTPException, Query, Request
 from fastapi.responses import HTMLResponse
 from fastapi.templating import Jinja2Templates
 
+from viewlift_ai.api.scope import resolve_client_ids
 from viewlift_ai.services.analytics_inspect import list_analytics_traffic
 from viewlift_ai.services.debug_toolkit import (
     ANALYTICS_HOST_MARKERS,
@@ -20,12 +22,16 @@ from viewlift_ai.services.debug_toolkit import (
     replay_http,
     set_device_location,
 )
-from viewlift_ai.services.ott_inspect import enrich_frames, load_spm_packages
+from viewlift_ai.services.ott_inspect import enrich_frames
+from viewlift_ai.services.package_detect import AppIdentity, detect_packages
 
 WEB_ROOT = Path(__file__).resolve().parent.parent / "web"
 TEMPLATES = Jinja2Templates(directory=str(WEB_ROOT / "templates"))
 
 router = APIRouter()
+
+# SwiftPM identities this repository's capture SDK can be resolved under.
+CAPTURE_SDK_PACKAGES = frozenset({"viewlift-ai", "viewliftnetworkcapture"})
 
 
 def _engine(request: Request):
@@ -104,86 +110,75 @@ def debug_analytics_traffic(
     limit: int = 300,
     user_beacon_url: str | None = None,
     player_beacon_url: str | None = None,
+    client_id: Annotated[list[str] | None, Query()] = None,
+    device_key: str | None = None,
 ) -> dict[str, object]:
     """User/player beacons + VLAnalytics client network calls with request params."""
     _loopback(request)
-    flows = _store(request).list_flows(limit=max(1, min(limit, 1000)))
+    flows = _store(request).list_flows(
+        limit=max(1, min(limit, 1000)),
+        client_ids=resolve_client_ids(request, client_id, device_key),
+    )
     redaction = _redaction(request)
 
     def _redact_params(params: dict) -> dict:
         return redaction.redact_json_value(params)
 
-    result = list_analytics_traffic(
+    return list_analytics_traffic(
         flows,
         user_beacon_url=user_beacon_url,
         player_beacon_url=player_beacon_url,
         redact_params=_redact_params,
     )
-    # #region agent log
-    try:
-        import json
-        import time
-        from pathlib import Path
 
-        Path("/Users/nexg/Documents/Viewlift_AI/.cursor/debug-93a126.log").open(
-            "a", encoding="utf-8"
-        ).write(
-            json.dumps(
-                {
-                    "sessionId": "93a126",
-                    "hypothesisId": "H1-analytics",
-                    "location": "debug_routes.py:debug_analytics_traffic",
-                    "message": "analytics traffic classified",
-                    "data": {
-                        "scanned": len(flows),
-                        "total": result.get("total"),
-                        "counts": result.get("counts"),
-                    },
-                    "timestamp": int(time.time() * 1000),
-                }
+
+def _selected_client(request: Request, client_id: str | None) -> dict[str, object] | None:
+    """
+    Explicit client, else the only online app. Several online apps without a selection
+    is a 409 so the dashboard never silently mixes two apps on one device.
+    """
+    sessions = _sessions(request)
+    target = sessions.resolve_client_id(client_id)
+    if not target:
+        if sessions.online_count() > 1:
+            raise HTTPException(
+                status_code=409,
+                detail="client_required: several apps are connected; choose one",
             )
-            + "\n"
-        )
-    except Exception:
-        pass
-    # #endregion
-    return result
+        return None
+    try:
+        return sessions.get_client(target)
+    except LookupError:
+        return None
 
 
-@router.get("/api/debug/ott/spm")
-def debug_ott_spm(request: Request, root: str | None = None) -> dict[str, object]:
+@router.get("/api/debug/app")
+def debug_app(request: Request, client_id: str | None = None) -> dict[str, object]:
+    """Identity of the selected app (explicit client, else the only connected one)."""
     _loopback(request)
-    result = load_spm_packages() if not root else load_spm_packages(
-        __import__("pathlib").Path(root)
-    )
-    # #region agent log
-    try:
-        import json
-        import time
-        from pathlib import Path
+    client = _selected_client(request, client_id)
+    return {"paired": client is not None, "client": client}
 
-        Path("/Users/nexg/Documents/Viewlift_AI/.cursor/debug-93a126.log").open(
-            "a", encoding="utf-8"
-        ).write(
-            json.dumps(
-                {
-                    "sessionId": "93a126",
-                    "hypothesisId": "H4",
-                    "location": "debug_routes.py:debug_ott_spm",
-                    "message": "spm packages loaded",
-                    "data": {
-                        "ok": result.get("ok"),
-                        "count": result.get("count"),
-                        "path": result.get("path"),
-                    },
-                    "timestamp": int(time.time() * 1000),
-                }
-            )
-            + "\n"
-        )
-    except Exception:
-        pass
-    # #endregion
+
+@router.get("/api/debug/packages")
+def debug_packages(request: Request, client_id: str | None = None) -> dict[str, object]:
+    """Swift packages of the paired app, found from its Xcode build. No configured paths."""
+    _loopback(request)
+    client = _selected_client(request, client_id)
+    identity = AppIdentity(
+        bundle_id=str((client or {}).get("bundle_id") or ""),
+        executable=str((client or {}).get("executable") or ""),
+        app_name=str((client or {}).get("app_name") or ""),
+    )
+    result = detect_packages(identity)
+    keys = ("id", "app_name", "bundle_id", "platform", "app_version", "build", "sdk_version")
+    result["client"] = {key: client.get(key) for key in keys} if client else None
+    result["runtime_frameworks"] = list((client or {}).get("frameworks") or [])
+    packages = result.get("packages") or []
+    result["capture_sdk"] = next(
+        (pkg for pkg in packages if pkg.get("identity") in CAPTURE_SDK_PACKAGES),
+        None,
+    )
     return result
 
 
@@ -233,30 +228,6 @@ async def debug_command(request: Request) -> dict[str, object]:
     if not isinstance(payload, dict):
         raise HTTPException(status_code=400, detail="payload must be an object")
     name = str(body.get("name") or "")
-    # #region agent log
-    try:
-        import json
-        import time
-        from pathlib import Path
-
-        Path("/Users/nexg/Documents/Viewlift_AI/.cursor/debug-93a126.log").open(
-            "a", encoding="utf-8"
-        ).write(
-            json.dumps(
-                {
-                    "sessionId": "93a126",
-                    "hypothesisId": "H2",
-                    "location": "debug_routes.py:debug_command",
-                    "message": "enqueue debug command",
-                    "data": {"name": name, "has_client": bool(body.get("client_id"))},
-                    "timestamp": int(time.time() * 1000),
-                }
-            )
-            + "\n"
-        )
-    except Exception:
-        pass
-    # #endregion
     try:
         command = _sessions(request).enqueue(
             client_id=str(body.get("client_id") or ""),
@@ -273,6 +244,48 @@ async def debug_command(request: Request) -> dict[str, object]:
     return {"ok": True, "command": command}
 
 
+@router.post("/api/debug/invoke")
+async def debug_invoke(request: Request) -> dict[str, object]:
+    """Enqueue a command and wait for that app's command-result. Loopback only."""
+    _loopback(request)
+    body = await _json_body(request)
+    sessions = _sessions(request)
+    client_id = str(body.get("client_id") or "").strip()
+    if not client_id or not sessions.is_online(client_id):
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "message": "client_id is required and must name an online app",
+                "apps": sessions.list_clients(),
+            },
+        )
+    payload = body.get("payload") or {}
+    if not isinstance(payload, dict):
+        raise HTTPException(status_code=400, detail="payload must be an object")
+    timeout = body.get("timeout")
+    try:
+        return await asyncio.to_thread(
+            lambda: sessions.invoke(
+                client_id=client_id,
+                name=str(body.get("name") or ""),
+                payload=payload,
+                mutate=body.get("mutate") is True,
+                timeout=None if timeout is None else float(timeout),
+            )
+        )
+    except LookupError as exc:
+        raise HTTPException(
+            status_code=409,
+            detail={"message": str(exc), "apps": sessions.list_clients()},
+        ) from exc
+    except PermissionError as exc:
+        raise HTTPException(status_code=403, detail=str(exc)) from exc
+    except TimeoutError as exc:
+        raise HTTPException(status_code=504, detail=str(exc)) from exc
+    except (OverflowError, ValueError, TypeError) as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
 @router.post("/api/debug/ott/enrich-frames")
 async def debug_enrich_frames(request: Request) -> dict[str, object]:
     """Parse hang/crash frames for class/file/line (Mac-side assist)."""
@@ -282,31 +295,6 @@ async def debug_enrich_frames(request: Request) -> dict[str, object]:
     if not isinstance(frames, list):
         raise HTTPException(status_code=400, detail="frames must be an array")
     enriched = enrich_frames([item for item in frames if isinstance(item, dict)])
-    # #region agent log
-    try:
-        import json
-        import time
-        from pathlib import Path
-
-        with_line = sum(1 for item in enriched if item.get("line") is not None)
-        Path("/Users/nexg/Documents/Viewlift_AI/.cursor/debug-93a126.log").open(
-            "a", encoding="utf-8"
-        ).write(
-            json.dumps(
-                {
-                    "sessionId": "93a126",
-                    "hypothesisId": "H1",
-                    "location": "debug_routes.py:debug_enrich_frames",
-                    "message": "frames enriched",
-                    "data": {"input": len(frames), "with_line": with_line},
-                    "timestamp": int(time.time() * 1000),
-                }
-            )
-            + "\n"
-        )
-    except Exception:
-        pass
-    # #endregion
     return {"frames": enriched}
 
 
@@ -329,13 +317,27 @@ async def set_network_profile(request: Request) -> dict[str, object]:
 async def debug_deeplink(request: Request) -> dict[str, object]:
     _loopback(request)
     body = await _json_body(request)
+    udid = str(body.get("udid") or "") or _simulator_udid(request, body.get("client_id"))
     try:
-        result = open_deeplink(str(body.get("url") or ""), udid=str(body.get("udid") or "booted"))
+        result = open_deeplink(str(body.get("url") or ""), udid=udid or "booted")
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     if not result.get("ok"):
         raise HTTPException(status_code=400, detail=str(result.get("detail") or "open failed"))
     return result
+
+
+def _simulator_udid(request: Request, client_id: object) -> str:
+    """Target the simulator the selected app runs on instead of whichever is booted."""
+    if not client_id:
+        return ""
+    try:
+        client = _sessions(request).get_client(str(client_id))
+    except LookupError:
+        return ""
+    if client.get("is_simulator"):
+        return str(client.get("device_key") or "")
+    return ""
 
 
 @router.post("/api/debug/location")
@@ -351,7 +353,7 @@ async def debug_location(request: Request) -> dict[str, object]:
     lon = body.get("longitude")
     try:
         return set_device_location(
-            str(body.get("udid") or ""),
+            str(body.get("udid") or "") or _simulator_udid(request, body.get("client_id")),
             float(lat) if lat is not None and not clear else None,
             float(lon) if lon is not None and not clear else None,
             clear=clear,

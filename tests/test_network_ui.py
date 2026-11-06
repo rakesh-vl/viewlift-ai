@@ -86,9 +86,13 @@ def test_root_dashboard_and_health(tmp_path: Path) -> None:
         health = client.get("/health")
         assert health.status_code == 200
         assert health.json()["status"] == "ok"
+        assert b'id="view-urls"' in root.content
+        assert b'id="group-rows"' in root.content
         static = client.get("/static/js/app.js")
         assert static.status_code == 200
         assert b"ViewliftNetwork" in static.content
+        assert b"vl-detail-tab" in static.content
+        assert b"baseUrlKey" in static.content
 
 
 def test_flow_filters(tmp_path: Path) -> None:

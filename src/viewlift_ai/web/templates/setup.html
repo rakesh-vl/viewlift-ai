@@ -31,7 +31,7 @@
           <select id="proxy-ip" class="rules-input"></select>
         </label>
         <label class="check">Port
-          <input id="proxy-port" type="number" min="1" max="65535" value="8080">
+          <input id="proxy-port" type="number" min="1" max="65535" value="{{ proxy_port }}">
         </label>
         <label class="check">
           <input id="enable-lan" type="checkbox"> Enable LAN bind (required for non-loopback)
@@ -93,14 +93,18 @@
         Pick the interface and receiver port here. The list includes localhost, Wi-Fi, Ethernet,
         and VPN addresses from NetBird or Tailscale. The phone discovers the selected address.
         If that interface gets a new IP, the receiver follows it. Dashboard stays on
-        <code>http://127.0.0.1:8741</code>.
+        <code>{{ dashboard_url }}</code>.
       </p>
       <div class="rules-form">
         <label class="check">Interface
           <select id="sdk-ip" class="rules-input"></select>
         </label>
         <label class="check">Receiver port
-          <input id="sdk-port" type="number" min="1" max="65535" value="8742">
+          <input id="sdk-port" type="number" min="1" max="65535" value="{{ sdk_port }}">
+        </label>
+        <label class="check">
+          <input id="sdk-vpn" type="checkbox">
+          Also listen on Tailscale or VPN addresses
         </label>
         <button type="button" class="btn" id="btn-sdk-enable">Enable receiver</button>
         <button type="button" class="btn ghost" id="btn-sdk-disable">Disable</button>
@@ -115,6 +119,16 @@
       <p class="muted" id="sdk-note"></p>
       <p class="muted">Integration (DEBUG or <code>VIEWLIFT_CAPTURE_ENABLED</code>). App Store default: no capture.</p>
       <pre class="pre" id="sdk-snippet">Enable the receiver. The DEBUG app discovers host, port, fingerprint, and debug key.</pre>
+    </section>
+
+    <section class="rules-block" id="block-apps">
+      <h2>Connected apps</h2>
+      <p class="muted">
+        Every app that links ViewliftNetworkCapture registers on its own, grouped by simulator or device.
+        Several apps can run on one device at once; use Scope at the top of any page to isolate one.
+      </p>
+      <p class="warn-text" id="apps-shared-note" hidden></p>
+      <div id="apps-tree" class="apps-tree"><p class="muted">No app has registered yet.</p></div>
     </section>
   </div>
 </section>

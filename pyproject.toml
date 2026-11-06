@@ -22,9 +22,13 @@ dev = [
     "httpx==0.28.1",
     "ruff==0.17.1",
 ]
+mcp = [
+    "mcp==1.22.0",
+]
 
 [project.scripts]
 viewlift-ai = "viewlift_ai.app:main"
+viewlift-ai-mcp = "viewlift_ai.mcp_server.server:main"
 
 [build-system]
 requires = ["hatchling"]

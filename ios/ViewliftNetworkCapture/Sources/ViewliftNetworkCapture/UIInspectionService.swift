@@ -8,16 +8,18 @@ import UIKit
 enum UIInspectionService {
     @MainActor
     static func hierarchy() -> [String: JSONValue] {
+        UIHierarchyCapture.capture()
+    }
+
+    @MainActor
+    static func describe(id: String) -> [String: JSONValue] {
         #if canImport(UIKit)
-        let windows = UIApplication.shared.connectedScenes
-            .compactMap { $0 as? UIWindowScene }
-            .flatMap(\.windows)
-        return [
-            "windows": .array(windows.map { describe($0, depth: 0) }),
-            "timestamp": .number(Date().timeIntervalSince1970)
-        ]
+        guard let view = findView(id: id) else {
+            return ["found": .bool(false)]
+        }
+        return UIViewSheet.make(for: view)
         #else
-        return ["windows": .array([])]
+        return ["found": .bool(false)]
         #endif
     }
 
@@ -141,38 +143,6 @@ enum UIInspectionService {
     }
 
     #if canImport(UIKit)
-    @MainActor
-    private static func describe(_ view: UIView, depth: Int) -> JSONValue {
-        let frame = view.convert(view.bounds, to: nil)
-        let constraints = view.constraints.prefix(100).map { constraint in
-            JSONValue.object([
-                "description": .string(constraint.description),
-                "priority": .number(Double(constraint.priority.rawValue)),
-                "constant": .number(Double(constraint.constant))
-            ])
-        }
-        let children: [JSONValue]
-        if depth >= 100 {
-            children = []
-        } else {
-            children = view.subviews.prefix(500).map { describe($0, depth: depth + 1) }
-        }
-        return .object([
-            "id": .string(String(ObjectIdentifier(view).hashValue)),
-            "class": .string(className(view)),
-            "x": .number(Double(frame.origin.x)),
-            "y": .number(Double(frame.origin.y)),
-            "width": .number(Double(frame.width)),
-            "height": .number(Double(frame.height)),
-            "alpha": .number(Double(view.alpha)),
-            "hidden": .bool(view.isHidden),
-            "accessibility_label": .string(view.accessibilityLabel ?? ""),
-            "accessibility_identifier": .string(view.accessibilityIdentifier ?? ""),
-            "constraints": .array(constraints),
-            "children": .array(children)
-        ])
-    }
-
     @MainActor
     private static func audit(view: UIView, path: String, findings: inout [JSONValue]) {
         let current = "\(path)/\(className(view))"

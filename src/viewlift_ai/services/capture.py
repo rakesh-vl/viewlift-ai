@@ -44,6 +44,7 @@ class HttpCaptureSnapshot:
     query: str | None = None
     timing: FlowTiming = field(default_factory=FlowTiming)
     source: FlowSource = FlowSource.PROXY
+    client_id: str | None = None
 
 
 class CaptureService:
@@ -143,6 +144,7 @@ class CaptureService:
             content_type=content_type,
             query=query,
             timing=snapshot.timing,
+            client_id=snapshot.client_id,
         )
 
     def _redact_ws_message(self, message: WebSocketMessageRecord) -> WebSocketMessageRecord:

@@ -9,6 +9,7 @@ from fastapi import APIRouter, HTTPException, Query, Request
 from fastapi.responses import HTMLResponse, JSONResponse, PlainTextResponse, Response
 from fastapi.templating import Jinja2Templates
 
+from viewlift_ai.api.scope import resolve_client_ids
 from viewlift_ai.proxy.redact import RedactionService
 from viewlift_ai.services.flow_export import build_curl, har_json
 from viewlift_ai.services.flow_present import flow_detail, flow_summary
@@ -89,6 +90,8 @@ def list_flows(
     content_type: Annotated[str | None, Query(alias="content-type")] = None,
     text: Annotated[str | None, Query()] = None,
     limit: Annotated[int, Query(ge=1, le=1000)] = 200,
+    client_id: Annotated[list[str] | None, Query()] = None,
+    device_key: Annotated[str | None, Query()] = None,
 ) -> dict[str, object]:
     flows = _store(request).list_flows(
         limit=limit,
@@ -97,6 +100,7 @@ def list_flows(
         status=status,
         content_type=content_type or None,
         text=text or None,
+        client_ids=resolve_client_ids(request, client_id, device_key),
     )
     return {"flows": [flow_summary(f) for f in flows], "count": len(flows)}
 
@@ -184,6 +188,8 @@ def export_har(
     content_type: Annotated[str | None, Query(alias="content-type")] = None,
     text: Annotated[str | None, Query()] = None,
     limit: Annotated[int, Query(ge=1, le=1000)] = 200,
+    client_id: Annotated[list[str] | None, Query()] = None,
+    device_key: Annotated[str | None, Query()] = None,
 ) -> Response:
     flows = _store(request).list_flows(
         limit=limit,
@@ -192,6 +198,7 @@ def export_har(
         status=status,
         content_type=content_type or None,
         text=text or None,
+        client_ids=resolve_client_ids(request, client_id, device_key),
     )
     payload = har_json(flows, redaction=_redaction(request))
     return Response(

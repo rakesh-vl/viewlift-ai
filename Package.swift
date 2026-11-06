@@ -7,7 +7,7 @@ import PackageDescription
 let package = Package(
     name: "ViewliftNetworkCapture",
     platforms: [
-        .iOS(.v16),
+        .iOS(.v15),
         .tvOS(.v16),
         .macOS(.v13)
     ],
@@ -20,7 +20,10 @@ let package = Package(
     targets: [
         .target(
             name: "ViewliftNetworkCapture",
-            path: "ios/ViewliftNetworkCapture/Sources/ViewliftNetworkCapture"
+            path: "ios/ViewliftNetworkCapture/Sources/ViewliftNetworkCapture",
+            // Xcode custom configurations (for example "Dev") do not give package targets DEBUG.
+            // Hosts still start capture only under #if DEBUG.
+            swiftSettings: [.define("VIEWLIFT_CAPTURE_ENABLED")]
         ),
         .testTarget(
             name: "ViewliftNetworkCaptureTests",

@@ -278,7 +278,7 @@ DEBUG_MODULES: tuple[DebugModule, ...] = (
     DebugModule(
         "beacons",
         "OTT",
-        "Beacons & VLAnalytics",
+        "Beacons & analytics",
         "User/player beacons and registered analytics client network calls.",
         "ready",
         "/debug",
@@ -358,7 +358,7 @@ DEBUG_MODULES: tuple[DebugModule, ...] = (
         "User, parental, plan, TVE, theme, modules, metadataMap.",
         "app-only",
         "/debug",
-        note="Needs AppCMS debug provider wired into ViewliftNetworkCapture.",
+        note="Needs the host app to register an OTTDebugSnapshotProviding provider.",
     ),
     DebugModule(
         "hang-stacks",
@@ -381,8 +381,8 @@ DEBUG_MODULES: tuple[DebugModule, ...] = (
     DebugModule(
         "spm",
         "OTT",
-        "SPM Packages",
-        "Package.resolved pins from the AppCMS workspace.",
+        "Swift Packages",
+        "Resolved packages of the paired app, found from its Xcode build.",
         "ready",
         "/debug",
     ),

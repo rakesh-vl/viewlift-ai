@@ -4,11 +4,20 @@ from __future__ import annotations
 
 import subprocess
 import threading
+from collections.abc import Sequence
 from typing import Protocol
 
 
 class DebugPublishing(Protocol):
-    def publish(self, host: str, port: int, *, fingerprint: str, debug_key: str) -> None: ...
+    def publish(
+        self,
+        host: str,
+        port: int,
+        *,
+        fingerprint: str,
+        debug_key: str,
+        alt: Sequence[str] = (),
+    ) -> None: ...
 
     def stop(self) -> None: ...
 
@@ -19,10 +28,23 @@ class DebugAdvertiser:
     def __init__(self) -> None:
         self._lock = threading.Lock()
         self._process: subprocess.Popen[bytes] | None = None
-        self._published: tuple[str, int, str, str] | None = None
+        self._published: tuple[str, int, str, str, tuple[str, ...]] | None = None
 
-    def publish(self, host: str, port: int, *, fingerprint: str, debug_key: str) -> None:
-        key = (host, port, fingerprint, debug_key)
+    def publish(
+        self,
+        host: str,
+        port: int,
+        *,
+        fingerprint: str,
+        debug_key: str,
+        alt: Sequence[str] = (),
+    ) -> None:
+        """Advertise the receiver. `alt` lists other addresses (VPN) the phone may fall back to."""
+        alternates = tuple(alt)
+        key = (host, port, fingerprint, debug_key, alternates)
+        txt = [f"ip={host}", f"port={port}", f"fp={fingerprint}", f"key={debug_key}"]
+        if alternates:
+            txt.append(f"alt={','.join(alternates)}")
         with self._lock:
             alive = self._process is not None and self._process.poll() is None
             if key == self._published and alive:
@@ -36,10 +58,7 @@ class DebugAdvertiser:
                     "_viewliftdebug._tcp",
                     "local",
                     str(port),
-                    f"ip={host}",
-                    f"port={port}",
-                    f"fp={fingerprint}",
-                    f"key={debug_key}",
+                    *txt,
                 ],
                 stdout=subprocess.DEVNULL,
                 stderr=subprocess.DEVNULL,
