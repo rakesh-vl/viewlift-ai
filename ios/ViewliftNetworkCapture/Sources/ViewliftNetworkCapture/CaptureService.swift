@@ -27,6 +27,13 @@ public final class CaptureService: CaptureServing, @unchecked Sendable {
         queue.dropCount
     }
 
+    /// Starts capture with Bonjour discovery and every debug module.
+    /// Call from the host under `#if DEBUG`, before the app creates a `URLSession`.
+    public func start() {
+        guard let configuration = CaptureConfiguration.discovery() else { return }
+        start(configuration: configuration)
+    }
+
     public func start(configuration: CaptureConfiguration) {
         #if DEBUG || VIEWLIFT_CAPTURE_ENABLED
         lock.lock()

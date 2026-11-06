@@ -10,6 +10,27 @@ final class ViewliftNetworkCaptureTests: XCTestCase {
         super.tearDown()
     }
 
+    func testDiscoveryDefaultsToPlaceholderAndAllModules() {
+        let configuration = CaptureConfiguration.discovery(environment: [:])
+        XCTAssertEqual(configuration?.receiverURL.absoluteString, "https://0.0.0.0:9")
+        XCTAssertEqual(configuration?.pinnedCertificateSHA256, "")
+        XCTAssertEqual(configuration?.debugKey, "")
+        XCTAssertEqual(configuration?.debugModules, Set(DebugModule.allCases))
+    }
+
+    func testDiscoveryReadsEnvironmentOverrides() {
+        let configuration = CaptureConfiguration.discovery(environment: [
+            "VIEWLIFT_CAPTURE_HOST": "10.0.0.8",
+            "VIEWLIFT_CAPTURE_PORT": "8742",
+            "VIEWLIFT_CAPTURE_FINGERPRINT": "AB:CD",
+            "VIEWLIFT_CAPTURE_DEBUG_KEY": "debug-key"
+        ])
+        XCTAssertEqual(configuration?.receiverURL.host, "10.0.0.8")
+        XCTAssertEqual(configuration?.receiverURL.port, 8742)
+        XCTAssertEqual(configuration?.pinnedCertificateSHA256, "abcd")
+        XCTAssertEqual(configuration?.debugKey, "debug-key")
+    }
+
     func testRedactionHeadersAndNestedJSON() {
         let redactor = HeaderJSONRedactor(extraKeys: ["custom_secret"])
         let headers = redactor.redact(headers: [

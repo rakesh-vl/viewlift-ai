@@ -181,6 +181,12 @@ def test_session_wipe(tmp_path: Path) -> None:
         payload={"cpu": 4.2},
         created_at=datetime.now(UTC),
     )
+    flows_only = store.delete_flows()
+    assert flows_only == 1
+    assert store.list_flows() == []
+    assert store.list_logs() != []
+    assert store.list_debug_events(client_id="phone-1") != []
+    store.save_flow(_flow())
     deleted = store.wipe_session()
     assert deleted >= 3
     assert store.list_flows() == []

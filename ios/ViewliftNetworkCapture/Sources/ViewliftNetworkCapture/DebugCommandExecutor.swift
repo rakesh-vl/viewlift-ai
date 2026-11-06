@@ -20,7 +20,7 @@ final class DebugCommandExecutor {
         let prefix = command.name.split(separator: ".").first.map(String.init) ?? ""
         switch prefix {
         case "performance", "memory":
-            return try memoryOrPerformance(command)
+            return try await memoryOrPerformance(command)
         case "ui", "swiftui", "assets", "accessibility", "bug":
             return try await visual(command)
         case "storage":
@@ -42,14 +42,23 @@ final class DebugCommandExecutor {
 
     private func memoryOrPerformance(
         _ command: DebugCommand
-    ) throws -> [String: JSONValue] {
+    ) async throws -> [String: JSONValue] {
+        let memory = MemoryDebugService.shared
         switch command.name {
         case "performance.snapshot":
             return performance.sample()
         case "memory.snapshot":
-            return MemoryDebugService.shared.snapshot()
+            return memory.snapshot()
         case "memory.graph":
-            return MemoryDebugService.shared.graph()
+            return await memory.graph()
+        case "memory.leaks":
+            return memory.leakList()
+        case "memory.heap":
+            return memory.heap()
+        case "memory.live_start":
+            return memory.liveState(enabled: true)
+        case "memory.live_stop":
+            return memory.liveState(enabled: false)
         default:
             throw DebugBridgeError.unsupportedCommand
         }

@@ -6,7 +6,10 @@ final class CrashHangRecorder: @unchecked Sendable {
     static let shared = CrashHangRecorder()
 
     static let maxEvents = 80
+    static let maxHangs = 12
     static let maxFrames = 64
+    /// Base64 budget for every hang screenshot in one `hang.list` reply.
+    static let screenshotBudget = 220_000
 
     private let lock = NSLock()
     private var hangs: [[String: JSONValue]] = []
@@ -18,29 +21,26 @@ final class CrashHangRecorder: @unchecked Sendable {
 
     func install() {
         lock.lock()
-        defer { lock.unlock() }
-        guard !installed else { return }
+        if installed {
+            lock.unlock()
+            return
+        }
         installed = true
         previousExceptionHandler = NSGetUncaughtExceptionHandler()
         NSSetUncaughtExceptionHandler { exception in
             CrashHangRecorder.shared.recordException(exception)
             CrashHangRecorder.shared.previousExceptionHandler?(exception)
         }
+        lock.unlock()
+        HangInteractionTrail.shared.install()
+        HangConsoleBuffer.shared.install()
     }
 
-    func recordHang(duration: TimeInterval, symbols: [String]) {
-        let event: [String: JSONValue] = [
-            "id": .string(UUID().uuidString),
-            "kind": .string("hang"),
-            "timestamp": .number(Date().timeIntervalSince1970),
-            "duration_ms": .number(duration * 1_000),
-            "thread": .string(Thread.isMainThread ? "main" : Thread.current.name ?? "background"),
-            "frames": .array(Self.parseFrames(symbols).map(JSONValue.object))
-        ]
+    func storeHang(_ event: [String: JSONValue]) {
         lock.lock()
         hangs.append(event)
-        if hangs.count > Self.maxEvents {
-            hangs.removeFirst(hangs.count - Self.maxEvents)
+        if hangs.count > Self.maxHangs {
+            hangs.removeFirst(hangs.count - Self.maxHangs)
         }
         lock.unlock()
     }
@@ -66,11 +66,17 @@ final class CrashHangRecorder: @unchecked Sendable {
 
     func hangList() -> [String: JSONValue] {
         lock.lock()
-        let copy = hangs
+        var copy = hangs
         lock.unlock()
+        HangReport.dropOldScreenshots(&copy, budget: Self.screenshotBudget)
         return [
             "count": .number(Double(copy.count)),
-            "events": .array(copy.map(JSONValue.object))
+            "events": .array(copy.map(JSONValue.object)),
+            "note": .string(
+                "Each hang includes the screen, a screenshot from when the UI recovered, "
+                    + "taps and scrolls before the stall, and console lines. "
+                    + "The stack is sampled while the main thread is stuck when the device allows it."
+            )
         ]
     }
 
@@ -107,8 +113,8 @@ final class CrashHangRecorder: @unchecked Sendable {
             }
             if let symbol = extractSymbol(trimmed) {
                 frame["symbol"] = .string(symbol)
-                if let typeName = symbol.split(separator: ".").first {
-                    frame["class"] = .string(String(typeName))
+                if let typeName = typeName(in: symbol) {
+                    frame["class"] = .string(typeName)
                 }
             }
             return frame
@@ -132,19 +138,32 @@ final class CrashHangRecorder: @unchecked Sendable {
         return (file, number)
     }
 
-    private static func extractSymbol(_ line: String) -> String? {
-        guard let plusRange = line.range(of: " + ") else {
-            if let paren = line.lastIndex(of: "(") {
-                let before = line[..<paren].trimmingCharacters(in: .whitespaces)
-                let tokens = before.split(whereSeparator: \.isWhitespace)
-                return tokens.dropFirst(3).joined(separator: " ").nilIfEmpty
-            }
-            return nil
+    static func typeName(in symbol: String) -> String? {
+        var text = symbol
+        if let marker = text.range(of: " in ") {
+            text = String(text[marker.upperBound...])
         }
-        let beforePlus = line[..<plusRange.lowerBound]
-        let tokens = beforePlus.split(whereSeparator: \.isWhitespace)
-        guard tokens.count >= 4 else { return nil }
-        return tokens.dropFirst(3).joined(separator: " ").nilIfEmpty
+        let head = text.split(separator: "(", maxSplits: 1).first.map(String.init) ?? text
+        let parts = head.split(separator: ".").map(String.init).filter { !$0.isEmpty }
+        guard parts.count >= 2 else { return nil }
+        return parts[parts.count - 2]
+    }
+
+    private static func extractSymbol(_ line: String) -> String? {
+        if let plusRange = line.range(of: " + ") {
+            return tokens(in: line[..<plusRange.lowerBound])
+        }
+        if let paren = line.lastIndex(of: "("),
+           line.contains(".swift:") || line.contains(".m:") || line.contains(".mm:") {
+            return tokens(in: line[..<paren])
+        }
+        return tokens(in: Substring(line))
+    }
+
+    private static func tokens(in text: Substring) -> String? {
+        let parts = text.split(whereSeparator: \.isWhitespace)
+        guard parts.count >= 4 else { return nil }
+        return parts.dropFirst(3).joined(separator: " ").nilIfEmpty
     }
 }
 

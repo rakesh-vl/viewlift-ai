@@ -15,10 +15,7 @@ import Foundation
 
    import ViewliftNetworkCapture
    #if DEBUG || VIEWLIFT_CAPTURE_ENABLED
-   CaptureService.shared.start(configuration: CaptureConfiguration(
-       receiverURL: URL(string: "https://0.0.0.0:9")!,
-       pinnedCertificateSHA256: ""
-   ))
+   CaptureService.shared.start()
    // Host, port, fingerprint, and debug key arrive from the dashboard advertisement.
    // Optional overrides: VIEWLIFT_CAPTURE_HOST, VIEWLIFT_CAPTURE_PORT,
    // VIEWLIFT_CAPTURE_FINGERPRINT, VIEWLIFT_CAPTURE_DEBUG_KEY.
@@ -29,7 +26,7 @@ import Foundation
    func application(_ application: UIApplication,
                     didFinishLaunchingWithOptions launchOptions: [UIApplication.LaunchOptionsKey: Any]?) -> Bool {
        #if DEBUG || VIEWLIFT_CAPTURE_ENABLED
-       CaptureService.shared.start(configuration: ...)
+       CaptureService.shared.start()
        #endif
        return true
    }

@@ -319,7 +319,8 @@ def app_inspect(
 ) -> dict[str, Any]:
     """Run one read command on one app and wait for its result.
 
-    Commands: performance.snapshot, memory.snapshot, memory.graph, ui.hierarchy,
+    Commands: performance.snapshot, memory.snapshot, memory.graph, memory.leaks, memory.heap,
+    memory.live_start, memory.live_stop, ui.hierarchy,
     ui.describe, ui.screenshot, swiftui.renders, assets.audit, accessibility.audit, storage.defaults,
     storage.keychain_metadata, storage.files, storage.file_read, storage.sqlite_schema,
     storage.sqlite_query, feature_flags.list, runtime.search, runtime.describe, macro.list,

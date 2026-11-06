@@ -41,6 +41,7 @@ The dashboard host and port (`127.0.0.1:8741`) are fixed in `AppConfig` and have
 |---|---|
 | `viewlift.db` | SQLite store (flows, logs, debug events, clients, meta) |
 | `rules.json` | Rules configuration, mode `0600`, written atomically |
+| `scratchpad/*.js` | User scratchpad scripts, mode `0600`. Built-ins are not stored here. |
 | `mitmproxy/` | Proxy CA; private key `0600` |
 | `ingest/ingest-cert.pem`, key | Receiver certificate and key (key `0600`) |
 | `ingest/debug.key` | Stable debug key for SDK auto-pairing, `0600` |

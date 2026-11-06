@@ -7,6 +7,9 @@ import threading
 from collections.abc import Sequence
 from typing import Protocol
 
+SERVICE_TYPE = "_viewliftdebug._tcp"
+SERVICE_NAME = "Viewlift AI"
+
 
 class DebugPublishing(Protocol):
     def publish(
@@ -54,8 +57,8 @@ class DebugAdvertiser:
                 [
                     "dns-sd",
                     "-R",
-                    "Viewlift AI",
-                    "_viewliftdebug._tcp",
+                    SERVICE_NAME,
+                    SERVICE_TYPE,
                     "local",
                     str(port),
                     *txt,

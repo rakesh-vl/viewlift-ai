@@ -38,4 +38,25 @@ public struct CaptureConfiguration: Sendable {
         self.debugModules = debugModules
         self.performanceSampleInterval = max(0.25, performanceSampleInterval)
     }
+
+    /// Bonjour discovery. The dashboard advertisement replaces host, port, fingerprint, and debug key.
+    /// Scheme environment overrides: `VIEWLIFT_CAPTURE_HOST`, `VIEWLIFT_CAPTURE_PORT`,
+    /// `VIEWLIFT_CAPTURE_FINGERPRINT`, `VIEWLIFT_CAPTURE_DEBUG_KEY`.
+    public static func discovery(
+        environment: [String: String] = ProcessInfo.processInfo.environment
+    ) -> CaptureConfiguration? {
+        let host = environment["VIEWLIFT_CAPTURE_HOST"] ?? "0.0.0.0"
+        let port = Int(environment["VIEWLIFT_CAPTURE_PORT"] ?? "") ?? 9
+        let fingerprint = environment["VIEWLIFT_CAPTURE_FINGERPRINT"] ?? ""
+        let debugKey = environment["VIEWLIFT_CAPTURE_DEBUG_KEY"] ?? ""
+        guard let receiverURL = URL(string: "https://\(host):\(port)") else {
+            return nil
+        }
+        return CaptureConfiguration(
+            receiverURL: receiverURL,
+            debugKey: debugKey,
+            pinnedCertificateSHA256: fingerprint,
+            debugModules: Set(DebugModule.allCases)
+        )
+    }
 }

@@ -31,6 +31,11 @@
     storagePath: "",
     storageDbPath: "",
     selectedStoragePath: "",
+    storageRead: "",
+    storagePending: false,
+    storageTimer: 0,
+    storageInfoTimer: 0,
+    previewUrl: "",
   };
 
   const escapeHtml = (value) => String(value ?? "")
@@ -45,6 +50,7 @@
   const Debug = {
     async init() {
       this.bindTabs();
+      window.ViewliftMemory?.init({ send: (name, payload) => this.sendCommand(name, payload) });
       this.bindCommands();
       this.bindForms();
       this.bindBugCanvas();
@@ -82,6 +88,7 @@
         this.setAnalyticsFollow(false);
         this.selectAnalytics(row.dataset.id);
       });
+      this.bindHangs();
       this.bindStorage();
       document.getElementById("ui-expand").addEventListener("click", () => {
         state.collapsed.clear();
@@ -201,11 +208,13 @@
         if (!state.client && window.VLScope) state.client = window.VLScope.app(next);
       }
       this.renderClientStatus();
+      const storageOpen = document.querySelector('[data-panel="storage"]:not(.hidden)');
       if (next !== previous) {
         if (state.clientId) await this.loadEvents();
         await this.loadSpm();
-        const storageOpen = document.querySelector('[data-panel="storage"]:not(.hidden)');
         if (storageOpen && state.clientId) this.openStorage("");
+      } else if (storageOpen && state.storagePending && state.client?.state === "online") {
+        this.openStorage(state.storagePath);
       }
     },
 
@@ -227,10 +236,15 @@
         storagePath: "",
         storageDbPath: "",
         selectedStoragePath: "",
+        storageRead: "",
       });
+      if (state.previewUrl) {
+        URL.revokeObjectURL(state.previewUrl);
+        state.previewUrl = "";
+      }
       const clearIds = [
         "ott-summary", "ott-sections", "ott-spm", "ott-frameworks", "analytics-clients",
-        "hangs-result", "performance-metrics", "memory-result", "ui-tree", "ui-properties",
+        "hangs-result", "performance-metrics", "ui-tree", "ui-properties",
         "swiftui-result", "assets-result", "accessibility-result", "storage-inspector",
         "storage-files", "flags-result", "bug-result", "macro-result", "runtime-result", "push-result",
       ];
@@ -238,10 +252,11 @@
         const node = document.getElementById(id);
         if (node) node.innerHTML = "";
       });
-      ["performance-chart", "memory-graph", "ui-3d", "bug-canvas"].forEach((id) => {
+      ["performance-chart", "ui-3d", "bug-canvas"].forEach((id) => {
         const canvas = document.getElementById(id);
         if (canvas) canvas.getContext("2d").clearRect(0, 0, canvas.width, canvas.height);
       });
+      window.ViewliftMemory?.reset();
       const clients = document.getElementById("analytics-clients");
       if (clients) clients.style.display = "none";
       const detail = document.getElementById("analytics-detail");
@@ -386,13 +401,27 @@
         this.renderPerformance();
         return;
       }
+      if (event.module === "memory" && (event.kind === "live" || event.kind === "leak")) {
+        window.ViewliftMemory?.onEvent(event.kind, event.payload);
+        return;
+      }
       if (event.kind !== "command-result") return;
       const data = event.payload || {};
       if (!data.ok) {
+        if (event.module === "memory" && window.ViewliftMemory) {
+          window.ViewliftMemory.showError(data.error || "Command failed");
+          return;
+        }
         if (data.name === "ui.describe") {
           this.renderDescribe({ found: false, error: data.error || "Command failed" });
           return;
         }
+        if (data.name === "storage.files") {
+          clearTimeout(state.storageTimer);
+          this.storageMessage(data.error || "Could not list this folder.", true);
+          return;
+        }
+        if (event.module === "storage") clearTimeout(state.storageInfoTimer);
         this.renderError(event.module, data.error || "Command failed");
         return;
       }
@@ -405,8 +434,9 @@
         this.captureAnalyticsFromOtt(result);
         return;
       }
-      if (name === "hang.list" || name === "crash.list") return this.renderStacks(name, result);
-      if (name.startsWith("memory.")) return this.renderMemory(result);
+      if (name === "hang.list") return this.renderHangs(result);
+      if (name === "crash.list") return this.renderStacks(name, result);
+      if (name.startsWith("memory.")) return window.ViewliftMemory?.onResult(name, result);
       if (name === "ui.hierarchy") return this.renderHierarchy(result);
       if (name === "ui.describe") return this.renderDescribe(result);
       if (name === "ui.screenshot") return this.renderScreenshot(result, "ui-properties");
@@ -815,6 +845,174 @@
       }).join("")}</dl>`;
     },
 
+    bindHangs() {
+      document.getElementById("hangs-result")?.addEventListener("click", async (event) => {
+        const copy = event.target.closest("[data-hang-copy]");
+        if (copy) {
+          const index = Number(copy.dataset.hangCopy);
+          const text = this.hangReportText(state.hangs?.[index]);
+          try {
+            await navigator.clipboard.writeText(text);
+            copy.textContent = "Copied";
+          } catch (error) {
+            copy.textContent = "Copy failed";
+          }
+          return;
+        }
+        const shot = event.target.closest(".hang-shot");
+        if (shot) shot.classList.toggle("is-open");
+      });
+    },
+
+    renderHangs(result) {
+      const events = [...(result.events || [])].reverse();
+      state.hangs = events;
+      const target = document.getElementById("hangs-result");
+      if (!events.length) {
+        target.innerHTML = `<p class="muted">No hangs yet. A main-thread stall over 400 ms is recorded with the screen name, a screenshot from when the UI recovered, taps and scrolls before the stall, and console lines. Reproduce the hitch, then press Hang stacks.</p>`;
+        return;
+      }
+      target.innerHTML = `<p class="muted">${events.length} hang(s). Newest first. ${escapeHtml(result.note || "")}</p>`
+        + events.map((event, index) => this.hangCard(event, index)).join("");
+    },
+
+    hangCard(event, index) {
+      const duration = Math.round(event.duration_ms || 0);
+      const screen = event.screen_class || "Unknown screen";
+      const title = event.screen_title ? `“${event.screen_title}”` : "";
+      const severe = duration >= 1000 ? " hang-long" : "";
+      return `<article class="hang-card${severe}">`
+        + `<header class="hang-head"><h3>${duration} ms · ${escapeHtml(screen)} ${escapeHtml(title)}</h3>`
+        + `<span class="muted">${escapeHtml(this.hangClock(event.timestamp))} · ${escapeHtml(this.hangStackNote(event))}</span>`
+        + `<button type="button" class="btn ghost" data-hang-copy="${index}">Copy report</button></header>`
+        + `<div class="hang-layout">${this.hangShot(event)}${this.hangFacts(event)}</div>`
+        + this.hangStack(event)
+        + `</article>`;
+    },
+
+    hangStackNote(event) {
+      if (event.stack_source === "blocked") return "Stack sampled while the main thread was stuck.";
+      return "Stack taken after the main thread resumed. The blocking frame may already be gone.";
+    },
+
+    hangClock(timestamp) {
+      const value = Number(timestamp);
+      if (!value) return "";
+      return new Date(value * 1000).toLocaleTimeString();
+    },
+
+    hangShot(event) {
+      const shot = event.screenshot || {};
+      const mime = shot.mime === "image/jpeg" || shot.mime === "image/png" ? shot.mime : "";
+      const raw = String(shot.base64 || "").replace(/[^A-Za-z0-9+/=]/g, "");
+      if (!mime || !raw) {
+        const note = event.screenshot_note || "No screenshot. The window was not ready when the stall ended.";
+        return `<p class="hang-shot-missing muted">${escapeHtml(note)}</p>`;
+      }
+      const label = [event.screen_class, event.screen_title].filter(Boolean).join(" ");
+      return `<img class="hang-shot" alt="${escapeAttr(label || "Screen when the hang ended")}" width="200" src="data:${mime};base64,${raw}">`;
+    },
+
+    hangFacts(event) {
+      return `<div class="hang-facts">${this.hangSuspect(event)}${this.hangActions(event)}${this.hangConsole(event)}</div>`;
+    },
+
+    hangSuspect(event) {
+      const frame = event.suspect;
+      if (!frame) {
+        return `<p class="hang-suspect">No file or app frame in the stack. Start from the screen name and the last tap.</p>`;
+      }
+      const loc = frame.file && frame.line != null ? `${frame.file}:${frame.line}` : (frame.file || "");
+      const symbol = frame.symbol || frame.class || frame.raw || "";
+      return `<p class="hang-suspect">${escapeHtml(frame.class || "App frame")}</p>`
+        + `<p class="mono">${escapeHtml(symbol)}${loc ? ` · ${escapeHtml(loc)}` : ""}</p>`;
+    },
+
+    hangActions(event) {
+      const actions = event.actions || [];
+      if (!actions.length) {
+        return `<h4>User actions</h4><p class="muted">No tap or scroll in the last few seconds.</p>`;
+      }
+      const items = actions.map((action) => {
+        const bits = [
+          action.kind || "touch",
+          action.direction || "",
+          action.label ? `“${action.label}”` : "",
+          action.target_class || "",
+          action.screen_class || "",
+          this.hangAgo(action.ago_ms),
+        ].filter(Boolean);
+        return `<li>${escapeHtml(bits.join(" · "))}</li>`;
+      }).join("");
+      return `<h4>User actions</h4><ol class="hang-actions">${items}</ol>`;
+    },
+
+    hangConsole(event) {
+      const lines = event.console || [];
+      if (!lines.length) {
+        return `<h4>Console</h4><p class="muted">No print, stderr, os_log, or SDK log in the window around this hang.</p>`;
+      }
+      const text = lines.map((line) => {
+        const when = this.hangAgo(line.ago_ms);
+        return `${line.source || "log"} · ${when} · ${line.message || ""}`;
+      }).join("\n");
+      return `<h4>Console</h4><pre class="hang-console">${escapeHtml(text)}</pre>`;
+    },
+
+    hangStack(event) {
+      const frames = event.frames || [];
+      if (!frames.length) return "";
+      const executable = event.executable || "";
+      const rows = frames.map((frame) => {
+        const loc = frame.file && frame.line != null ? `${frame.file}:${frame.line}` : (frame.file || "");
+        const app = executable && frame.image === executable;
+        return `<div class="stack-frame${app ? " is-app" : ""}"><span class="loc">${escapeHtml(loc)}</span> `
+          + `<span class="sym">${escapeHtml(frame.class ? `${frame.class} · ` : "")}${escapeHtml(frame.symbol || frame.raw || "")}</span></div>`;
+      }).join("");
+      return `<details class="hang-stack"><summary>Stack · ${frames.length} frames · app frames highlighted</summary>${rows}</details>`;
+    },
+
+    hangAgo(value) {
+      const ms = Number(value);
+      if (!Number.isFinite(ms)) return "";
+      if (ms < 1000) return `${Math.round(ms)} ms before`;
+      return `${(ms / 1000).toFixed(1)} s before`;
+    },
+
+    hangReportText(event) {
+      if (!event) return "";
+      const lines = [
+        `Hang ${Math.round(event.duration_ms || 0)} ms`,
+        `When ${this.hangClock(event.timestamp)}`,
+        `Screen ${event.screen_class || "unknown"} ${event.screen_title || ""}`.trim(),
+        this.hangStackNote(event),
+      ];
+      const frame = event.suspect || {};
+      if (frame.symbol || frame.class) {
+        const loc = frame.file && frame.line != null ? `${frame.file}:${frame.line}` : "";
+        lines.push(`Suspect ${frame.class || ""} ${frame.symbol || ""} ${loc}`.trim());
+      }
+      lines.push("", "User actions");
+      for (const action of event.actions || []) {
+        lines.push([
+          action.kind, action.direction, action.label, action.target_class, action.screen_class, this.hangAgo(action.ago_ms),
+        ].filter(Boolean).join(" · "));
+      }
+      if (!(event.actions || []).length) lines.push("(none)");
+      lines.push("", "Console");
+      for (const line of event.console || []) {
+        lines.push(`${line.source || "log"} · ${this.hangAgo(line.ago_ms)} · ${line.message || ""}`);
+      }
+      if (!(event.console || []).length) lines.push("(none)");
+      lines.push("", "Stack");
+      for (const frameLine of event.frames || []) {
+        const loc = frameLine.file && frameLine.line != null ? `${frameLine.file}:${frameLine.line}` : "";
+        lines.push(`${frameLine.image || ""} ${frameLine.class || ""} ${frameLine.symbol || frameLine.raw || ""} ${loc}`.trim());
+      }
+      if (event.screenshot) lines.push("", "Screenshot is on the Hangs card.");
+      return lines.join("\n");
+    },
+
     renderStacks(name, result) {
       const events = result.events || [];
       const target = document.getElementById("hangs-result");
@@ -885,43 +1083,6 @@
         index ? ctx.lineTo(x, y) : ctx.moveTo(x, y);
       });
       ctx.stroke();
-    },
-
-    renderMemory(result) {
-      const target = document.getElementById("memory-result");
-      if (result.nodes) {
-        this.drawGraph(document.getElementById("memory-graph"), result);
-        target.textContent = result.coverage || "";
-      } else {
-        this.renderTable("memory-result", result.suspected_leaks || []);
-      }
-    },
-
-    drawGraph(canvas, graph) {
-      const ctx = canvas.getContext("2d");
-      ctx.clearRect(0, 0, canvas.width, canvas.height);
-      const nodes = graph.nodes || [];
-      const positions = new Map();
-      nodes.forEach((node, index) => {
-        const angle = index / Math.max(1, nodes.length) * Math.PI * 2;
-        positions.set(node.id, {
-          x: canvas.width / 2 + Math.cos(angle) * Math.min(350, 40 + nodes.length * 8),
-          y: canvas.height / 2 + Math.sin(angle) * Math.min(190, 30 + nodes.length * 5),
-        });
-      });
-      ctx.strokeStyle = "#41566e";
-      for (const edge of graph.edges || []) {
-        const from = positions.get(edge.from), to = positions.get(edge.to);
-        if (!from || !to) continue;
-        ctx.beginPath(); ctx.moveTo(from.x, from.y); ctx.lineTo(to.x, to.y); ctx.stroke();
-      }
-      for (const node of nodes) {
-        const point = positions.get(node.id);
-        ctx.fillStyle = "#3d7ea6";
-        ctx.beginPath(); ctx.arc(point.x, point.y, 8, 0, Math.PI * 2); ctx.fill();
-        ctx.fillStyle = "#c8d3df";
-        ctx.fillText(node.class || "Object", point.x + 11, point.y + 4);
-      }
     },
 
     hierarchyNodes() {
@@ -1299,10 +1460,9 @@
       if (name === "storage.files") return this.renderFileBrowser(result);
       if (name === "storage.file_read") return this.renderFilePreview(result);
       const targetId = "storage-inspector";
-      if (result.values) {
-        const rows = Object.entries(result.values).map(([key, value]) => ({ key, value: JSON.stringify(value) }));
-        return this.renderTable(targetId, rows);
-      }
+      clearTimeout(state.storageInfoTimer);
+      if (name === "storage.defaults") return this.renderDefaults(result);
+      if (name === "storage.keychain_metadata") return this.renderKeychain(result);
       for (const key of ["items", "files", "rows"]) {
         if (Array.isArray(result[key])) return this.renderTable(targetId, result[key]);
       }
@@ -1310,12 +1470,120 @@
       if (target) target.textContent = JSON.stringify(result, null, 2);
     },
 
+    inspectorMessage(text, retryCommand) {
+      const target = document.getElementById("storage-inspector");
+      if (!target) return;
+      const retry = retryCommand
+        ? ` <button type="button" class="btn ghost storage-retry" data-storage-command="${escapeAttr(retryCommand)}">Retry</button>`
+        : "";
+      target.innerHTML = `<p class="muted">${escapeHtml(text)}${retry}</p>`;
+    },
+
+    runStorageCommand(name) {
+      clearTimeout(state.storageInfoTimer);
+      if (!state.clientId) {
+        this.inspectorMessage("Choose one app in Scope first.");
+        return;
+      }
+      const presence = state.client?.state || "online";
+      const appName = state.client?.app_name || "The app";
+      if (presence !== "online") {
+        const reason = presence === "background" ? "is in the background" : "is offline";
+        this.inspectorMessage(`${appName} ${reason}. Open it on the device, then try again.`, name);
+        return;
+      }
+      this.inspectorMessage("Loading…");
+      state.storageInfoTimer = setTimeout(() => {
+        this.inspectorMessage(`${appName} did not answer.`, name);
+      }, 10000);
+      this.sendCommand(name, {});
+    },
+
+    renderDefaults(result) {
+      const target = document.getElementById("storage-inspector");
+      if (!target) return;
+      const values = result.values && typeof result.values === "object" ? result.values : {};
+      const rows = Object.keys(values).sort((a, b) => a.localeCompare(b)).map((key) => {
+        const value = values[key];
+        const kind = Array.isArray(value) ? "array" : value === null ? "null" : typeof value;
+        const text = typeof value === "string" ? value : JSON.stringify(value, null, 2);
+        return { key, kind, text: String(text ?? "") };
+      });
+      if (!rows.length) {
+        this.inspectorMessage("UserDefaults has no keys.");
+        return;
+      }
+      target.innerHTML = `<div class="defaults-view">
+        <div class="defaults-bar">
+          <input type="search" id="defaults-filter" placeholder="Filter ${rows.length} keys" autocomplete="off" aria-label="Filter UserDefaults keys">
+          <span class="muted" id="defaults-count"></span>
+          <button type="button" class="btn ghost" data-storage-command="storage.defaults">Refresh</button>
+        </div>
+        <table class="plist-table defaults-table"><tbody id="defaults-rows"></tbody></table>
+      </div>`;
+      const body = target.querySelector("#defaults-rows");
+      const count = target.querySelector("#defaults-count");
+      const paint = (query) => {
+        const needle = query.trim().toLowerCase();
+        const shown = needle
+          ? rows.filter((row) => row.key.toLowerCase().includes(needle) || row.text.toLowerCase().includes(needle))
+          : rows;
+        count.textContent = needle ? `${shown.length} of ${rows.length}` : `${rows.length} keys`;
+        body.innerHTML = shown.length
+          ? shown.slice(0, 500).map((row) => `<tr><th>${escapeHtml(row.key)}</th><td class="plist-type">${escapeHtml(row.kind)}</td><td><pre class="defaults-value">${escapeHtml(row.text.length > 4000 ? `${row.text.slice(0, 4000)}…` : row.text)}</pre></td></tr>`).join("")
+          : `<tr><td colspan="3" class="muted">No keys match.</td></tr>`;
+      };
+      paint("");
+      target.querySelector("#defaults-filter").addEventListener("input", (event) => paint(event.target.value));
+    },
+
+    renderKeychain(result) {
+      const target = document.getElementById("storage-inspector");
+      if (!target) return;
+      const labels = {
+        genp: "Generic password",
+        inet: "Internet password",
+        cert: "Certificate",
+        keys: "Key",
+        idnt: "Identity",
+      };
+      const items = Array.isArray(result.items) ? result.items : [];
+      const note = `<p class="muted">Metadata only. Secret values never leave the device.</p>`;
+      if (!items.length) {
+        target.innerHTML = `${note}<p class="muted">The app has no keychain items. A simulator keychain starts empty after a reset.</p>`;
+        return;
+      }
+      const cell = (value) => {
+        const text = String(value ?? "");
+        return text ? escapeHtml(text) : `<span class="muted">—</span>`;
+      };
+      const body = items.map((item) => `<tr>
+        <td>${escapeHtml(labels[item.class] || item.class || "")}</td>
+        <td>${cell(item.service)}</td>
+        <td>${cell(item.account)}</td>
+        <td>${cell(item.access_group)}</td>
+        <td>${cell(item.accessible)}</td>
+      </tr>`).join("");
+      target.innerHTML = `${note}<table class="debug-table"><thead><tr><th>Class</th><th>Service</th><th>Account</th><th>Access group</th><th>Accessible</th></tr></thead><tbody>${body}</tbody></table>`;
+    },
+
     bindStorage() {
+      document.getElementById("storage-inspector")?.addEventListener("click", (event) => {
+        const button = event.target.closest("[data-storage-command]");
+        if (button) this.runStorageCommand(button.dataset.storageCommand);
+      });
+      document.querySelectorAll("[data-storage-run]").forEach((button) => {
+        button.addEventListener("click", () => this.runStorageCommand(button.dataset.storageRun));
+      });
       document.getElementById("storage-crumb")?.addEventListener("click", (event) => {
         const button = event.target.closest("[data-storage-path]");
         if (button) this.openStorage(button.dataset.storagePath || "");
       });
       document.getElementById("storage-files")?.addEventListener("click", (event) => {
+        if (event.target.closest("[data-storage-retry]")) {
+          this.openStorage(state.storagePath);
+          return;
+        }
         const schema = event.target.closest("[data-storage-schema]");
         if (schema) {
           const path = schema.dataset.storageSchema || "";
@@ -1330,8 +1598,14 @@
           this.openStorage(row.dataset.path || "");
           return;
         }
-        this.selectStorageFile(row.dataset.path || "", row.dataset.name || "");
-        this.sendCommand("storage.file_read", { path: row.dataset.path || "" });
+        const path = row.dataset.path || "";
+        this.selectStorageFile(path, row.dataset.name || "");
+        state.storageRead = path;
+        const inspector = document.getElementById("storage-inspector");
+        if (inspector) {
+          inspector.innerHTML = `<p class="muted">Reading ${escapeHtml(row.dataset.name || "file")}…</p>`;
+        }
+        this.sendCommand("storage.file_read", { path });
       });
       document.getElementById("storage-snapshot")?.addEventListener("click", () => {
         const paths = [...document.querySelectorAll("#storage-files input[data-storage-check]:checked")]
@@ -1365,14 +1639,35 @@
     openStorage(path) {
       state.storagePath = String(path || "").replace(/^\/+|\/+$/g, "");
       this.renderStorageCrumb();
-      const target = document.getElementById("storage-files");
+      clearTimeout(state.storageTimer);
+      state.storagePending = false;
       if (!state.clientId) {
-        if (target) {
-          target.innerHTML = `<tr><td colspan="4" class="muted">Choose one app in Scope first.</td></tr>`;
-        }
+        this.storageMessage("Choose one app in Scope first.");
         return;
       }
+      const presence = state.client?.state || "online";
+      const appName = state.client?.app_name || "The app";
+      if (presence !== "online") {
+        state.storagePending = true;
+        const reason = presence === "background" ? "is in the background" : "is offline";
+        this.storageMessage(`${appName} ${reason}. Open it on the device. The sandbox loads when it reconnects.`);
+        return;
+      }
+      this.storageMessage("Loading sandbox…");
+      state.storageTimer = setTimeout(() => {
+        state.storagePending = true;
+        this.storageMessage(`${appName} did not answer.`, true);
+      }, 10000);
       this.sendCommand("storage.files", { path: state.storagePath });
+    },
+
+    storageMessage(text, retry = false) {
+      const target = document.getElementById("storage-files");
+      if (!target) return;
+      const button = retry
+        ? ` <button type="button" class="btn ghost storage-retry" data-storage-retry>Retry</button>`
+        : "";
+      target.innerHTML = `<tr class="static-row"><td colspan="4" class="muted">${escapeHtml(text)}${button}</td></tr>`;
     },
 
     renderStorageCrumb() {
@@ -1392,6 +1687,8 @@
     },
 
     renderFileBrowser(result) {
+      clearTimeout(state.storageTimer);
+      state.storagePending = false;
       this.renderStorageCrumb();
       const target = document.getElementById("storage-files");
       if (!target) return;
@@ -1403,12 +1700,12 @@
       const rows = [];
       if (state.storagePath) {
         const parent = state.storagePath.split("/").slice(0, -1).join("/");
-        rows.push(`<tr data-path="${escapeAttr(parent)}" data-directory="true"><td></td><td class="file-dir">..</td><td></td><td></td></tr>`);
+        rows.push(`<tr data-path="${escapeAttr(parent)}" data-directory="true"><td class="col-check"></td><td class="col-name file-dir">..</td><td class="col-size"></td><td class="col-time"></td></tr>`);
       }
       if (!files.length && !state.storagePath) {
-        rows.push(`<tr><td colspan="4" class="muted">Sandbox is empty.</td></tr>`);
+        rows.push(`<tr class="static-row"><td colspan="4" class="muted">Sandbox is empty.</td></tr>`);
       } else if (!files.length) {
-        rows.push(`<tr><td colspan="4" class="muted">Empty folder.</td></tr>`);
+        rows.push(`<tr class="static-row"><td colspan="4" class="muted">Empty folder.</td></tr>`);
       }
       files.forEach((file) => {
         const directory = !!file.directory;
@@ -1423,10 +1720,10 @@
           : "";
         const active = path === state.selectedStoragePath ? ` class="active"` : "";
         rows.push(`<tr data-path="${escapeAttr(path)}" data-directory="${directory ? "true" : "false"}" data-name="${escapeAttr(name)}"${active}>
-          <td>${check}</td>
-          <td class="${directory ? "file-dir" : ""}">${escapeHtml(directory ? `${name}/` : name)}${schema}</td>
-          <td>${directory ? "" : escapeHtml(this.fmtBytes(file.bytes))}</td>
-          <td>${escapeHtml(this.fmtTime(file.modified))}</td>
+          <td class="col-check">${check}</td>
+          <td class="col-name${directory ? " file-dir" : ""}" title="${escapeAttr(name)}">${escapeHtml(directory ? `${name}/` : name)}${schema}</td>
+          <td class="col-size">${directory ? "" : escapeHtml(this.fmtBytes(file.bytes))}</td>
+          <td class="col-time">${escapeHtml(this.fmtTime(file.modified))}</td>
         </tr>`);
       });
       target.innerHTML = rows.join("");
@@ -1448,14 +1745,40 @@
 
     renderFilePreview(result) {
       const target = document.getElementById("storage-inspector");
-      if (!target) return;
-      const path = result.path || state.selectedStoragePath || "";
-      if (result.encoding === "base64") {
-        const bytes = Math.floor((String(result.content || "").length * 3) / 4);
-        target.innerHTML = `<p><strong>${escapeHtml(path)}</strong></p><p class="muted">binary · ${escapeHtml(this.fmtBytes(bytes))}</p>`;
-        return;
+      if (!target || !window.VLFilePreview) return;
+      const payload = result || {};
+      if (payload.path && state.storageRead && payload.path !== state.storageRead) return;
+      if (state.previewUrl) {
+        URL.revokeObjectURL(state.previewUrl);
+        state.previewUrl = "";
       }
-      target.innerHTML = `<p><strong>${escapeHtml(path)}</strong></p><pre class="pre">${escapeHtml(result.content || "")}</pre>`;
+      const preview = window.VLFilePreview.prepare(payload);
+      target.innerHTML = preview.html;
+      const image = target.querySelector(".img-preview");
+      const dims = target.querySelector("[data-file-dims]");
+      if (image && dims) {
+        image.addEventListener("load", () => {
+          if (image.naturalWidth) dims.textContent = `${image.naturalWidth} × ${image.naturalHeight}`;
+        });
+        image.addEventListener("error", () => {
+          dims.textContent = "Browser could not decode this image.";
+        });
+      }
+      const media = target.querySelector("[data-file-media]");
+      if (media && preview.bytes && preview.bytes.length) {
+        const blob = new Blob([preview.bytes], { type: preview.mime || "application/octet-stream" });
+        state.previewUrl = URL.createObjectURL(blob);
+        media.src = state.previewUrl;
+      }
+      target.querySelector("[data-file-download]")?.addEventListener("click", () => {
+        const blob = new Blob([preview.bytes], { type: preview.mime || "application/octet-stream" });
+        const url = URL.createObjectURL(blob);
+        const link = document.createElement("a");
+        link.href = url;
+        link.download = preview.filename || "file";
+        link.click();
+        URL.revokeObjectURL(url);
+      });
     },
 
     fmtBytes(value) {
@@ -1564,7 +1887,7 @@
 
     renderError(module, message) {
       const targets = {
-        memory: "memory-result", ui: "ui-properties", swiftui: "swiftui-result",
+        memory: "memory-status", ui: "ui-properties", swiftui: "swiftui-result",
         assets: "assets-result", accessibility: "accessibility-result", storage: "storage-inspector",
         feature_flags: "flags-result", bug: "bug-result", macro: "macro-result",
         runtime: "runtime-result", push: "push-result",

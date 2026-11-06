@@ -476,7 +476,8 @@ svg { flex: none; }
 .main > .split,
 .main > .rules-page,
 .main > .setup-page,
-.main > .detail-page { flex: 1 1 auto; min-height: 0; }
+.main > .detail-page,
+.main > .scratch-page { flex: 1 1 auto; min-height: 0; }
 
 /* Controls */
 

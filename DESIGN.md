@@ -51,6 +51,7 @@ Theme follows `prefers-color-scheme`. The rail toggle overrides it and saves the
 - Rules and setup: a spec-sheet layout. The section title and explanation sit in the left column, and controls sit on the right. The layout collapses to one column below 1100px.
 - Setup steps use a numbered vertical track because they are a real sequence.
 - Debug suite: sticky underline tabs, a metric strip with hairline dividers, and dark scope canvases.
+- Tools: the index is on the left, with a Toolkit / Scratchpad switch. A toolkit tool puts the form beside the output; below 1200px they stack. The scratchpad fills the right with the pad or the script editor. Same tokens as Network. Below 900px the index stacks above the stage.
 
 ## Motion
 

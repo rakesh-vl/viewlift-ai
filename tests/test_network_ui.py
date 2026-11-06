@@ -13,6 +13,7 @@ from nacl.secret import SecretBox
 from viewlift_ai.app import create_app, get_event_bus
 from viewlift_ai.config import AppConfig, SecretKeyState
 from viewlift_ai.models.flow import FlowRecord, FlowSource, FlowTiming, RetentionPolicy
+from viewlift_ai.models.log import LogLevel, LogRecord
 from viewlift_ai.proxy.redact import REDACTED
 from viewlift_ai.services.flow_export import build_curl, har_json
 from viewlift_ai.services.flow_present import flow_summary
@@ -93,6 +94,48 @@ def test_root_dashboard_and_health(tmp_path: Path) -> None:
         assert b"ViewliftNetwork" in static.content
         assert b"vl-detail-tab" in static.content
         assert b"baseUrlKey" in static.content
+        assert b'id="btn-flow-delete"' in root.content
+        assert b"Delete flows" in root.content
+
+
+def test_delete_flows_keeps_logs(tmp_path: Path) -> None:
+    with _client(tmp_path) as client:
+        store = client.app.state.store
+        store.save_flow(_sample_flow(flow_id="gone"))
+        store.save_log(
+            LogRecord(
+                id="keep",
+                level=LogLevel.INFO,
+                subsystem="app",
+                message="stay",
+                created_at=datetime(2026, 10, 21, 12, 0, tzinfo=UTC),
+                source="sdk",
+            )
+        )
+        reveal = client.app.state.reveal
+        token = reveal.unlock_token
+        reveal.remember(
+            "gone",
+            request_headers={"Authorization": "Bearer secret"},
+            request_body=b"secret-body",
+            response_headers={},
+            response_body=b"",
+        )
+        assert reveal.unlock(token) is True
+
+        removed = client.post("/api/flows/delete")
+        assert removed.status_code == 200
+        assert removed.json()["deleted"] == 1
+        assert client.get("/api/flows").json()["flows"] == []
+        assert store.get_flow("gone") is None
+        assert any(row.id == "keep" for row in store.list_logs())
+        assert reveal.status()["cached_flows"] == 0
+        assert reveal.unlocked is True
+        assert reveal.unlock_token == token
+
+        again = client.post("/api/flows/delete")
+        assert again.status_code == 200
+        assert again.json()["deleted"] == 0
 
 
 def test_flow_filters(tmp_path: Path) -> None:

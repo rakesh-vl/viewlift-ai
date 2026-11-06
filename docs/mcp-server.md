@@ -69,7 +69,7 @@ The console must be running in both cases. The **Agent** page (`/agent`) shows w
 
 Read commands (`app_inspect`):
 
-`performance.snapshot`, `memory.snapshot`, `memory.graph`, `ui.hierarchy`, `ui.screenshot`, `swiftui.renders`, `assets.audit`, `accessibility.audit`, `storage.defaults`, `storage.keychain_metadata`, `storage.files`, `storage.file_read`, `storage.sqlite_schema`, `storage.sqlite_query`, `feature_flags.list`, `runtime.search`, `runtime.describe`, `macro.list`, `bug.capture`, `ott.snapshot`, `hang.list`, `crash.list`.
+`performance.snapshot`, `memory.snapshot`, `memory.graph`, `memory.leaks`, `memory.heap`, `memory.live_start`, `memory.live_stop`, `ui.hierarchy`, `ui.screenshot`, `swiftui.renders`, `assets.audit`, `accessibility.audit`, `storage.defaults`, `storage.keychain_metadata`, `storage.files`, `storage.file_read`, `storage.sqlite_schema`, `storage.sqlite_query`, `feature_flags.list`, `runtime.search`, `runtime.describe`, `macro.list`, `bug.capture`, `ott.snapshot`, `hang.list`, `crash.list`.
 
 Mutating commands (`app_mutate`):
 

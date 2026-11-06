@@ -96,6 +96,16 @@ def test_register_enqueue_poll_and_event(tmp_path: Path) -> None:
     assert rows[0]["payload"] == {"cpu": 7.5}
 
 
+def test_live_memory_events_publish_without_persisting(tmp_path: Path) -> None:
+    service, store = _service(tmp_path)
+    client = _register(service)
+    service.ingest_event(client, {"module": "memory", "kind": "live", "payload": {"tracked_count": 3}})
+    service.ingest_event(client, {"module": "memory", "kind": "leak", "payload": {"class": "DetailVC"}})
+    rows = store.list_debug_events(client_id=client, module="memory")
+    assert [row["kind"] for row in rows] == ["leak"]
+    assert service.enqueue(client_id=client, name="memory.live_start", payload={})["name"] == "memory.live_start"
+
+
 def test_mutation_requires_one_use_matching_confirmation(tmp_path: Path) -> None:
     service, _ = _service(tmp_path)
     client = _register(service)

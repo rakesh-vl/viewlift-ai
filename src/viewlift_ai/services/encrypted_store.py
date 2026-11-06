@@ -310,6 +310,11 @@ class EncryptedSqliteStore:
             flows = [f for f in flows if _flow_matches_text(f, needle)]
         return flows[:limit]
 
+    def delete_flows(self) -> int:
+        cur = self._conn.execute("DELETE FROM flows")
+        self._conn.commit()
+        return int(cur.rowcount)
+
     def delete_logs(self) -> int:
         cur = self._conn.execute("DELETE FROM logs")
         self._conn.commit()

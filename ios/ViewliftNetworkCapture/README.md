@@ -27,26 +27,27 @@ Add this key to the app's `Info.plist`:
 
 ## Start before app networking
 
-Get receiver URL, one-use token, and SHA-256 fingerprint from the dashboard's
-**Setup** page.
-
 ```swift
 import ViewliftNetworkCapture
 
 #if DEBUG || VIEWLIFT_CAPTURE_ENABLED
-CaptureService.shared.start(
-    configuration: CaptureConfiguration(
-        receiverURL: URL(string: "https://192.168.1.10:8742")!,
-        pairingToken: "<one-use-token>",
-        pinnedCertificateSHA256: "<sha256-hex>"
-    )
-)
+CaptureService.shared.start()
 #endif
 ```
 
-Call this from the SwiftUI app initializer or
+`start()` enables every debug module and waits for the dashboard Bonjour
+advertisement (`_viewliftdebug._tcp`) to supply the host, port, certificate
+fingerprint, and debug key. Optional scheme overrides:
+`VIEWLIFT_CAPTURE_HOST`, `VIEWLIFT_CAPTURE_PORT`,
+`VIEWLIFT_CAPTURE_FINGERPRINT`, `VIEWLIFT_CAPTURE_DEBUG_KEY`.
+
+A fixed receiver still uses `start(configuration:)`. Copy the URL, one-use
+token, and SHA-256 fingerprint from **Setup**.
+
+Call `start()` from the SwiftUI app initializer or
 `application(_:didFinishLaunchingWithOptions:)` before constructing networking
-services.
+services. The app `Info.plist` also needs `NSBonjourServices` =
+`_viewliftdebug._tcp`.
 
 ```swift
 LogService.shared.log(

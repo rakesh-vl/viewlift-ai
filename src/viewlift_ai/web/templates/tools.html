@@ -1,0 +1,97 @@
+{% extends "base.html" %}
+{% block title %}Tools · Viewlift AI{% endblock %}
+{% block content %}
+<link rel="stylesheet" href="/static/css/tools.css?v=3">
+<div id="tools-page" class="scratch-page" data-mode="kit">
+  <div class="tools-index">
+    <div class="scratch-index-head">
+      <h1>Tools</h1>
+      <div class="view-switch" role="group" aria-label="View">
+        <button type="button" class="btn ghost active" data-tools-mode="kit" aria-pressed="true">Toolkit</button>
+        <button type="button" class="btn ghost" data-tools-mode="scratch" aria-pressed="false">Scratchpad</button>
+      </div>
+    </div>
+
+    <section id="kit-index" class="tools-index-pane" aria-label="Toolkit">
+      <p class="scratch-lede"><span id="kit-count">0</span> tools. Press / to filter.</p>
+      <label class="scratch-search">
+        <input id="kit-filter" type="search" placeholder="Filter tools" autocomplete="off" aria-label="Filter tools">
+      </label>
+      <div id="kit-list" class="scratch-list"></div>
+    </section>
+
+    <section id="scratch-index" class="tools-index-pane" hidden aria-label="Scripts">
+      <div class="scratch-index-head">
+        <p class="scratch-lede">Paste text, run a script, or write one. Saved scripts stay on this Mac.</p>
+        <button type="button" class="btn" id="scratch-new">New script</button>
+      </div>
+      <label class="scratch-search">
+        <input id="scratch-filter" type="search" placeholder="Filter scripts" autocomplete="off" aria-label="Filter scripts">
+      </label>
+      <div id="scratch-list" class="scratch-list" role="listbox" aria-label="Scripts"></div>
+    </section>
+  </div>
+
+  <section id="kit-stage" class="kit-stage" aria-label="Tool">
+    <div class="scratch-toolbar">
+      <div class="scratch-title">
+        <span id="kit-name">Tool</span>
+        <span id="kit-desc" class="muted"></span>
+      </div>
+      <div class="row-actions">
+        <button type="button" class="btn ghost" id="kit-reset">Reset</button>
+        <button type="button" class="btn" id="kit-run">Run</button>
+      </div>
+    </div>
+    <div class="kit-body">
+      <form id="kit-form" class="kit-form"></form>
+      <div id="kit-output" class="kit-output" aria-live="polite"></div>
+    </div>
+  </section>
+
+  <section id="scratch-stage" class="scratch-stage" hidden aria-label="Scratchpad">
+    <div class="scratch-toolbar">
+      <div class="scratch-title">
+        <span id="scratch-script-name">No script selected</span>
+        <span id="scratch-script-desc" class="muted"></span>
+      </div>
+      <div class="row-actions" id="scratch-pad-actions">
+        <button type="button" class="btn ghost" id="scratch-copy">Copy</button>
+        <button type="button" class="btn ghost" id="scratch-clear">Clear</button>
+        <button type="button" class="btn ghost" id="scratch-duplicate" hidden>Duplicate</button>
+        <button type="button" class="btn ghost" id="scratch-edit" hidden>Edit</button>
+        <button type="button" class="btn ghost" id="scratch-delete" hidden>Delete</button>
+        <button type="button" class="btn" id="scratch-run" disabled title="Run (Command-Enter)">Run</button>
+      </div>
+      <div class="row-actions" id="scratch-edit-actions" hidden>
+        <button type="button" class="btn ghost" id="scratch-cancel">Cancel</button>
+        <button type="button" class="btn ghost" id="scratch-delete-edit" hidden>Delete</button>
+        <button type="button" class="btn" id="scratch-save">Save script</button>
+      </div>
+    </div>
+    <textarea id="scratch-pad" class="scratch-pad" spellcheck="false" aria-label="Scratchpad" placeholder="Paste a payload, token, query string, or log line. Pick a script and run it. A selection runs on that selection only."></textarea>
+    <div id="scratch-editor" class="scratch-editor" hidden>
+      <p class="scratch-hint">The header names the script. <code>function main(state)</code> replaces <code>state.text</code>. <code>state.postInfo</code> and <code>state.postError</code> write the status line. <code>state.fullText</code> is the whole pad.</p>
+      <textarea id="scratch-source" class="scratch-pad" spellcheck="false" aria-label="Script source"></textarea>
+    </div>
+    <p id="scratch-status" class="scratch-status" role="status" aria-live="polite"></p>
+  </section>
+</div>
+{% endblock %}
+{% block scripts %}
+<script src="/static/js/toolkit/core.js?v=1"></script>
+<script src="/static/js/toolkit/text.js?v=1"></script>
+<script src="/static/js/toolkit/data.js?v=1"></script>
+<script src="/static/js/toolkit/security.js?v=1"></script>
+<script src="/static/js/toolkit/web.js?v=1"></script>
+<script src="/static/js/toolkit/http.js?v=1"></script>
+<script src="/static/js/toolkit/sql.js?v=1"></script>
+<script src="/static/js/toolkit/time.js?v=1"></script>
+<script src="/static/js/toolkit/network.js?v=1"></script>
+<script src="/static/js/toolkit/calc.js?v=1"></script>
+<script src="/static/js/toolkit/generators.js?v=1"></script>
+<script src="/static/js/toolkit/media.js?v=1"></script>
+<script src="/static/js/toolkit/devops.js?v=1"></script>
+<script src="/static/js/toolkit/ui.js?v=1"></script>
+<script src="/static/js/tools.js?v=2"></script>
+{% endblock %}

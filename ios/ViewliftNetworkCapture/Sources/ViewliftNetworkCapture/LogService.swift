@@ -4,6 +4,9 @@ import Foundation
 public final class LogService: LogServing, @unchecked Sendable {
     public static let shared = LogService()
 
+    /// Debug-only sink so a hang report can include lines the app logged through the SDK.
+    static var consoleHook: ((String, String, String) -> Void)?
+
     private let lock = NSLock()
     private var transportOverride: CaptureTransporting?
 
@@ -24,6 +27,7 @@ public final class LogService: LogServing, @unchecked Sendable {
         requestId: String? = nil
     ) {
         #if DEBUG || VIEWLIFT_CAPTURE_ENABLED
+        LogService.consoleHook?(level.rawValue, subsystem, message)
         let event = CapturedLogEvent(
             level: level,
             subsystem: subsystem,

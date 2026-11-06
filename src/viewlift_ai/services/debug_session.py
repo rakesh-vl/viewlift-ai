@@ -31,6 +31,10 @@ READ_COMMANDS = {
     "performance.snapshot",
     "memory.snapshot",
     "memory.graph",
+    "memory.leaks",
+    "memory.heap",
+    "memory.live_start",
+    "memory.live_stop",
     "ui.hierarchy",
     "ui.describe",
     "ui.screenshot",
@@ -69,6 +73,9 @@ MUTATING_COMMANDS = {
 }
 
 ALLOWED_COMMANDS = READ_COMMANDS | MUTATING_COMMANDS
+
+# Streamed once a second; persisting them would push command results out of the event history.
+EPHEMERAL_EVENTS = frozenset({("memory", "live")})
 
 
 MAX_FRAMEWORKS = 400
@@ -523,14 +530,15 @@ class DebugSessionService:
             clean = _strip_keychain_values(clean)
         event_id = _identifier(payload.get("id"), fallback=str(uuid.uuid4()))
         created_at = datetime.now(UTC)
-        self.store.save_debug_event(
-            event_id=event_id,
-            client_id=client_id,
-            module=module,
-            kind=kind,
-            payload=clean,
-            created_at=created_at,
-        )
+        if (module, kind) not in EPHEMERAL_EVENTS:
+            self.store.save_debug_event(
+                event_id=event_id,
+                client_id=client_id,
+                module=module,
+                kind=kind,
+                payload=clean,
+                created_at=created_at,
+            )
         event = {
             "id": event_id,
             "client_id": client_id,

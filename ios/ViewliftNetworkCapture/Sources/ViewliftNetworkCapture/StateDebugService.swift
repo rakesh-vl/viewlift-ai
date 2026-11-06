@@ -44,11 +44,15 @@ final class StateDebugService {
         ]
         var rows: [JSONValue] = []
         for itemClass in classes {
-            let query: [CFString: Any] = [
+            var query: [CFString: Any] = [
                 kSecClass: itemClass,
                 kSecReturnAttributes: true,
                 kSecMatchLimit: kSecMatchLimitAll
             ]
+            // iCloud-synced passwords are hidden from queries unless this is set.
+            if itemClass == kSecClassGenericPassword || itemClass == kSecClassInternetPassword {
+                query[kSecAttrSynchronizable] = kSecAttrSynchronizableAny
+            }
             var result: CFTypeRef?
             guard SecItemCopyMatching(query as CFDictionary, &result) == errSecSuccess else {
                 continue
@@ -99,16 +103,22 @@ final class StateDebugService {
     func readFile(relativePath: String) throws -> [String: JSONValue] {
         let url = try sandboxURL(relativePath)
         let data = try Data(contentsOf: url, options: [.mappedIfSafe])
-        guard data.count <= Self.maxFileBytes else { throw StateDebugError.payloadTooLarge }
-        if let text = String(data: data, encoding: .utf8) {
+        return try Self.filePayload(path: relativePath, data: data)
+    }
+
+    /// Text stays UTF-8. Binary plists and images stay base64 so the dashboard can preview them.
+    /// A short binary plist can be valid UTF-8, and decoding it would destroy the bytes.
+    static func filePayload(path: String, data: Data) throws -> [String: JSONValue] {
+        guard data.count <= maxFileBytes else { throw StateDebugError.payloadTooLarge }
+        if !prefersBinaryFilePayload(data), let text = String(data: data, encoding: .utf8) {
             return [
-                "path": .string(relativePath),
+                "path": .string(path),
                 "encoding": .string("utf8"),
                 "content": .string(text)
             ]
         }
         return [
-            "path": .string(relativePath),
+            "path": .string(path),
             "encoding": .string("base64"),
             "content": .string(data.base64EncodedString())
         ]
@@ -268,5 +278,25 @@ final class StateDebugService {
         }
     }
     #endif
+}
+
+private func prefersBinaryFilePayload(_ data: Data) -> Bool {
+    if data.starts(with: Data("bplist".utf8)) {
+        return true
+    }
+    if data.starts(with: Data([0x89, 0x50, 0x4E, 0x47]))
+        || data.starts(with: Data([0xFF, 0xD8, 0xFF]))
+        || data.starts(with: Data([0x47, 0x49, 0x46, 0x38]))
+        || data.starts(with: Data([0x25, 0x50, 0x44, 0x46]))
+        || data.starts(with: Data([0x42, 0x4D])) {
+        return true
+    }
+    guard data.count >= 12, data.starts(with: Data("RIFF".utf8)) else {
+        return false
+    }
+    guard let kind = String(bytes: data[8..<12], encoding: .utf8) else {
+        return false
+    }
+    return kind == "WEBP" || kind == "WAVE"
 }
 #endif

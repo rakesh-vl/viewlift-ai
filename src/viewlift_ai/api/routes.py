@@ -105,6 +105,16 @@ def list_flows(
     return {"flows": [flow_summary(f) for f in flows], "count": len(flows)}
 
 
+@router.post("/api/flows/delete")
+def delete_flows(request: Request) -> dict[str, int]:
+    """Delete every stored flow. Logs, debug events, and rules stay."""
+    deleted = _store(request).delete_flows()
+    reveal = getattr(request.app.state, "reveal", None)
+    if reveal is not None:
+        reveal.clear_cached()
+    return {"deleted": deleted}
+
+
 @router.get("/api/flows/{flow_id}")
 def get_flow(
     request: Request,

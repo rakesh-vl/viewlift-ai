@@ -1,7 +1,8 @@
 {% extends "base.html" %}
 {% block title %}Remote Debug Suite · Viewlift AI{% endblock %}
 {% block content %}
-<link rel="stylesheet" href="/static/css/debug.css?v=5">
+<link rel="stylesheet" href="/static/css/debug.css?v=10">
+<link rel="stylesheet" href="/static/css/memory.css?v=1">
 <section class="debug-session-bar">
   <span id="debug-client-name" class="debug-client-name">No app selected</span>
   <button type="button" class="btn ghost" id="debug-refresh">Refresh apps</button>
@@ -115,7 +116,7 @@
     <button class="btn ghost" data-command="hang.list">Hang stacks</button>
     <button class="btn ghost" data-command="crash.list">Crash / exception stacks</button>
   </div>
-  <p class="muted">Frames show class / file / line when debug symbols present. Fatal SIG* after death still need device crash reports.</p>
+  <p class="muted">A hang is a main-thread stall over 400 ms. Each card shows the screen class, a screenshot from when the UI recovered, taps and scrolls before the stall, console lines, and the stack. Click the screenshot to enlarge it. Copy report for a bug note. Fatal SIG* after death still need device crash reports.</p>
   <div id="hangs-result" class="debug-result"></div>
 </section>
 
@@ -129,11 +130,62 @@
 
 <section class="debug-panel hidden" data-panel="memory">
   <div class="panel-title"><h2>Leak tracker and memory graph</h2>
-    <button class="btn ghost" data-command="memory.snapshot">Leaks</button>
-    <button class="btn ghost" data-command="memory.graph">Graph</button>
+    <span id="memory-live-pill" class="memory-pill" role="status">Not tracking</span>
+    <button type="button" class="btn" id="memory-live-toggle" aria-pressed="false">Start live tracking</button>
+    <button type="button" class="btn ghost" data-command="memory.leaks">Load leak reports</button>
   </div>
-  <canvas id="memory-graph" width="1100" height="500"></canvas>
-  <div id="memory-result" class="debug-result"></div>
+  <p class="muted">Every view controller is tracked from viewDidLoad with the stack that created it. A screen still alive 3 seconds after it closes is a leak. With live tracking on, the app also records a small screen replay with your taps, so each leak comes with the steps to reproduce it, the class, its creation stack, what still holds it, and retain cycle candidates. Register other objects, such as view models, with <code>MemoryDebugService.shared.track(_:)</code>.</p>
+  <div id="memory-status" class="memory-status" aria-live="polite"></div>
+  <div id="memory-metrics" class="metric-grid"></div>
+
+  <div class="memory-live">
+    <figure class="memory-timeline-wrap">
+      <canvas id="memory-timeline" height="220" aria-label="Memory footprint over the last two minutes with object loads and leaks"></canvas>
+      <div id="memory-timeline-tip" class="memory-tip" hidden></div>
+      <figcaption class="memory-legend">
+        <span class="key key-footprint">Footprint</span>
+        <span class="key key-tracked">Live tracked objects</span>
+        <span class="key key-loaded">Loaded</span>
+        <span class="key key-released">Released</span>
+        <span class="key key-leak">Leak</span>
+      </figcaption>
+    </figure>
+    <aside class="memory-feed-wrap" aria-label="Object activity">
+      <h3>Activity</h3>
+      <ol id="memory-feed" class="memory-feed"></ol>
+    </aside>
+  </div>
+
+  <h3>Live objects by class</h3>
+  <div id="memory-classes" class="memory-bars"></div>
+
+  <h3>Leaks <span id="memory-leak-count" class="muted"></span></h3>
+  <div id="memory-leaks"></div>
+
+  <div class="panel-title memory-subtitle"><h3>Memory graph</h3>
+    <button type="button" class="btn ghost" data-command="memory.graph">Refresh graph</button>
+  </div>
+  <p id="memory-graph-note" class="muted">Shows tracked objects and the app objects they hold. Red dashed arrows are reference cycles. Pulsing red nodes are leaked.</p>
+  <div class="memory-graph-layout">
+    <div class="memory-graph-wrap">
+      <canvas id="memory-graph" height="520" aria-label="Object reference graph"></canvas>
+      <div id="memory-graph-tip" class="memory-tip" hidden></div>
+    </div>
+    <aside id="memory-node" class="memory-node" aria-live="polite"></aside>
+  </div>
+  <p class="memory-legend">
+    <span class="key key-tracked-node">Tracked</span>
+    <span class="key key-app-node">Held app object</span>
+    <span class="key key-system-node">System object</span>
+    <span class="key key-leak">Leaked</span>
+    <span class="key key-cycle">Reference cycle</span>
+  </p>
+
+  <div class="panel-title memory-subtitle"><h3>Heap snapshot</h3>
+    <input id="memory-heap-filter" type="search" placeholder="Filter classes" aria-label="Filter heap classes">
+    <button type="button" class="btn ghost" data-command="memory.heap">Take heap snapshot</button>
+  </div>
+  <div id="memory-heap"><p class="muted">Counts live instances of every app class by walking the heap. Take one snapshot, repeat a flow a few times, then take another. Classes that keep growing are leaking.</p></div>
 </section>
 
 <section class="debug-panel hidden" data-panel="ui">
@@ -180,11 +232,11 @@
 <section class="debug-panel hidden" data-panel="storage">
   <div class="panel-title">
     <h2>Storage and state</h2>
-    <button class="btn ghost" data-command="storage.defaults">UserDefaults</button>
-    <button class="btn ghost" data-command="storage.keychain_metadata">Keychain metadata</button>
+    <button class="btn ghost" type="button" data-storage-run="storage.defaults">UserDefaults</button>
+    <button class="btn ghost" type="button" data-storage-run="storage.keychain_metadata">Keychain metadata</button>
     <button class="btn ghost" id="storage-snapshot" type="button">Snapshot selected</button>
   </div>
-  <p class="muted">Keychain values never leave the device. Click a folder to open it. Paths stay inside the app sandbox.</p>
+  <p class="muted">Keychain values never leave the device. Click a folder to open it, or a file to preview it. Paths stay inside the app sandbox.</p>
   <nav id="storage-crumb" class="storage-crumb" aria-label="Sandbox path"></nav>
   <div class="table-wrap storage-browser">
     <table class="flow-table">
@@ -269,6 +321,9 @@
 </section>
 {% endblock %}
 {% block scripts %}
-<script src="/static/js/debug.js?v=10"></script>
+<script src="/static/js/storage_preview.js?v=1"></script>
+<script src="/static/js/memory_visuals.js?v=1"></script>
+<script src="/static/js/memory.js?v=1"></script>
+<script src="/static/js/debug.js?v=14"></script>
 <script>document.addEventListener("DOMContentLoaded", () => ViewliftDebug.init());</script>
 {% endblock %}

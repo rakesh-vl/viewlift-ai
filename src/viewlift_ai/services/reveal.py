@@ -92,6 +92,11 @@ class RevealSession:
                 response_body=bytes(payload.response_body),
             )
 
+    def clear_cached(self) -> None:
+        """Drop raw payloads. Unlock state and token stay."""
+        with self._lock:
+            self._raw.clear()
+
     def wipe(self) -> None:
         with self._lock:
             self._raw.clear()

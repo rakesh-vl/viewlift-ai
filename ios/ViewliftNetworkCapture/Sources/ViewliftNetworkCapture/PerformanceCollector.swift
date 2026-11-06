@@ -21,7 +21,11 @@ final class PerformanceCollector: @unchecked Sendable {
 
     func start() {
         #if canImport(UIKit)
+        if Thread.isMainThread {
+            HangMainThread.remember()
+        }
         Task { @MainActor in
+            HangMainThread.remember()
             let counter = FrameCounter { [weak self] fps in
                 self?.setFPS(fps)
             }
@@ -89,25 +93,36 @@ final class PerformanceCollector: @unchecked Sendable {
 
     private func watchMainThread() async {
         while !Task.isCancelled {
-            let started = ProcessInfo.processInfo.systemUptime
-            await withCheckedContinuation { continuation in
-                DispatchQueue.main.async {
-                    continuation.resume()
-                }
-            }
-            let delay = ProcessInfo.processInfo.systemUptime - started
-            if delay > 0.4 {
-                await recordHang(delay)
+            let outcome = await waitForMain()
+            if outcome.delay > 0.4 {
+                await recordHang(outcome.delay, symbols: outcome.symbols)
             }
             try? await Task.sleep(nanoseconds: 250_000_000)
         }
     }
 
-    private func recordHang(_ duration: TimeInterval) async {
+    /// Polls until the main queue runs the probe. Samples the blocked stack once, past 400 ms.
+    private func waitForMain() async -> (delay: TimeInterval, symbols: [String]) {
+        let started = ProcessInfo.processInfo.systemUptime
+        let gate = HangWait()
+        var symbols: [String] = []
+        DispatchQueue.main.async { gate.finish() }
+        while !gate.isFinished, !Task.isCancelled {
+            let delay = ProcessInfo.processInfo.systemUptime - started
+            if delay > 0.4, symbols.isEmpty {
+                symbols = HangMainThread.sampleSymbols()
+            }
+            try? await Task.sleep(nanoseconds: 40_000_000)
+        }
+        return (ProcessInfo.processInfo.systemUptime - started, symbols)
+    }
+
+    private func recordHang(_ duration: TimeInterval, symbols: [String]) async {
         bumpHang(duration)
-        // Main just became responsive; capture its stack for class/file/line triage.
-        let symbols = await MainActor.run { Thread.callStackSymbols }
-        CrashHangRecorder.shared.recordHang(duration: duration, symbols: symbols)
+        let event = await MainActor.run {
+            HangReport.make(duration: duration, symbols: symbols)
+        }
+        CrashHangRecorder.shared.storeHang(event)
     }
 
     private func bumpHang(_ duration: TimeInterval) {
@@ -146,6 +161,23 @@ final class PerformanceCollector: @unchecked Sendable {
         case .critical: return "critical"
         @unknown default: return "unknown"
         }
+    }
+}
+
+private final class HangWait: @unchecked Sendable {
+    private let lock = NSLock()
+    private var finished = false
+
+    func finish() {
+        lock.lock()
+        finished = true
+        lock.unlock()
+    }
+
+    var isFinished: Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        return finished
     }
 }
 

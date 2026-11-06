@@ -84,6 +84,7 @@
       document.getElementById("btn-follow-latest")?.addEventListener("click", () => {
         this.setFollowLatest(!this.followLatest);
       });
+      document.getElementById("btn-flow-delete")?.addEventListener("click", () => this.deleteFlows());
       document.getElementById("btn-reveal-unlock")?.addEventListener("click", () => this.unlockReveal());
       document.getElementById("btn-reveal-lock")?.addEventListener("click", () => this.lockReveal());
       this.refreshRevealStatus();
@@ -151,6 +152,40 @@
       if (text) params.set("text", text);
       if (window.VLScope) window.VLScope.applyTo(params);
       return params.toString();
+    },
+
+    async deleteFlows() {
+      const ok = window.confirm(
+        "Delete every captured network request on this Mac? Device logs, debug events, and rules stay."
+      );
+      if (!ok) return;
+      const res = await fetch("/api/flows/delete", { method: "POST" });
+      if (!res.ok) {
+        toast("Could not delete flows");
+        return;
+      }
+      const data = await res.json();
+      this.detailGen = (this.detailGen || 0) + 1;
+      this.flows = [];
+      this.selectedId = null;
+      const curl = document.getElementById("btn-curl");
+      const har = document.getElementById("btn-har-one");
+      if (curl) curl.disabled = true;
+      if (har) har.disabled = true;
+      const open = document.getElementById("btn-open");
+      if (open) {
+        open.href = "#";
+        open.classList.add("disabled");
+      }
+      const title = document.getElementById("detail-title");
+      if (title) title.textContent = "Detail";
+      const body = document.getElementById("detail-body");
+      if (body) {
+        body.innerHTML = `<p class="muted empty">Select a request to inspect its headers, body, and timing.</p>`;
+      }
+      this.renderRows();
+      if (window.VLScope) window.VLScope.refresh();
+      toast(data.deleted ? `Deleted ${data.deleted} flows` : "No flows to delete");
     },
 
     async reloadFlows() {
@@ -1869,15 +1904,7 @@
   };
 
   ViewliftNetwork.buildSdkSnippet = function buildSdkSnippet(sdk) {
-    const url = sdk.receiver_url || "receiver off";
-    const fp = sdk.pinned_fingerprint || "enable the receiver";
-    return [
-      "DEBUG app reads host, port, fingerprint, and debug key from this dashboard.",
-      "No values are compiled into the app.",
-      `Receiver: ${url}`,
-      `Fingerprint: ${fp}`,
-      "Enable the receiver, then run the DEBUG app on the same network or VPN.",
-    ].join("\n");
+    return (sdk.integration && sdk.integration.snippet) || sdk.note || "";
   };
 
   ViewliftNetwork.enableSdkReceiver = async function enableSdkReceiver() {

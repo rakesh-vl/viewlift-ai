@@ -35,6 +35,7 @@ from viewlift_ai.services.capture import CaptureService, HttpCaptureSnapshot
 from viewlift_ai.services.debug_advertise import DebugAdvertiser, DebugPublishing
 from viewlift_ai.services.debug_session import DebugSessionService
 from viewlift_ai.services.log_capture import LogCaptureService
+from viewlift_ai.services.sdk_integration import sdk_integration
 from viewlift_ai.services.setup import list_ipv4_interfaces
 
 TimeFn = Callable[[], float]
@@ -210,6 +211,12 @@ class IngestService:
             "rate_limit_per_minute": self.rate_limit_per_minute,
             "server_running": self._server is not None,
             "activity": self.activity(),
+            "integration": sdk_integration(
+                enabled=self._bind.enabled,
+                host=self._bind.host if self._bind.enabled else None,
+                port=self._bind.port if self._bind.enabled else None,
+                fingerprint=self._fingerprint,
+            ),
         }
 
     def activity(self) -> dict[str, object]:

@@ -105,6 +105,7 @@ public final class DebugBridgeService: @unchecked Sendable {
                     )
                     lastPerformance = Date()
                 }
+                try await sendMemoryEvents(config: config, transport: transport)
                 let commands = try await transport.pollCommands(clientId: clientId)
                 for command in commands where command.expiresAt > Date().timeIntervalSince1970 {
                     await execute(command, transport: transport, config: config)
@@ -121,6 +122,14 @@ public final class DebugBridgeService: @unchecked Sendable {
                 )
                 await interruptibleSleep(milliseconds: 2_000)
             }
+        }
+    }
+
+    /// Leak reports and live memory samples, pushed without waiting for a dashboard command.
+    private func sendMemoryEvents(config: CaptureConfiguration, transport: DebugTransporting) async throws {
+        guard config.debugModules.contains(.memory) else { return }
+        for event in MemoryDebugService.shared.drainEvents() {
+            try await transport.send(event: event, clientId: clientId)
         }
     }
 

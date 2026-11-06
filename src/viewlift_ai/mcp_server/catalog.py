@@ -131,8 +131,12 @@ TOOL_GROUPS: tuple[ToolGroup, ...] = (
 
 COMMAND_NOTES: dict[str, str] = {
     "performance.snapshot": "CPU, FPS, and memory right now",
-    "memory.snapshot": "Footprint and live view controller counts",
-    "memory.graph": "Object counts for leak hunting",
+    "memory.snapshot": "Footprint, tracked objects, and suspected leak summaries",
+    "memory.graph": "Tracked objects and the app objects they reference, for retain cycles",
+    "memory.leaks": "Leak reports with class, creation stack, retainers, cycle paths, actions, and replay frames",
+    "memory.heap": "Live instance counts per app class from a heap walk, with growth since the last call",
+    "memory.live_start": "Stream live memory activity and record a rolling screen replay for leak reports",
+    "memory.live_stop": "Stop the live memory feed and the screen replay",
     "ui.hierarchy": "View tree with frames and ids",
     "ui.describe": "One view's class, properties, and SwiftUI or UIKit role (payload: id)",
     "ui.screenshot": "PNG of the key window",
@@ -151,7 +155,7 @@ COMMAND_NOTES: dict[str, str] = {
     "macro.list": "Recorded touch macros",
     "bug.capture": "Screenshot plus performance and memory",
     "ott.snapshot": "User, plan, TVE, theme, modules, metadataMap",
-    "hang.list": "Main-thread hangs with stack frames",
+    "hang.list": "Main-thread hangs with screen, screenshot, taps, console, and stack",
     "crash.list": "In-process exceptions with frames",
     "ui.highlight": "Outline one view (payload: id)",
     "ui.edit": "Change a view property (payload: id plus fields)",

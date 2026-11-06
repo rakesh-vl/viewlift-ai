@@ -10,7 +10,7 @@ The integration already exists on branch `Develop_ViewliftNetworkCapture` in `sn
 
 1. **Swift package** on both **AppCMS** and **AppCMS_tvOS**: one remote reference to `https://github.com/rakesh-vl/viewlift-ai.git` (branch `main`) and the `ViewliftNetworkCapture` product linked under Frameworks for each target. Do not use a local relative path on shared branches.
 2. **Two host files** in `AppCMS/AppCMS/AppDelegate/`, added to both targets, both wrapped in `#if DEBUG`:
-   - [ViewliftCaptureDebugService.swift](../.cursor/skills/reapply-viewlift-network-capture/references/ViewliftCaptureDebugService.swift) builds the configuration (discovery placeholder by default, all debug modules), registers the OTT snapshot provider and starts capture.
+   - [ViewliftCaptureDebugService.swift](../.cursor/skills/reapply-viewlift-network-capture/references/ViewliftCaptureDebugService.swift) registers the OTT snapshot provider and calls `CaptureService.shared.start()`. The package owns the discovery placeholder, fingerprint, debug key, and debug modules.
    - [AppCMSOTTDebugSnapshot.swift](../.cursor/skills/reapply-viewlift-network-capture/references/AppCMSOTTDebugSnapshot.swift) implements `OTTDebugSnapshotProviding` with user, subscription, entitlement, player, config, navigation and page state. Tokens are reported only as present or absent with a length; email is masked.
 3. **Start call** on the first lines of `application(_:didFinishLaunchingWithOptions:)` in both the iOS and tvOS `AppDelegate.swift`:
 
@@ -24,7 +24,7 @@ The integration already exists on branch `Develop_ViewliftNetworkCapture` in `sn
 
 ## Optional scheme overrides
 
-`ViewliftCaptureDebugService` reads these from the scheme's environment. Without them, Bonjour discovery is used.
+`CaptureService.start()` reads these from the scheme's environment. Without them, Bonjour discovery is used.
 
 | Variable | Default |
 |---|---|

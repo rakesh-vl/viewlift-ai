@@ -19,9 +19,38 @@ JSON bodies are shown as `{field, field?}`; `?` means optional.
 | `GET /rules` | `rules.html` |
 | `GET /setup` | `setup.html` |
 | `GET /debug` | `debug_suite.html` |
+| `GET /tools` | `tools.html` |
 | `GET /agent` | `agent.html` |
 | `GET /static/*` | Static assets |
 | `GET /health` | JSON status |
+
+## Tools
+
+Source: [api/tools_routes.py](../src/viewlift_ai/api/tools_routes.py). The server stores scripts. It does not execute them.
+
+| Method and path | Purpose |
+|---|---|
+| `GET /api/tools/scripts` | List built-in and saved scripts |
+| `GET /api/tools/scripts/{id}` | One script, including source |
+| `POST /api/tools/scripts {source}` | Save a new script |
+| `PUT /api/tools/scripts/{id} {source}` | Replace a saved script |
+| `DELETE /api/tools/scripts/{id}` | Delete a saved script |
+| `POST /api/tools/action/{name}` | Run one server-side toolkit action |
+
+`source` is a Boop script: a `/** { JSON } **/` header plus `function main(state)`. Built-in ids cannot be replaced or deleted.
+
+`POST /api/tools/action/{name}` is loopback-only and requires `Content-Type: application/json`. The body is a JSON object, at most 40 MB. Unknown names return 404. Actions:
+
+| Name | Purpose |
+|---|---|
+| `yaml-parse`, `yaml-dump` | Parse or emit YAML |
+| `hash` | MD5, SHA-1, SHA-2, SHA-3, CRC-32, Adler-32 |
+| `bcrypt-hash`, `bcrypt-verify` | bcrypt |
+| `rsa-keypair`, `ed25519-keypair`, `ssh-keypair`, `csr` | Keys and a certificate signing request |
+| `cuid2` | CUID2-style ids |
+| `dns`, `whois`, `ip-info` | dig, whois, and local address facts plus PTR |
+| `http-request` | HTTP or HTTPS request from this Mac. Other schemes are rejected |
+| `image-metadata`, `image-strip`, `image-convert` | Pillow image work |
 
 ## Flows and reveal
 
@@ -30,6 +59,7 @@ Source: [api/routes.py](../src/viewlift_ai/api/routes.py)
 | Method and path | Loopback | Purpose |
 |---|---|---|
 | `GET /api/flows` | no | List flows. Query: `method`, `host`, `status`, `content-type`, `text`, `limit` (1 to 1000, default 200), `client_id` (repeatable), `device_key`. Returns `{flows, count}`. |
+| `POST /api/flows/delete` | no | Delete every stored flow. Logs, debug events, and rules stay. Clears the in-memory reveal cache. Returns `{deleted}`. |
 | `GET /api/flows/{id}` | for `reveal=true` | Redacted detail. `?reveal=true` returns raw data when the reveal session is unlocked and raw is cached. |
 | `GET /api/flows/{id}/summary` | no | Summary JSON |
 | `GET /api/flows/{id}/har` | no | Single-flow HAR (redacted) |

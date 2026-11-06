@@ -41,7 +41,12 @@ The package has no external dependencies. It uses Foundation, ObjectiveC runtime
 | `DebugBridgeService.swift` | Register, sample, poll, execute, report loop |
 | `DebugCommandExecutor.swift` | Command routing and module gating |
 | `PerformanceCollector.swift` | CPU, memory, thermal state, FPS, hang watchdog |
-| `MemoryDebugService.swift` | Weak tracking, leak suspects, ivar graph |
+| `MemoryDebugService.swift` | Weak tracking from `viewDidLoad`, leak detection after dismissal, live feed and leak events |
+| `LeakReport.swift` | Leak report: creation stack, retention, actions, console, replay; physical footprint |
+| `LeakReplayRecorder.swift` | Rolling 2 fps low-resolution screen recording with normalized touches |
+| `RetentionInspector.swift` | Reflection and ivar walk for retainers, cycle candidates, and cause hints |
+| `MemoryGraphBuilder.swift` | Object graph two hops from tracked objects; heap census formatting |
+| `HeapCensus.swift` | Malloc zone walk that counts live instances per class without allocating while zones are locked |
 | `StateDebugService.swift` | UserDefaults, keychain metadata, sandbox files, read-only SQLite, snapshots |
 | `UIInspectionService.swift` | Hierarchy, highlight, edit, screenshot, asset and accessibility audits |
 | `QADebugService.swift` | `MacroRecorder` and `PushDebugService` |
@@ -129,7 +134,7 @@ The prefix before the first dot selects the module. A disabled module returns `m
 | Module | Commands and payload |
 |---|---|
 | performance | `performance.snapshot` |
-| memory | `memory.snapshot`, `memory.graph` |
+| memory | `memory.snapshot`, `memory.graph`, `memory.leaks`, `memory.heap`, `memory.live_start`, `memory.live_stop`; pushed events `memory/live` (not stored) and `memory/leak` |
 | ui | `ui.hierarchy`, `ui.describe {id}`, `ui.highlight {id}`, `ui.edit {id, alpha?, hidden?}`, `ui.screenshot` |
 | bug | `bug.capture` (screenshot, performance, memory) |
 | swiftui | `swiftui.renders` |
@@ -141,7 +146,7 @@ The prefix before the first dot selects the module. A disabled module returns `m
 | macro | `macro.record_start`, `macro.record_stop`, `macro.list`, `macro.replay {actions}` |
 | push | `push.local {title, body, sound?, badge?, user_info?, delay?}` |
 | ott | `ott.snapshot` |
-| crash, hang | `crash.list`, `hang.list` |
+| crash, hang | `crash.list`, `hang.list` (screen class, screenshot, taps and scrolls, console, stack) |
 
 Notable limits:
 
@@ -150,6 +155,7 @@ Notable limits:
 - Hierarchy depth 100, 500 children per view.
 - Macros record `UIControl` target-action only, up to 1,000 actions.
 - Crash capture covers `NSException` only, kept in memory.
+- Hang capture keeps 12 stalls. Each JPEG screenshot is at most 32 KB. `hang.list` drops older screenshots after 220 KB so the reply stays under the debug event cap. The stack is sampled by suspending the main thread on arm64 iOS and tvOS. The screenshot is taken when that thread resumes, because UIKit cannot draw during the stall.
 - Runtime browser and memory graph see Objective-C metadata only.
 
 To add a command, see [Contributing](contributing.md#add-a-debug-command).

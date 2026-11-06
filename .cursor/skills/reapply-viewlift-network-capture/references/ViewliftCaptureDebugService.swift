@@ -16,22 +16,8 @@ final class ViewliftCaptureDebugService {
     private init() {}
 
     func start() {
-        let env = ProcessInfo.processInfo.environment
-        let host = env["VIEWLIFT_CAPTURE_HOST"] ?? "0.0.0.0"
-        let port = Int(env["VIEWLIFT_CAPTURE_PORT"] ?? "") ?? 9
-        let fingerprint = env["VIEWLIFT_CAPTURE_FINGERPRINT"] ?? ""
-        let debugKey = env["VIEWLIFT_CAPTURE_DEBUG_KEY"] ?? ""
-        guard let receiverURL = URL(string: "https://\(host):\(port)") else {
-            return
-        }
-        let configuration = CaptureConfiguration(
-            receiverURL: receiverURL,
-            debugKey: debugKey,
-            pinnedCertificateSHA256: fingerprint,
-            debugModules: Set(DebugModule.allCases)
-        )
         OTTDebugRegistry.register(AppCMSOTTDebugSnapshot.shared)
-        CaptureService.shared.start(configuration: configuration)
+        CaptureService.shared.start()
     }
 }
 #endif

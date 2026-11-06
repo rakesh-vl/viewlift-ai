@@ -35,19 +35,17 @@ Start capture before the app creates any `URLSession` or `URLSessionConfiguratio
 
 ### Option A: automatic discovery (recommended)
 
-The console advertises `_viewliftdebug._tcp` over Bonjour with its address, port, certificate fingerprint and debug key. Give the SDK a placeholder and it fills in the rest, and re-pairs automatically when the Mac's address changes.
+The console advertises `_viewliftdebug._tcp` over Bonjour with its address, port, certificate fingerprint and debug key. `start()` uses the `https://0.0.0.0:9` placeholder, an empty fingerprint, and every debug module. Discovery fills in the rest and re-pairs when the Mac's address changes.
 
 ```swift
 import ViewliftNetworkCapture
 
 #if DEBUG
-CaptureService.shared.start(configuration: CaptureConfiguration(
-    receiverURL: URL(string: "https://0.0.0.0:9")!,
-    pinnedCertificateSHA256: "",
-    debugModules: Set(DebugModule.allCases)
-))
+CaptureService.shared.start()
 #endif
 ```
+
+Optional scheme environment overrides: `VIEWLIFT_CAPTURE_HOST`, `VIEWLIFT_CAPTURE_PORT`, `VIEWLIFT_CAPTURE_FINGERPRINT`, `VIEWLIFT_CAPTURE_DEBUG_KEY`. Without them, Bonjour discovery is used.
 
 ### Option B: fixed receiver
 
@@ -73,11 +71,7 @@ SwiftUI:
 struct MyApp: App {
     init() {
         #if DEBUG
-        CaptureService.shared.start(configuration: .init(
-            receiverURL: URL(string: "https://0.0.0.0:9")!,
-            pinnedCertificateSHA256: "",
-            debugModules: Set(DebugModule.allCases)
-        ))
+        CaptureService.shared.start()
         #endif
     }
 
@@ -87,23 +81,23 @@ struct MyApp: App {
 }
 ```
 
-UIKit: put the same block on the first lines of `application(_:didFinishLaunchingWithOptions:)`.
+UIKit: put the same `CaptureService.shared.start()` call on the first lines of `application(_:didFinishLaunchingWithOptions:)`.
 
-To keep the call site MVVM-friendly, wrap it in a small debug-only service (as the [AppCMS integration](appcms-integration.md) does with `ViewliftCaptureDebugService`) instead of calling it from view models.
+Pass `CaptureConfiguration` only for a fixed receiver or a smaller module set. AppCMS still wraps the call in a debug service so it can register its OTT snapshot before `start()`. See the [AppCMS integration](appcms-integration.md).
 
 ## CaptureConfiguration
 
 | Field | Default | Notes |
 |---|---|---|
-| `receiverURL` | required | `https://host:port`. Use the `0.0.0.0:9` placeholder for discovery. |
+| `receiverURL` | required on `CaptureConfiguration` | `start()` uses `https://0.0.0.0:9`. Pass a real `https://host:port` only for a fixed receiver. |
 | `pairingToken` | `""` | One-use token from Setup |
 | `debugKey` | `""` | Lets the SDK mint pairing tokens. Filled in by discovery. |
-| `pinnedCertificateSHA256` | required | Hex, colons allowed. Filled in by discovery. |
+| `pinnedCertificateSHA256` | required on `CaptureConfiguration` | `start()` passes `""`. Discovery fills the hex fingerprint. Colons are allowed. |
 | `maxRequestBodyBytes` | `262_144` | Bodies above this are truncated |
 | `maxResponseBodyBytes` | `262_144` | |
 | `extraRedactionKeys` | `[]` | Extra header names and JSON keys to redact, for example `["authorization", "access_token"]` |
 | `maxQueueDepth` | `64` | In-memory queue; the oldest item is dropped when full |
-| `debugModules` | `[]` | Empty disables the debug bridge. Use `Set(DebugModule.allCases)` or pick modules. |
+| `debugModules` | `[]` on `CaptureConfiguration` | Empty disables the debug bridge. `start()` passes `Set(DebugModule.allCases)`. |
 | `performanceSampleInterval` | `1` | Seconds, minimum 0.25 |
 
 `DebugModule` cases: `performance`, `memory`, `ui`, `swiftui`, `assets`, `accessibility`, `storage`, `feature_flags`, `runtime`, `macro`, `bug`, `push`, `ott`, `crash`, `hang`.
@@ -126,11 +120,20 @@ SwiftUI render counts:
 PlayerView().viewliftRenderProbe("PlayerView")
 ```
 
-Memory leak tracking for objects that are not view controllers:
+Memory leak tracking. View controllers are tracked automatically from `viewDidLoad`, with the stack that created them, and are reported as leaks when they are still alive 3 seconds after they are dismissed or popped. Register other objects so they show in the live feed and the memory graph, and ask for a leak check when an object should be gone:
 
 ```swift
-MemoryDebugService.shared.track(playerController, context: "player")
+MemoryDebugService.shared.track(playerViewModel, context: "player")
+MemoryDebugService.shared.expectRelease(of: playerViewModel, after: 3, context: "player closed")
 ```
+
+Live tracking streams footprint and object loads and releases to the Debug Suite Memory tab once a second. It also keeps a rolling low-resolution screen recording of about 12 seconds with touch markers, which is attached to each leak report as a replay. It is started from the Memory tab, or in code, and the choice persists across launches:
+
+```swift
+MemoryDebugService.shared.startLiveTracking()
+```
+
+Each leak report contains the class, its creation stack, the screen it was created on, the objects that still reference it, retain cycle candidates found through Swift reflection and Objective-C ivars, likely causes (closures, timers, observers, non-weak delegates, a view controller still attached to a parent), the taps and scrolls before the leak, and console lines. `memory.heap` walks the malloc heap and counts live instances of every app class, with growth since the previous snapshot. Reflection cannot tell weak references from strong ones, so cycles are candidates to confirm in the Xcode memory graph.
 
 Feature flags that the Debug Suite can toggle:
 

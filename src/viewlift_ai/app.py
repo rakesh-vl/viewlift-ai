@@ -21,6 +21,7 @@ from viewlift_ai.api.routes import router as network_router
 from viewlift_ai.api.rules_routes import router as rules_router
 from viewlift_ai.api.session_routes import router as session_router
 from viewlift_ai.api.setup_routes import router as setup_router
+from viewlift_ai.api.tools_routes import router as tools_router
 from viewlift_ai.api.ws import ws_router
 from viewlift_ai.config import AppConfig, load_config
 from viewlift_ai.crypto import SecretBoxCipher
@@ -362,6 +363,7 @@ app.include_router(setup_router)
 app.include_router(logs_router)
 app.include_router(session_router)
 app.include_router(debug_router)
+app.include_router(tools_router)
 app.include_router(agent_router)
 app.include_router(ws_router)
 app.mount("/static", StaticFiles(directory=str(WEB_STATIC)), name="static")

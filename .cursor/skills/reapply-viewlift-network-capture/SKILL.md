@@ -117,7 +117,7 @@ No Atlantis / Proxyman required for ViewliftNetworkCapture.
 
 ### 5. Runtime config
 
-Optional scheme environment overrides (else discovery defaults apply):
+`CaptureService.start()` reads optional scheme environment overrides (else discovery defaults apply):
 
 - `VIEWLIFT_CAPTURE_HOST`
 - `VIEWLIFT_CAPTURE_PORT`
