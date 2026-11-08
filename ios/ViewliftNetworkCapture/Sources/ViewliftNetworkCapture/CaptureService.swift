@@ -45,7 +45,7 @@ public final class CaptureService: CaptureServing, @unchecked Sendable {
         queue = CaptureQueue(maxDepth: configuration.maxQueueDepth)
         let redactor = HeaderJSONRedactor(extraKeys: configuration.extraRedactionKeys)
         CaptureRuntime.activate(
-            configuration: configuration,
+            configuration: RemoteSettingsService.shared.bind(base: configuration),
             redactor: redactor,
             queue: queue
         ) { _ in

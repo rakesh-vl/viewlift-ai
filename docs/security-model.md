@@ -6,9 +6,9 @@ Viewlift AI handles production-like traffic from real devices, so its defaults a
 
 | Listener | Default | How it can widen |
 |---|---|---|
-| Dashboard and API | `127.0.0.1:8741` | Never. Hard-coded. |
+| Dashboard and API | `127.0.0.1:8741` | `VIEWLIFT_HOST` and `VIEWLIFT_PORT`. Loopback only. |
 | mitmproxy | `127.0.0.1:8080` | Setup page, `POST /api/setup/proxy` with `enable_lan: true`. The IP must be a private IPv4 address on an active interface. Each LAN bind gets new basic-auth credentials (`vl<hex>` user, random password). Environment variables cannot set a non-loopback proxy host. |
-| SDK receiver | off | Setup page. Loopback, LAN or VPN address only (`utun`, `tailscale`, `wt`, `nebula`, `ham` interfaces or `100.64.0.0/10`). Never `0.0.0.0`, multicast, link-local or public. |
+| SDK receiver | off, port 8743 | Setup page. Loopback, LAN or VPN address only (`utun`, `tailscale`, `wt`, `nebula`, `ham` interfaces or `100.64.0.0/10`). Never `0.0.0.0`, multicast, link-local or public. HTTPS with a pinned certificate and a debug key. Refuses the MCP port. |
 | MCP | `127.0.0.1:8742/mcp` | Never. Its console URL must also be loopback. |
 
 Validators live in [services/bind_policy.py](../src/viewlift_ai/services/bind_policy.py).
@@ -30,6 +30,8 @@ Values are encrypted with PyNaCl SecretBox (XSalsa20-Poly1305, random nonce) in 
 
 Text search decrypts a bounded batch of recent rows in memory. Note that URL paths and query strings are stored in plaintext.
 
+Crash replay videos and posters in `crash-media/` are not encrypted. They show whatever was on screen in the ten seconds before a crash, which can include personal data in a test account. They stay in the data folder, are served only on loopback, and are deleted when their crash is deleted (checked at startup and after each upload). The replay `context` sent with a crash holds request method, host, and path without query strings, headers, or bodies, and console lines, which are not redacted (see known gap 4).
+
 Other files: `rules.json` `0600` (atomic write), CA private key `0600` and never served (export refuses anything containing `PRIVATE KEY`), ingest key and `debug.key` `0600`.
 
 ## Redaction
@@ -45,7 +47,7 @@ Redaction is applied before storage (`CaptureService`, ingest), again for displa
 
 ## Reveal (raw data)
 
-`RevealSession` ([services/reveal.py](../src/viewlift_ai/services/reveal.py)) keeps raw headers and bodies in process memory only. Viewing raw data or replaying a flow requires unlocking with a per-process token (constant-time compare). The token rotates and the cache is wiped on shutdown, on last-tab close and on "Clear all data". Raw data is never written to disk and never used for HAR or cURL. The MCP server never unlocks reveal and strips the token from responses.
+`RevealSession` ([services/reveal.py](../src/viewlift_ai/services/reveal.py)) keeps raw headers and bodies in process memory only. Viewing raw data or replaying a flow requires unlocking with a per-process token (constant-time compare). The token rotates and the cache is wiped on shutdown, on last-tab close and on "Clear all data". Raw data is never written to disk and never used for HAR or the server cURL export. The Edit tab builds cURL in the browser from the form already on screen, so a revealed form can copy revealed values. `POST /api/flows/send` is loopback-only. It sends that same form and redacts the response the same way as replay. The MCP server never unlocks reveal and strips the token from responses.
 
 ## SDK pairing
 
@@ -67,6 +69,12 @@ Redaction is applied before storage (`CaptureService`, ingest), again for displa
 
 All subprocess calls use argument lists, never a shell (tested). Deep links reject `javascript`, `file`, `data`, `about` and `blob` schemes. UDIDs and log filters are validated by regex before reaching `simctl`.
 
+## Developer tunnel and UI runner
+
+The iOS 17+ developer tunnel (`device_tunnel_start`) runs `pymobiledevice3 remote tunneld` through an administrator prompt (`osascript` with administrator privileges). The console process stays unprivileged. Start it only from Setup, and only when a device needs location, a screenshot, or syslog. `VIEWLIFT_TUNNELD_ADDRESS` must be loopback.
+
+The UI runner is a signed XCUITest process. It connects out to the receiver with the same debug key and certificate pin as an SDK app. It can launch and drive the bundle id you pass, on a simulator or a trusted device. Treat it as a debug tool: test data only, and stop it when the task ends.
+
 ## Release builds
 
 The Swift SDK does nothing unless compiled with `DEBUG` or `VIEWLIFT_CAPTURE_ENABLED`. Never enable it in App Store builds.
@@ -75,7 +83,7 @@ The Swift SDK does nothing unless compiled with `DEBUG` or `VIEWLIFT_CAPTURE_ENA
 
 These were found while reading the code for this documentation. They are current behavior, not design goals.
 
-1. **Port 8742 is shared.** The MCP default port and the SDK receiver default port are the same. Enabling the receiver on `127.0.0.1` while MCP runs fails to bind.
+1. **Receiver and MCP ports.** The receiver defaults to 8743 and refuses the MCP port. Setting `VIEWLIFT_INGEST_PORT` to the MCP port fails the bind on purpose.
 2. **No Origin or CSRF check.** Several POST endpoints parse JSON regardless of content type, and there is no `Origin` or `Host` validation. A web page open in the same browser could probably send simple cross-site requests to endpoints such as `/api/debug/invoke`, `/api/setup/proxy` or `/api/logs/start`. DNS rebinding is a similar risk.
 3. **Breakpoint payloads are raw.** Paused flows are sent unredacted on `/ws/flows` (not scoped by app) and `/api/breakpoints/pending`.
 4. **Logs are not redacted.** Simulator, device and SDK log messages are encrypted but not redacted.

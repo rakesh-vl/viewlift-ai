@@ -69,7 +69,15 @@ See [docs/architecture.md](docs/architecture.md) for a module-by-module map.
 - Remove the Wi-Fi proxy and debug CA when capture is finished.
 - Never enable `VIEWLIFT_CAPTURE_ENABLED` for an App Store build.
 
+## AI agents
+
+[AGENTS.md](AGENTS.md) is the prompt for agents working in this repo and the prompt to paste into an iOS or tvOS app repo. The project skill [configure-viewlift-debug](.cursor/skills/configure-viewlift-debug/SKILL.md) is the procedure: wire `ViewliftNetworkCapture` on Debug builds of every iOS and tvOS target, then write that app's `.cursor/mcp.json` so the agent can call the debug tools. AppCMS host files stay in [reapply-viewlift-network-capture](.cursor/skills/reapply-viewlift-network-capture/SKILL.md).
+
+This checkout already has [.cursor/mcp.json](.cursor/mcp.json). Enable **viewlift-ai** in Cursor Settings → MCP after the console is running.
+
 ## Agent MCP
+
+The tool catalog, safety rules, and on-device commands are in [docs/mcp-server.md](docs/mcp-server.md).
 
 `scripts/viewlift-ai.sh start` starts the console and a loopback MCP server.
 The companion listens on `127.0.0.1` port `VIEWLIFT_AI_MCP_PORT` (default 8742), path `/mcp`.

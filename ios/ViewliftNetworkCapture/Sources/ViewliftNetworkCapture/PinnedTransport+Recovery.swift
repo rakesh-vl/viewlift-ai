@@ -93,7 +93,8 @@ extension PinnedHTTPSTransport {
 
     /// Sleeps in short slices. Returns true when a wake request cut the wait short.
     func sleepUnlessWoken(seconds: UInt64) async -> Bool {
-        for _ in 0..<(seconds * 10) {
+        // Capped so the slice count cannot overflow.
+        for _ in 0..<(min(seconds, 86_400) * 10) {
             if Task.isCancelled { return false }
             if consumeWake() { return true }
             try? await Task.sleep(nanoseconds: 100_000_000)

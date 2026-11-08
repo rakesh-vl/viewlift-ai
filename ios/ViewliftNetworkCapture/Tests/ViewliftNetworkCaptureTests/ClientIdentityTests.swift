@@ -38,6 +38,21 @@ final class ClientIdentityTests: XCTestCase {
         XCTAssertEqual(hinted.deviceKey, "hint:iPhone15,2|iPhone")
     }
 
+    func testDeviceHintIsStablePerBootAndEmptyWithoutBootTime() {
+        let first = DeviceIdentity.deviceHint(hardwareModel: "iPhone15,2", osVersion: "18.0.0", bootTime: 100)
+        let again = DeviceIdentity.deviceHint(hardwareModel: "iPhone15,2", osVersion: "18.0.0", bootTime: 100)
+        let rebooted = DeviceIdentity.deviceHint(hardwareModel: "iPhone15,2", osVersion: "18.0.0", bootTime: 200)
+        XCTAssertEqual(first.count, 16)
+        XCTAssertEqual(first, again)
+        XCTAssertNotEqual(first, rebooted)
+        XCTAssertEqual(DeviceIdentity.deviceHint(hardwareModel: "x", osVersion: "1", bootTime: 0), "")
+        XCTAssertGreaterThan(DeviceIdentity.bootTime(), 0)
+        let device = DeviceIdentity.resolve(
+            environment: [:], vendorId: "V", deviceName: "iPhone", hardwareModel: "m", deviceHint: first
+        )
+        XCTAssertEqual(device.deviceHint, first)
+    }
+
     func testClientIdPersistsPerDefaultsDomain() throws {
         let suite = "viewlift.identity.tests.\(UUID().uuidString)"
         let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
@@ -66,6 +81,7 @@ final class ClientIdentityTests: XCTestCase {
         XCTAssertEqual(json["device_key"] as? String, "SIM-1")
         XCTAssertEqual(json["device_name"] as? String, "iPhone 16")
         XCTAssertEqual(json["is_simulator"] as? Bool, true)
+        XCTAssertEqual(json["device_hint"] as? String, "")
         XCTAssertEqual(json["sdk_version"] as? String, DeviceIdentity.sdkVersion)
     }
 

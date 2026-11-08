@@ -257,7 +257,9 @@ final class ViewliftNetworkCaptureTests: XCTestCase {
             contentType: nil
         )
     }
+}
 
+extension ViewliftNetworkCaptureTests {
     func testJSONValueRoundTrip() throws {
         let original: [String: JSONValue] = [
             "text": .string("hello"),
@@ -267,6 +269,30 @@ final class ViewliftNetworkCaptureTests: XCTestCase {
         ]
         let data = try JSONEncoder().encode(original)
         XCTAssertEqual(try JSONDecoder().decode([String: JSONValue].self, from: data), original)
+    }
+
+    func testJSONValueEncodesNonFiniteNumbersAsNull() throws {
+        let payload: [String: JSONValue] = [
+            "nan": .number(.nan),
+            "inf": .number(.infinity),
+            "ok": .number(1.5)
+        ]
+        let data = try JSONEncoder().encode(payload)
+        let decoded = try JSONDecoder().decode([String: JSONValue].self, from: data)
+        XCTAssertEqual(decoded["nan"], .null)
+        XCTAssertEqual(decoded["inf"], .null)
+        XCTAssertEqual(decoded["ok"], .number(1.5))
+    }
+
+    func testHierarchyJpegBudgetNeverOverflows() {
+        XCTAssertEqual(UIHierarchyCapture.jpegByteLimit(for: Int.min), 0)
+        XCTAssertEqual(UIHierarchyCapture.jpegByteLimit(for: 0), 0)
+        XCTAssertEqual(UIHierarchyCapture.jpegByteLimit(for: 256), 0)
+        XCTAssertEqual(UIHierarchyCapture.jpegByteLimit(for: 260), 3)
+        let full = UIHierarchyCapture.jpegByteLimit(for: UIHierarchyCapture.payloadBudget)
+        XCTAssertEqual(full, (UIHierarchyCapture.payloadBudget - 256) / 4 * 3)
+        XCTAssertGreaterThan(full, 0)
+        XCTAssertGreaterThan(UIHierarchyCapture.jpegByteLimit(for: Int.max), 0)
     }
 
     func testStateServiceRejectsEscapingPathsAndWriteQueries() {
@@ -308,16 +334,18 @@ final class ViewliftNetworkCaptureTests: XCTestCase {
 
 /// Stub upstream for CaptureURLProtocol replay sessions in tests.
 /// Non-final: URLProtocol requires `class` overrides for canInit/canonicalRequest.
-private class StubUpstreamURLProtocol: URLProtocol, @unchecked Sendable {
+class StubUpstreamURLProtocol: URLProtocol, @unchecked Sendable {
     static var hitCount = 0
     static var statusCode = 200
     static var body = Data()
+    static var lastBody = Data()
     static var shouldFail = false
 
     static func reset() {
         hitCount = 0
         statusCode = 200
         body = Data()
+        lastBody = Data()
         shouldFail = false
     }
 
@@ -331,6 +359,8 @@ private class StubUpstreamURLProtocol: URLProtocol, @unchecked Sendable {
 
     override func startLoading() {
         Self.hitCount += 1
+        var copy = request
+        Self.lastBody = RequestBodyBuffer.apply(&copy)
         if Self.shouldFail {
             client?.urlProtocol(self, didFailWithError: URLError(.cannotConnectToHost))
             return

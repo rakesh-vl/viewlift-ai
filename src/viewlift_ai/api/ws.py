@@ -135,10 +135,33 @@ def _scope(websocket: WebSocket) -> set[str] | None:
 def _debug_event_in_scope(event: dict, scope: set[str]) -> bool:
     if event.get("type") == "apps-changed":
         return True
+    # The shell on every page watches `__apps__` and only wants problems, not samples.
+    if "__apps__" in scope:
+        return _is_page_alert(event)
     nested = event.get("event") if isinstance(event.get("event"), dict) else {}
     client = event.get("client") if isinstance(event.get("client"), dict) else {}
     client_id = event.get("client_id") or nested.get("client_id") or client.get("id")
     return client_id in scope
+
+
+def _is_page_alert(event: dict) -> bool:
+    """Crashes, hangs, leaks, and playback failures. Samples stay on the app socket."""
+    if event.get("type") == "debug-crash":
+        return True
+    if event.get("type") != "debug-event":
+        return False
+    nested = event.get("event") if isinstance(event.get("event"), dict) else {}
+    module = nested.get("module")
+    kind = nested.get("kind")
+    if (module, kind) in {("hang", "detected"), ("memory", "leak")}:
+        return True
+    if (module, kind) != ("playback", "event"):
+        return False
+    payload = nested.get("payload") if isinstance(nested.get("payload"), dict) else {}
+    play = payload.get("kind")
+    if play in {"item_failed", "item_error_log"}:
+        return True
+    return play == "drm" and payload.get("phase") == "failed"
 
 
 async def _pump_breakpoints(websocket: WebSocket, registry) -> None:

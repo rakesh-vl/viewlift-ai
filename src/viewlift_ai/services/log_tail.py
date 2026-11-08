@@ -48,14 +48,10 @@ class LogTailService:
             "sdk": {
                 "kind": "sdk",
                 "detail": (
-                    "SDK logs arrive via ViewliftNetworkCapture LogService when the "
+                    "App stdout/stderr arrives via the ViewliftNetworkCapture SDK when the "
                     "secure ingest receiver is enabled."
                 ),
             },
-            "testflight_note": (
-                "TestFlight os_log privacy fields often arrive as <private>. "
-                "Expected for distribution builds."
-            ),
         }
 
     def status(self) -> dict[str, object]:

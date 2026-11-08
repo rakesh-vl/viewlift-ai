@@ -9,8 +9,8 @@ from fastapi import APIRouter, HTTPException, Query, Request
 from fastapi.responses import HTMLResponse, Response
 from fastapi.templating import Jinja2Templates
 
+from viewlift_ai import defaults
 from viewlift_ai.api.apps_routes import apps_payload
-from viewlift_ai.services.ingest import DEFAULT_INGEST_PORT
 from viewlift_ai.services.setup import SetupService, SetupValidationError
 
 WEB_ROOT = Path(__file__).resolve().parent.parent / "web"
@@ -46,7 +46,7 @@ async def setup_page(request: Request) -> HTMLResponse:
             "mutating_enabled": _mutating_enabled(request),
             "dashboard_url": str(request.base_url).rstrip("/"),
             "proxy_port": request.app.state.config.proxy_port,
-            "sdk_port": DEFAULT_INGEST_PORT,
+            "sdk_port": defaults.ingest_port(),
         },
     )
 
@@ -220,7 +220,7 @@ async def enable_sdk_receiver(request: Request) -> dict[str, object]:
     try:
         return _ingest(request).enable(
             host=host,
-            port=int(port) if port is not None else DEFAULT_INGEST_PORT,
+            port=int(port) if port is not None else None,
             iface=iface or None,
             include_vpn=bool(body.get("include_vpn", False)),
         )

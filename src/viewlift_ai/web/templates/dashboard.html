@@ -16,13 +16,23 @@
   <label>Host <input id="f-host" type="text" placeholder="api.example.com" autocomplete="off"></label>
   <label>Status <input id="f-status" type="number" placeholder="200" autocomplete="off"></label>
   <label>Content-Type <input id="f-ctype" type="text" placeholder="json" autocomplete="off"></label>
+  <div class="filter-kind">
+    <span>Kind</span>
+    <div class="view-switch kind-switch" id="kind-switch" role="group" aria-label="GraphQL filter">
+      <button type="button" class="btn ghost active" data-kind="" aria-pressed="true">Any</button>
+      <button type="button" class="btn ghost" data-kind="graphql" aria-pressed="false">GraphQL</button>
+      <button type="button" class="btn ghost" data-kind="http" aria-pressed="false">HTTP</button>
+    </div>
+    <input type="hidden" id="f-kind" value="">
+  </div>
+  <label>Operation <input id="f-operation" type="text" placeholder="GetPage" autocomplete="off"></label>
   <label class="grow">Text <input id="f-text" type="text" placeholder="path, header, body…" autocomplete="off"></label>
   <button type="button" id="btn-apply" class="btn">Apply filters</button>
   <button type="button" id="btn-clear" class="btn ghost" hidden>Clear</button>
   <button type="button" id="btn-har" class="btn ghost">Export HAR</button>
   <div class="view-switch" role="group" aria-label="Flow view">
     <button type="button" id="view-list" class="btn ghost active" data-flow-view="list" aria-pressed="true">List</button>
-    <button type="button" id="view-urls" class="btn ghost" data-flow-view="urls" aria-pressed="false" title="Group requests that share a host and path">Base URL</button>
+    <button type="button" id="view-urls" class="btn ghost" data-flow-view="urls" aria-pressed="false" title="Group requests that share a host">Base URL</button>
   </div>
 </section>
 <section class="filters reveal-bar" id="reveal-bar">
@@ -38,7 +48,7 @@
 <section class="split">
   <div class="pane list-pane">
     <div class="pane-head">
-      <button type="button" id="group-back" class="btn ghost" hidden>All URLs</button>
+      <button type="button" id="group-back" class="btn ghost" hidden>All base URLs</button>
       <span id="flow-heading">Flows</span>
       <span id="flow-count" class="muted">0</span>
       <span id="capture-status" class="muted"></span>

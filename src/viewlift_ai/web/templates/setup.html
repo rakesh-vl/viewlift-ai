@@ -67,6 +67,33 @@
       </ol>
     </section>
 
+    <section class="rules-block" id="block-devices">
+      <h2>Physical devices</h2>
+      <p class="muted">
+        iPhone, iPad, and Apple TV on iOS 17 or later need a developer tunnel for location,
+        screenshots, and logs. Starting it asks macOS for an administrator password.
+        This console process stays unprivileged.
+      </p>
+      <div class="rules-form">
+        <button type="button" class="btn" id="btn-tunnel-start">Start developer tunnel</button>
+        <button type="button" class="btn ghost" id="btn-tunnel-stop">Stop tunnel</button>
+      </div>
+      <pre class="pre" id="tunnel-msg">Tunnel status loads with this page.</pre>
+      <h3>Apple TV pairing</h3>
+      <p class="muted">
+        On the Apple TV open Settings → Remotes and Devices → Remote App and Devices, then find it here.
+        The PIN stays on the device. This page does not keep it.
+      </p>
+      <div class="rules-form">
+        <button type="button" class="btn ghost" id="btn-pair-browse">Find Apple TVs</button>
+        <select id="pair-device" aria-label="Apple TV to pair"></select>
+        <button type="button" class="btn" id="btn-pair-start">Start pairing</button>
+        <input id="pair-pin" inputmode="numeric" autocomplete="off" maxlength="8" placeholder="PIN" aria-label="Pairing PIN">
+        <button type="button" class="btn ghost" id="btn-pair-pin">Send PIN</button>
+      </div>
+      <pre class="pre" id="pair-msg">No pairing yet.</pre>
+    </section>
+
     <section class="rules-block" id="block-sim">
       <h2>Simulator</h2>
       <p class="muted">Boot an iOS/tvOS simulator first. Commands use subprocess argv (no shell).</p>
@@ -75,6 +102,21 @@
         <button type="button" class="btn" id="btn-sim-proxy">Configure simulator proxy</button>
       </div>
       <pre class="pre" id="sim-msg">No simulator action yet.</pre>
+    </section>
+
+    <section class="rules-block" id="block-roots">
+      <h2>Project roots</h2>
+      <p class="muted">
+        Folders the MCP build, simulator, preview, and scaffold tools may open. One absolute path
+        per line. Paths outside these folders are refused. <code>VIEWLIFT_AI_PROJECT_ROOTS</code>
+        adds more.
+      </p>
+      <textarea id="project-roots" class="rules-input grow" rows="3" spellcheck="false"
+        placeholder="/Users/me/Code/MyApp"></textarea>
+      <div class="rules-form">
+        <button type="button" class="btn" id="btn-save-roots">Save roots</button>
+      </div>
+      <p class="muted" id="roots-msg"></p>
     </section>
 
     <section class="rules-block" id="block-test">
@@ -90,8 +132,9 @@
     <section class="rules-block" id="block-sdk">
       <h2>SDK setup</h2>
       <p class="muted">
-        Pick the interface and receiver port here. The list includes localhost, Wi-Fi, Ethernet,
-        and VPN addresses from NetBird or Tailscale. The phone discovers the selected address.
+        Pick the interface and receiver port here. USB does not register the app, and the
+        proxy above is not used by the SDK. Same Wi-Fi is enough. Tailscale is a fallback
+        after the phone has seen this Mac, or when the selected interface is the VPN address.
         If that interface gets a new IP, the receiver follows it. Dashboard stays on
         <code>{{ dashboard_url }}</code>.
       </p>

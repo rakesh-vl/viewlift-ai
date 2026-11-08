@@ -170,12 +170,12 @@ def test_deeplink_uses_simulator_device_key() -> None:
     assert _posted(console) == [
         (
             "/api/debug/deeplink",
-            {"url": "demo://play", "udid": "SIM-UDID", "client_id": "app-a"},
+            {"url": "demo://play", "client_id": "app-a"},
         )
     ]
 
 
-def test_deeplink_refuses_a_phone() -> None:
+def test_deeplink_routes_a_phone_through_the_console() -> None:
     console = FakeConsole(
         [
             {
@@ -187,9 +187,10 @@ def test_deeplink_refuses_a_phone() -> None:
             }
         ]
     )
-    result = open_deeplink(console, url="demo://play", client_id="phone", confirm=True)  # type: ignore[arg-type]
-    assert result["ok"] is False
-    assert _posted(console) == []
+    open_deeplink(console, url="demo://play", client_id="phone", confirm=True)  # type: ignore[arg-type]
+    assert _posted(console) == [
+        ("/api/debug/deeplink", {"url": "demo://play", "client_id": "phone"})
+    ]
 
 
 def test_network_profile_without_confirm_does_not_post() -> None:
@@ -197,6 +198,22 @@ def test_network_profile_without_confirm_does_not_post() -> None:
     result = set_network_profile(console, profile="offline", confirm=False)  # type: ignore[arg-type]
     assert result["ok"] is False
     assert _posted(console) == []
+
+
+def test_network_profile_with_client_shapes_that_app_only() -> None:
+    console = FakeConsole([{"id": "app-a", "bundle_id": "com.a", "online": True}])
+    set_network_profile(console, profile="3g", client_id="app-a", confirm=True)  # type: ignore[arg-type]
+    assert _posted(console) == [
+        (
+            "/api/debug/invoke",
+            {
+                "client_id": "app-a",
+                "name": "net.profile",
+                "payload": {"profile": "3g"},
+                "mutate": True,
+            },
+        )
+    ]
 
 
 def test_replay_does_not_unlock_reveal() -> None:
@@ -334,3 +351,19 @@ def test_split_image_strips_hierarchy_texture() -> None:
     assert "base64" not in texture
     assert texture["width"] == 393
     assert hierarchy["screenshot"]["base64"] == "AAAA"
+
+
+def test_split_image_strips_layer_images() -> None:
+    page = {
+        "layers": [{"id": "1", "mime": "image/png", "base64": "AAAA", "width": 10, "height": 20}],
+        "empty": ["2"],
+        "next_offset": 3,
+        "total": 9,
+        "done": False,
+    }
+    cleaned, raw = split_image({"event": {"payload": {"result": page}}})
+    assert raw is None
+    result = cleaned["event"]["payload"]["result"]
+    assert result["layers"] == [{"id": "1", "mime": "image/png", "width": 10, "height": 20}]
+    assert result["next_offset"] == 3
+    assert page["layers"][0]["base64"] == "AAAA"

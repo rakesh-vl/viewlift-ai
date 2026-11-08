@@ -94,7 +94,7 @@ enum UIViewContent {
         guard let imageView = view as? UIImageView else { return [] }
         guard let image = imageView.image else { return [("Image", "None")] }
         let symbol = image.isSymbolImage ? " · SF Symbol" : ""
-        let size = "\(Int(image.size.width))×\(Int(image.size.height)) pt"
+        let size = "\(Int(safe: image.size.width))×\(Int(safe: image.size.height)) pt"
         return [("Image", "\(size) @\(ViewSheetFormat.point(image.scale))x\(symbol)")]
     }
 
@@ -156,8 +156,8 @@ enum UIViewContent {
 
     @MainActor
     private static func platformControls(_ view: UIView) -> [(String, String)] {
-        #if os(iOS)
         var rows: [(String, String)] = []
+        #if os(iOS)
         if let toggle = view as? UISwitch { rows.append(("On", toggle.isOn ? "Yes" : "No")) }
         if let slider = view as? UISlider {
             rows.append(("Value", ViewSheetFormat.point(CGFloat(slider.value))))
@@ -165,14 +165,11 @@ enum UIViewContent {
         if let stepper = view as? UIStepper {
             rows.append(("Value", ViewSheetFormat.point(CGFloat(stepper.value))))
         }
+        #endif
         if let pages = view as? UIPageControl {
             rows.append(("Pages", "\(pages.currentPage + 1) of \(pages.numberOfPages)"))
         }
         return rows
-        #else
-        _ = view
-        return []
-        #endif
     }
 
 }

@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import json
+import threading
 from datetime import UTC, datetime
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
 import pytest
@@ -16,6 +18,7 @@ from viewlift_ai.models.flow import FlowRecord, FlowSource, FlowTiming, Retentio
 from viewlift_ai.models.log import LogLevel, LogRecord
 from viewlift_ai.proxy.redact import REDACTED
 from viewlift_ai.services.flow_export import build_curl, har_json
+from viewlift_ai.services.flow_graphql import graphql_meta
 from viewlift_ai.services.flow_present import flow_summary
 
 
@@ -89,11 +92,17 @@ def test_root_dashboard_and_health(tmp_path: Path) -> None:
         assert health.json()["status"] == "ok"
         assert b'id="view-urls"' in root.content
         assert b'id="group-rows"' in root.content
+        assert b'id="kind-switch"' in root.content
+        assert b'data-kind="graphql"' in root.content
+        assert b">GraphQL</button>" in root.content
         static = client.get("/static/js/app.js")
         assert static.status_code == 200
         assert b"ViewliftNetwork" in static.content
         assert b"vl-detail-tab" in static.content
         assert b"baseUrlKey" in static.content
+        follow = static.text.split("setFollowLatest(on)", 1)[1].split("followPool()", 1)[0]
+        assert "setFlowView" not in follow
+        assert 'this.flowView !== "list"' not in static.text
         assert b'id="btn-flow-delete"' in root.content
         assert b"Delete flows" in root.content
 
@@ -317,3 +326,182 @@ def test_migration_safe_new_columns(tmp_path: Path) -> None:
     assert loaded.query == "x=1"
     assert loaded.timing.ttfb_ms == 10.0
     store.close()
+
+
+def _with_body(
+    flow: FlowRecord,
+    body: bytes,
+    *,
+    headers: dict[str, str] | None = None,
+) -> FlowRecord:
+    flow.request_body = body
+    if headers is not None:
+        flow.request_headers = headers
+    return flow
+
+
+def test_graphql_detection() -> None:
+    named = _with_body(
+        _sample_flow(path="/graphql", query=None),
+        b'{"operationName":"GetPage","query":"query GetPage { page }","variables":{"id":"1"}}',
+    )
+    assert graphql_meta(named).graphql is True
+    assert graphql_meta(named).operation == "GetPage"
+    assert graphql_meta(named).operation_type == "query"
+
+    anonymous = _with_body(
+        _sample_flow(path="/v1/graphql", query=None),
+        b'{"query":"query { page }","variables":{}}',
+    )
+    assert graphql_meta(anonymous).operation == "anonymous"
+    assert graphql_meta(anonymous).operation_type == "query"
+
+    mutation = _with_body(
+        _sample_flow(path="/graphql", query=None),
+        b'{"operationName":"Save","query":"mutation Save { ok }","variables":{}}',
+    )
+    assert graphql_meta(mutation).operation == "Save"
+    assert graphql_meta(mutation).operation_type == "mutation"
+
+    override = _with_body(
+        _sample_flow(path="/graphql", query=None),
+        b'{"operationName":"Alias","query":"query RealName { a }","variables":{}}',
+    )
+    assert graphql_meta(override).operation == "Alias"
+
+    fetched = _sample_flow(method="GET", path="/api", query="query=query GetPage { page }")
+    fetched.request_body = b""
+    assert graphql_meta(fetched).operation == "GetPage"
+    assert graphql_meta(fetched).operation_type == "query"
+
+    batch = _with_body(
+        _sample_flow(path="/graphql", query=None),
+        b'[{"operationName":"A","query":"query A { a }","variables":{}},'
+        b'{"operationName":"B","query":"query B { b }","variables":{}}]',
+    )
+    assert graphql_meta(batch).operation == "A+1"
+
+    persisted = _with_body(
+        _sample_flow(path="/graphql", query=None),
+        b'{"operationName":"Watch","variables":{},"extensions":{"persistedQuery":{"sha256Hash":"abc"}}}',
+    )
+    assert graphql_meta(persisted).operation == "Watch"
+    assert graphql_meta(persisted).operation_type is None
+
+    raw = _with_body(
+        _sample_flow(path="/api", query=None),
+        b"subscription OnScore { score }",
+        headers={"Content-Type": "application/graphql"},
+    )
+    assert graphql_meta(raw).operation == "OnScore"
+    assert graphql_meta(raw).operation_type == "subscription"
+
+    path_only = _sample_flow(path="/graphql", query=None)
+    path_only.request_body = b""
+    assert graphql_meta(path_only).operation == "anonymous"
+
+    search = _with_body(_sample_flow(path="/search", query=None), b'{"query":"football"}')
+    assert graphql_meta(search).graphql is False
+    assert graphql_meta(search).operation is None
+
+
+def test_graphql_filters(tmp_path: Path) -> None:
+    with _client(tmp_path) as client:
+        store = client.app.state.store
+        rest = _sample_flow(flow_id="rest", path="/login")
+        store.save_flow(rest)
+        store.save_flow(
+            _with_body(
+                _sample_flow(flow_id="page", path="/graphql", query=None),
+                b'{"operationName":"GetPage","query":"query GetPage { page }","variables":{}}',
+            )
+        )
+        store.save_flow(
+            _with_body(
+                _sample_flow(flow_id="watch", path="/graphql", query=None),
+                b'{"operationName":"Watch","query":"query Watch { id }","variables":{}}',
+            )
+        )
+
+        graphql = client.get("/api/flows", params={"kind": "graphql"})
+        assert graphql.status_code == 200
+        rows = {row["id"]: row for row in graphql.json()["flows"]}
+        assert set(rows) == {"page", "watch"}
+        assert rows["page"]["graphql"] is True
+        assert rows["page"]["operation"] == "GetPage"
+        assert rows["page"]["operation_type"] == "query"
+
+        by_name = client.get("/api/flows", params={"operation": "getpage"})
+        assert [row["id"] for row in by_name.json()["flows"]] == ["page"]
+
+        http_only = client.get("/api/flows", params={"kind": "http"})
+        assert [row["id"] for row in http_only.json()["flows"]] == ["rest"]
+        assert http_only.json()["flows"][0]["graphql"] is False
+
+        rejected = client.get("/api/flows", params={"kind": "nope"})
+        assert rejected.status_code == 400
+
+        exported = client.get("/api/export/har", params={"kind": "graphql", "operation": "Watch"})
+        assert exported.status_code == 200
+        assert "Watch" in exported.text
+        assert "/login" not in exported.text
+
+        page = client.get("/")
+        assert b'id="f-kind"' in page.content
+        assert b'id="f-operation"' in page.content
+        script = client.get("/static/js/app.js")
+        assert b"/api/flows/send" in script.content
+        assert b'id="edit-send"' in script.content
+        assert b"--data-raw" in script.content
+
+
+def test_send_flow_redacts_response(tmp_path: Path) -> None:
+    class Handler(BaseHTTPRequestHandler):
+        def do_POST(self) -> None:
+            length = int(self.headers.get("Content-Length") or 0)
+            self.rfile.read(length)
+            raw = b'{"secret":"hide-me","ok":true}'
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Set-Cookie", "session=abc")
+            self.send_header("Content-Length", str(len(raw)))
+            self.end_headers()
+            self.wfile.write(raw)
+
+        def log_message(self, format: str, *args: object) -> None:
+            return
+
+    server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+    port = server.server_address[1]
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        with _client(tmp_path) as client:
+            rejected = client.post(
+                "/api/flows/send",
+                json={"method": "GET", "url": "file:///etc/passwd", "headers": {}, "body": ""},
+            )
+            assert rejected.status_code == 400
+
+            sent = client.post(
+                "/api/flows/send",
+                json={
+                    "method": "POST",
+                    "url": f"http://127.0.0.1:{port}/graphql",
+                    "headers": {"Content-Type": "application/json"},
+                    "body": '{"query":"{ a }","variables":{}}',
+                },
+            )
+            assert sent.status_code == 200
+            data = sent.json()
+            assert data["status"] == 200
+            cookie = next(
+                value for key, value in data["headers"].items() if key.lower() == "set-cookie"
+            )
+            assert cookie == REDACTED
+            assert "session=abc" not in sent.text
+            assert "hide-me" not in data["body"]
+            assert client.get("/api/flows").json()["count"] == 0
+    finally:
+        server.shutdown()
+        server.server_close()

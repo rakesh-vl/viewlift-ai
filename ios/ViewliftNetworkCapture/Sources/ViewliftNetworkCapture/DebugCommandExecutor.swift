@@ -13,6 +13,20 @@ final class DebugCommandExecutor {
         _ command: DebugCommand,
         config: CaptureConfiguration
     ) async throws -> [String: JSONValue] {
+        // Settings stay reachable with every module off, so the dashboard can turn modules back on.
+        if command.name.hasPrefix("settings.") {
+            return try settingsCommand(command)
+        }
+        if command.name == "net.profile" {
+            return try NetworkShaper.shared.apply(command.payload)
+        }
+        return try await executeModule(command, config: config)
+    }
+
+    private func executeModule(
+        _ command: DebugCommand,
+        config: CaptureConfiguration
+    ) async throws -> [String: JSONValue] {
         guard let required = Self.module(for: command.name),
               config.debugModules.contains(required) else {
             throw DebugBridgeError.moduleDisabled
@@ -21,18 +35,18 @@ final class DebugCommandExecutor {
         switch prefix {
         case "performance", "memory":
             return try await memoryOrPerformance(command)
-        case "ui", "swiftui", "assets", "accessibility", "bug":
+        case "ui", "swiftui", "assets", "accessibility", "bug", "preview":
             return try await visual(command)
         case "storage":
             return try storage(command)
         case "feature_flags":
             return try flags(command)
-        case "runtime":
-            return runtime(command)
+        case "runtime", "explorer":
+            return try await introspection(command)
         case "macro", "push":
             return try await qa(command)
-        case "ott":
-            return ott(command)
+        case "ott", "activity", "playback", "nav":
+            return try await hostCommand(command)
         case "crash", "hang":
             return crashHang(command)
         default:
@@ -55,21 +69,14 @@ final class DebugCommandExecutor {
             return memory.leakList()
         case "memory.heap":
             return memory.heap()
+        case "memory.object":
+            return await memory.objectDetail(id: string(command.payload["id"]))
         case "memory.live_start":
             return memory.liveState(enabled: true)
         case "memory.live_stop":
             return memory.liveState(enabled: false)
         default:
             throw DebugBridgeError.unsupportedCommand
-        }
-    }
-
-    private func ott(_ command: DebugCommand) -> [String: JSONValue] {
-        switch command.name {
-        case "ott.snapshot":
-            return OTTDebugRegistry.snapshot()
-        default:
-            return ["error": .string("Unsupported ott command")]
         }
     }
 
@@ -85,22 +92,18 @@ final class DebugCommandExecutor {
     }
 
     private func visual(_ command: DebugCommand) async throws -> [String: JSONValue] {
+        if command.name.hasPrefix("ui.") {
+            if let automation = await automationCommand(command) {
+                return automation
+            }
+            return try await uiInspectionCommand(command, capture: visualCapture)
+        }
+        if command.name.hasPrefix("preview.") {
+            return try await previewCommand(command)
+        }
         switch command.name {
-        case "ui.hierarchy":
-            return await UIInspectionService.hierarchy()
-        case "ui.describe":
-            return await UIInspectionService.describe(id: string(command.payload["id"]))
-        case "ui.highlight":
-            return await UIInspectionService.highlight(id: string(command.payload["id"]))
-        case "ui.edit":
-            return await UIInspectionService.edit(
-                id: string(command.payload["id"]),
-                payload: command.payload
-            )
-        case "ui.screenshot":
-            return try await screenshot(limit: 480_000)
         case "bug.capture":
-            var result = try await screenshot(limit: 400_000)
+            var result = try await screenshot(AutomationPayload(command.payload), limit: 400_000)
             result["performance"] = .object(performance.sample())
             result["memory"] = .object(MemoryDebugService.shared.snapshot())
             result["app"] = .string(Bundle.main.bundleIdentifier ?? "")
@@ -161,10 +164,14 @@ final class DebugCommandExecutor {
             try state.restore(snapshot: snapshot)
             return ["restored": .bool(true)]
         default:
-            throw DebugBridgeError.unsupportedCommand
+            return try storageEditCommand(command, state: state)
         }
     }
 
+}
+
+/// Flags, runtime, QA, capture helpers, and payload decoding.
+extension DebugCommandExecutor {
     private func flags(_ command: DebugCommand) throws -> [String: JSONValue] {
         switch command.name {
         case "feature_flags.list":
@@ -183,12 +190,23 @@ final class DebugCommandExecutor {
         }
     }
 
+    private func introspection(_ command: DebugCommand) async throws -> [String: JSONValue] {
+        if command.name.hasPrefix("explorer.") {
+            return try await explorerCommand(command)
+        }
+        return runtime(command)
+    }
+
     private func runtime(_ command: DebugCommand) -> [String: JSONValue] {
         switch command.name {
         case "runtime.search":
             return RuntimeBrowser.search(string(command.payload["query"]))
         case "runtime.describe":
             return RuntimeBrowser.describe(string(command.payload["class"]))
+        case "runtime.libraries":
+            return RuntimeBrowser.libraries()
+        case "runtime.image_classes":
+            return RuntimeBrowser.classes(inImage: string(command.payload["image"]))
         default:
             return ["error": .string("Unsupported runtime command")]
         }
@@ -206,20 +224,40 @@ final class DebugCommandExecutor {
         case "macro.replay":
             return await MacroRecorder.shared.replay(command.payload)
         case "push.local":
-            try await PushDebugService.schedule(payload: command.payload)
-            return ["scheduled": .bool(true)]
+            return try await PushDebugService.schedule(payload: command.payload)
         default:
             throw DebugBridgeError.unsupportedCommand
         }
     }
 
-    private func screenshot(limit: Int) async throws -> [String: JSONValue] {
-        guard let data = await UIInspectionService.screenshot(), data.count <= limit else {
+    private func visualCapture(_ command: DebugCommand) async throws -> [String: JSONValue] {
+        if command.name == "ui.focus" {
+            return await UIInspectionService.focus()
+        }
+        if command.payload["preview"] == .bool(true) {
+            guard let payload = await PreviewCapture.jpeg() else {
+                throw DebugBridgeError.payloadTooLarge
+            }
+            return payload
+        }
+        return try await screenshot(AutomationPayload(command.payload), limit: 480_000)
+    }
+
+    private func screenshot(_ payload: AutomationPayload, limit: Int) async throws -> [String: JSONValue] {
+        let shot = await UIInspectionService.screenshot(
+            windowId: payload.string("window_id"),
+            sceneId: payload.string("scene_id")
+        )
+        guard let shot, shot.data.count <= limit else {
             throw DebugBridgeError.payloadTooLarge
         }
         return [
             "mime": .string("image/png"),
-            "base64": .string(data.base64EncodedString())
+            "base64": .string(shot.data.base64EncodedString()),
+            "width": .number(shot.width),
+            "height": .number(shot.height),
+            "window_id": .string(shot.windowId),
+            "scene_id": .string(shot.sceneId)
         ]
     }
 
@@ -240,7 +278,12 @@ final class DebugCommandExecutor {
             "push": .push,
             "ott": .ott,
             "crash": .crash,
-            "hang": .hang
+            "hang": .hang,
+            "activity": .activity,
+            "playback": .playback,
+            "nav": .navigation,
+            "explorer": .explorer,
+            "preview": .preview
         ]
         return mapping[prefix]
     }
@@ -269,5 +312,35 @@ enum DebugBridgeError: Error {
     case invalidPayload
     case payloadTooLarge
     case unsupportedCommand
+}
+
+private func uiInspectionCommand(
+    _ command: DebugCommand,
+    capture: (DebugCommand) async throws -> [String: JSONValue]
+) async throws -> [String: JSONValue] {
+    let identifier = commandIdentifier(command.payload["id"])
+    switch command.name {
+    case "ui.hierarchy":
+        return await UIInspectionService.hierarchy()
+    case "ui.describe":
+        return await UIInspectionService.describe(id: identifier)
+    case "ui.layers":
+        return await UIInspectionService.layers(command.payload)
+    case "ui.highlight":
+        return await UIInspectionService.highlight(id: identifier)
+    case "ui.visual":
+        return await UIInspectionService.visual(command.payload)
+    case "ui.edit":
+        return await UIInspectionService.edit(id: identifier, payload: command.payload)
+    case "ui.screenshot", "ui.focus":
+        return try await capture(command)
+    default:
+        throw DebugBridgeError.unsupportedCommand
+    }
+}
+
+private func commandIdentifier(_ value: JSONValue?) -> String {
+    if case let .string(item) = value { return item }
+    return ""
 }
 #endif

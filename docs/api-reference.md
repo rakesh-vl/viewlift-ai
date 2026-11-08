@@ -3,7 +3,7 @@
 Two HTTP servers expose APIs:
 
 - the **console** on `http://127.0.0.1:8741` (FastAPI), used by the dashboard and the MCP server;
-- the **SDK ingest server** on `https://<receiver-ip>:8742` (stdlib, TLS), used only by the Swift SDK.
+- the **SDK ingest server** on `https://<receiver-ip>:8743` (stdlib, TLS, `VIEWLIFT_INGEST_PORT`), used only by the Swift SDK.
 
 The console listens on loopback only. Routes marked "loopback" also reject requests whose client address is not `127.0.0.1` or `::1`. This is a second check in case the console is ever put behind a forwarder.
 
@@ -19,6 +19,7 @@ JSON bodies are shown as `{field, field?}`; `?` means optional.
 | `GET /rules` | `rules.html` |
 | `GET /setup` | `setup.html` |
 | `GET /debug` | `debug_suite.html` |
+| `GET /simulator`, `GET /devices` | `simulator.html` (Devices) |
 | `GET /tools` | `tools.html` |
 | `GET /agent` | `agent.html` |
 | `GET /static/*` | Static assets |
@@ -58,7 +59,7 @@ Source: [api/routes.py](../src/viewlift_ai/api/routes.py)
 
 | Method and path | Loopback | Purpose |
 |---|---|---|
-| `GET /api/flows` | no | List flows. Query: `method`, `host`, `status`, `content-type`, `text`, `limit` (1 to 1000, default 200), `client_id` (repeatable), `device_key`. Returns `{flows, count}`. |
+| `GET /api/flows` | no | List flows. Query: `method`, `host`, `status`, `content-type`, `text`, `kind` (`graphql` or `http`), `operation` (operation-name substring), `limit` (1 to 1000, default 200), `client_id` (repeatable), `device_key`. Returns `{flows, count}`. Each flow includes `graphql`, `operation`, and `operation_type`. |
 | `POST /api/flows/delete` | no | Delete every stored flow. Logs, debug events, and rules stay. Clears the in-memory reveal cache. Returns `{deleted}`. |
 | `GET /api/flows/{id}` | for `reveal=true` | Redacted detail. `?reveal=true` returns raw data when the reveal session is unlocked and raw is cached. |
 | `GET /api/flows/{id}/summary` | no | Summary JSON |
@@ -113,7 +114,7 @@ Source: [api/setup_routes.py](../src/viewlift_ai/api/setup_routes.py)
 | `POST /api/setup/simulator/install-ca` | `xcrun simctl keychain booted add-root-cert` |
 | `POST /api/setup/simulator/configure-proxy` | Set `http_proxy`/`https_proxy` in the booted simulator |
 | `POST /api/setup/test {url}` / `GET /api/setup/test` | Run or read a test request through the proxy |
-| `POST /api/setup/sdk/enable {host?, iface?, port?}` | Enable the SDK receiver (default port 8742) |
+| `POST /api/setup/sdk/enable {host?, iface?, port?}` | Enable the SDK receiver (default port 8743) |
 | `POST /api/setup/sdk/disable` | Disable it |
 | `POST /api/setup/sdk/pairing-token` | Mint a pairing token |
 
@@ -123,13 +124,10 @@ Source: [api/logs_routes.py](../src/viewlift_ai/api/logs_routes.py)
 
 | Method and path | Purpose |
 |---|---|
-| `GET /api/logs/sources` | Booted simulators, paired devices, SDK and TestFlight notes |
-| `GET /api/logs/status` | Active stream |
-| `POST /api/logs/start {source?, udid?, process?, client_id?}` | Start or retarget the stream (`simulator` or `device`) |
-| `POST /api/logs/filter {process?, subsystem?}` | Change the live filter without reconnecting |
-| `POST /api/logs/stop` | Stop streaming |
+| `GET /api/logs/sources` | Booted simulators and paired devices (used by debug tools) |
+| `GET /api/logs/status` | OS-log collector status (not used by the Logs page) |
 | `POST /api/logs/delete` | Delete all logs |
-| `GET /api/logs` | Query: `source`, `level`, `subsystem`, `text`, `limit`, `client_id`, `device_key` |
+| `GET /api/logs` | Query: `source` (single value or comma list such as `stdout,stderr`), `level`, `subsystem`, `text`, `limit`, `client_id`, `device_key` |
 | `GET /api/logs/{id}` | Detail, plus `linked_flow_id` resolved from `request_id` |
 
 ## Session
@@ -159,9 +157,12 @@ Source: [api/debug_routes.py](../src/viewlift_ai/api/debug_routes.py)
 | `POST /api/debug/invoke {client_id, name, payload, mutate?, timeout?}` | yes | Enqueue and wait for the result (default 12 s, max 25 s, `504` on timeout) |
 | `POST /api/debug/ott/enrich-frames {frames}` | yes | Parse stack frames |
 | `POST /api/debug/network-profile {profile}` | yes | Apply a global throttle profile |
-| `POST /api/debug/deeplink {url, udid?, client_id?}` | yes | Open a URL in a simulator |
-| `POST /api/debug/location {udid?, client_id?, latitude, longitude, clear?}` | yes | Simulate device location. `409` while a device log stream holds USB. |
+| `POST /api/debug/deeplink {url, udid?, kind?, client_id?}` | yes | Open a URL on a simulator or a paired device. `kind` is `simulator` or `device` |
+| `POST /api/debug/location {udid?, client_id?, latitude, longitude, clear?}` | yes | Simulated GPS on a simulator or a paired device. `409` while a device log stream holds USB |
+| `GET /api/host/targets` | yes | Simulators and paired devices, each with capabilities |
+| `POST /api/host/call {tool, args, confirm?}` | yes | One host tool. Mutating tools require `confirm: true` |
 | `POST /api/flows/{id}/replay` | yes | Resend a captured request from the Mac. Needs an unlocked reveal session. |
+| `POST /api/flows/send` | yes | Send an edited request from the Mac. JSON: `method`, `url`, `headers`, `body` (string). Reveal is not required. The response is redacted. The call is not stored as a flow. |
 
 ## Agent
 

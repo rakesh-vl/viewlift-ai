@@ -8,10 +8,16 @@ final class HangConsoleBuffer: @unchecked Sendable {
     static let shared = HangConsoleBuffer()
 
     private let lock = NSLock()
+    private let queue = DispatchQueue(label: "com.viewlift.networkcapture.console")
     private var installed = false
     private var lines: [HangLogLine] = []
     private var partial: [String: String] = [:]
+    private var flushWork: [String: DispatchWorkItem] = [:]
     private var pipes: [Pipe] = []
+
+    /// Pipe reads from one `print` can arrive a few milliseconds apart.
+    /// Wait this long after the last chunk before publishing, so a multiline string stays one log.
+    private static let burstQuiet: TimeInterval = 0.02
 
     private init() {}
 
@@ -66,7 +72,7 @@ final class HangConsoleBuffer: @unchecked Sendable {
             rows.append(entry)
         }
         rows.sort { $0.time < $1.time }
-        return rows.suffix(limit).map { line in
+        return rows.suffix(max(0, limit)).map { line in
             .object([
                 "source": .string(line.source),
                 "message": .string(line.message),
@@ -93,16 +99,38 @@ final class HangConsoleBuffer: @unchecked Sendable {
 
     private func consume(_ data: Data, source: String, original: Int32) {
         writeBack(data, fd: original)
-        guard let text = String(data: data, encoding: .utf8) else { return }
+        guard let text = String(data: data, encoding: .utf8), !text.isEmpty else { return }
+        queue.async { [weak self] in
+            self?.appendChunk(text, source: source)
+        }
+    }
+
+    private func appendChunk(_ text: String, source: String) {
+        lock.lock()
+        partial[source, default: ""].append(text)
+        lock.unlock()
+        scheduleFlush(source: source)
+    }
+
+    private func scheduleFlush(source: String) {
+        flushWork[source]?.cancel()
+        let work = DispatchWorkItem { [weak self] in
+            self?.flush(source: source)
+        }
+        flushWork[source] = work
+        queue.asyncAfter(deadline: .now() + Self.burstQuiet, execute: work)
+    }
+
+    private func flush(source: String) {
+        flushWork[source] = nil
         lock.lock()
         var pending = partial[source] ?? ""
-        pending.append(text)
-        let pieces = pending.split(separator: "\n", omittingEmptySubsequences: false).map(String.init)
-        partial[source] = pieces.last
+        let message = ConsoleBurst.takeMessage(from: &pending)
+        partial[source] = pending
         lock.unlock()
-        for piece in pieces.dropLast() {
-            append(source: source, message: piece)
-        }
+        guard let message else { return }
+        append(source: source, message: message)
+        LogService.shared.uploadConsoleLine(source: source, message: message)
     }
 
     private func writeBack(_ data: Data, fd: Int32) {
@@ -145,6 +173,20 @@ final class HangConsoleBuffer: @unchecked Sendable {
         case .fault: return "fault"
         default: return "log"
         }
+    }
+}
+
+/// Joins one `print` into one console message.
+/// A `"""` string keeps its internal newlines. The trailing break `print` adds is not part of the text.
+enum ConsoleBurst {
+    static func takeMessage(from pending: inout String) -> String? {
+        // Swift treats CRLF as one Character, so compare with isNewline rather than "\n".
+        guard pending.last?.isNewline == true else { return nil }
+        var raw = pending
+        pending = ""
+        raw.removeLast()
+        guard !raw.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return nil }
+        return raw
     }
 }
 

@@ -6,7 +6,9 @@ import os
 import socket
 from collections.abc import Mapping
 
-DEFAULT_HTTP_PORT = 8742
+from viewlift_ai import defaults
+
+DEFAULT_HTTP_PORT = defaults.MCP_PORT
 HTTP_PATH = "/mcp"
 
 
@@ -20,14 +22,7 @@ def transport_choice(
         return "stdio", "", None
     if transport != "streamable-http":
         raise ValueError(f"Unsupported VIEWLIFT_AI_MCP_TRANSPORT: {transport}")
-    raw = env.get("VIEWLIFT_AI_MCP_PORT", str(DEFAULT_HTTP_PORT))
-    try:
-        port = int(raw)
-    except ValueError as exc:
-        raise ValueError("VIEWLIFT_AI_MCP_PORT must be a TCP port") from exc
-    if port < 1 or port > 65535:
-        raise ValueError("VIEWLIFT_AI_MCP_PORT must be a TCP port")
-    return transport, "127.0.0.1", port
+    return transport, "127.0.0.1", defaults.mcp_port(env)
 
 
 def http_port(environ: Mapping[str, str] | None = None) -> int:

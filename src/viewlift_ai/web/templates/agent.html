@@ -68,11 +68,18 @@
           </div>
           <div class="path-link" aria-hidden="true"><span>poll</span></div>
           <div class="path-device">
-            <span class="path-meta">iPhone 16 simulator</span>
-            <span class="path-app">Alpha <code>app-a</code></span>
-            <span class="path-app">Beta <code>app-b</code></span>
+            {% if device %}
+            <span class="path-meta">{{ device.name }}{% if device.is_simulator %} simulator{% endif %}</span>
+            {% for app in device.apps %}
+            <span class="path-app">{{ app.name }} <code>{{ app.id[:8] }}</code></span>
+            {% endfor %}
+            {% else %}
+            <span class="path-meta">Simulator or device</span>
+            <span class="path-app">App A <code>client_id</code></span>
+            <span class="path-app">App B <code>client_id</code></span>
+            {% endif %}
           </div>
-          <figcaption>Both apps share one device_key. Each keeps its own client_id.</figcaption>
+          <figcaption>Apps on one simulator or device share a device_key. Each keeps its own client_id.</figcaption>
         </figure>
       </section>
 
@@ -101,7 +108,7 @@
             </div>
           </li>
           <li>
-            <p>Open Cursor Settings, then MCP, and turn on <strong>viewlift-ai</strong>. {{ tool_count }} tools should appear.</p>
+            <p>Open Cursor Settings, then MCP, and turn on <strong>viewlift-ai</strong>. The server has {{ tool_count }} tools. A chat starts with the debug set. <code>manage_workflows</code> turns on project, targets, simulator, UI, device, macOS, LLDB, SwiftPM, coverage, docs, or previews for that chat, and disabling the group drops those schemas back out. <code>VIEWLIFT_AI_MCP_WORKFLOWS</code> sets the starting set.</p>
           </li>
           <li>
             <p>Run a debug build that links ViewliftNetworkCapture. Then ask the agent about it in plain words.</p>
@@ -127,7 +134,7 @@
 
       <section id="session" aria-labelledby="session-title">
         <h2 id="session-title">A first session</h2>
-        <p>This is what the agent does for one bug report. You only write the first line.</p>
+        <p>An example with sample data: what the agent does for one bug report. You only write the first line.</p>
         <ol class="transcript" aria-label="Example agent session">
           <li class="t-user">
             <span class="t-who">You</span>
@@ -199,7 +206,7 @@ user.tokenExpiry: 2026-11-05T14:02:11Z   (expired)</pre>
         <p>Arguments with a question mark are optional. Rows marked <span class="tag write">changes state</span> need <code>confirm: true</code>.</p>
         {% for group in tool_groups %}
         <div class="tool-group" id="tools-{{ group.id }}">
-          <h3>{{ group.title }}</h3>
+          <h3>{{ group.title }}{% if group.workflow != "core" %} <span class="tag">workflow {{ group.workflow }}</span>{% endif %}</h3>
           <p class="muted">{{ group.summary }}</p>
           <table class="tool-table">
             <thead>

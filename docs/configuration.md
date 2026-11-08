@@ -15,8 +15,16 @@ The console reads a small set of environment variables at startup. Everything el
 | `VIEWLIFT_RETENTION` | `session` | `session` (or `sess`) or `24h` (or `24`, `hours_24`, `day`). Any other value fails startup. |
 | `VIEWLIFT_SDK_WATCH` | set to `1` by `main()` | Starts the ingest network-follow thread that re-binds the receiver when interfaces change. |
 | `VIEWLIFT_DERIVED_DATA` | unset | Override the DerivedData root used by package detection. Falls back to Xcode's custom location, then `~/Library/Developer/Xcode/DerivedData`. |
-
-The dashboard host and port (`127.0.0.1:8741`) are fixed in `AppConfig` and have no environment override.
+| `VIEWLIFT_CRASH_WATCH` | `1` | `0` stops the watcher that reads `.ips` files from `~/Library/Logs/DiagnosticReports`. SDK crash records still arrive. |
+| `VIEWLIFT_HOST` | `127.0.0.1` | Dashboard bind. Must be loopback. |
+| `VIEWLIFT_PORT` | `8741` | Dashboard port. |
+| `VIEWLIFT_DATA_DIR` | platform data dir | Where the database, rules, secret key, and `crash-media/` (crash replay videos and posters) live. |
+| `VIEWLIFT_INGEST_PORT` | `8743` | Default SDK receiver port. The receiver refuses the MCP port. |
+| `VIEWLIFT_TUNNELD_ADDRESS` | pymobiledevice3 default | `host:port` of the developer tunnel, loopback only. |
+| `VIEWLIFT_HOST_TOOLS_PACKAGE` | `ios/ViewliftHostTools` | Swift package built on demand for device screen recording. |
+| `VIEWLIFT_DEVELOPMENT_TEAM` | unset | Signing team for device builds and the UI runner. Session default `developmentTeam` wins when set. |
+| `VIEWLIFT_UI_RUNNER_PROJECT` | `ios/ViewliftUIRunner/ViewliftUIRunner.xcodeproj` | XCUITest runner project. |
+| `VIEWLIFT_UI_RUNNER_BUNDLE_ID` | `com.viewlift.ai.uirunner` | Bundle id of the runner. |
 
 ### MCP server (`viewlift-ai-mcp`)
 

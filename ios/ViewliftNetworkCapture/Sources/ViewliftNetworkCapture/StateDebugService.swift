@@ -12,6 +12,8 @@ enum StateDebugError: Error {
     case payloadTooLarge
     case readOnlyQueryRequired
     case missingFile
+    case protectedPath
+    case alreadyExists
 }
 
 final class StateDebugService {
@@ -110,18 +112,22 @@ final class StateDebugService {
     /// A short binary plist can be valid UTF-8, and decoding it would destroy the bytes.
     static func filePayload(path: String, data: Data) throws -> [String: JSONValue] {
         guard data.count <= maxFileBytes else { throw StateDebugError.payloadTooLarge }
-        if !prefersBinaryFilePayload(data), let text = String(data: data, encoding: .utf8) {
-            return [
-                "path": .string(path),
-                "encoding": .string("utf8"),
-                "content": .string(text)
-            ]
-        }
-        return [
+        var out: [String: JSONValue] = [
             "path": .string(path),
-            "encoding": .string("base64"),
-            "content": .string(data.base64EncodedString())
+            "kind": .string(StorageFileKind.detect(data).rawValue),
+            "bytes": .number(Double(data.count))
         ]
+        if let plist = StorageFileKind.plistJSON(data) {
+            out["plist"] = plist
+        }
+        if !prefersBinaryFilePayload(data), let text = String(data: data, encoding: .utf8) {
+            out["encoding"] = .string("utf8")
+            out["content"] = .string(text)
+        } else {
+            out["encoding"] = .string("base64")
+            out["content"] = .string(data.base64EncodedString())
+        }
+        return out
     }
 
     func writeFile(relativePath: String, content: String, base64: Bool) throws {
@@ -217,7 +223,7 @@ final class StateDebugService {
         }
     }
 
-    private func sandboxURL(_ relativePath: String) throws -> URL {
+    func sandboxURL(_ relativePath: String) throws -> URL {
         let root = URL(fileURLWithPath: NSHomeDirectory(), isDirectory: true)
             .standardizedFileURL
         let clean = relativePath.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -232,14 +238,14 @@ final class StateDebugService {
         return candidate
     }
 
-    private func relativeSandboxPath(_ url: URL) -> String {
+    func relativeSandboxPath(_ url: URL) -> String {
         let root = URL(fileURLWithPath: NSHomeDirectory(), isDirectory: true)
             .standardizedFileURL.path
         return String(url.standardizedFileURL.path.dropFirst(root.count))
             .trimmingCharacters(in: CharacterSet(charactersIn: "/"))
     }
 
-    private static func jsonValue(_ value: Any) -> JSONValue {
+    static func jsonValue(_ value: Any) -> JSONValue {
         switch value {
         case let value as Bool: return .bool(value)
         case let value as NSNumber: return .number(value.doubleValue)
@@ -294,7 +300,7 @@ private func prefersBinaryFilePayload(_ data: Data) -> Bool {
     guard data.count >= 12, data.starts(with: Data("RIFF".utf8)) else {
         return false
     }
-    guard let kind = String(bytes: data[8..<12], encoding: .utf8) else {
+    guard let kind = String(bytes: data.dropFirst(8).prefix(4), encoding: .utf8) else {
         return false
     }
     return kind == "WEBP" || kind == "WAVE"

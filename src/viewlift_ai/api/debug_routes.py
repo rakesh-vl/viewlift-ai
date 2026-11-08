@@ -3,11 +3,12 @@
 from __future__ import annotations
 
 import asyncio
+import base64
 from pathlib import Path
 from typing import Annotated, Any
 
 from fastapi import APIRouter, HTTPException, Query, Request
-from fastapi.responses import HTMLResponse
+from fastapi.responses import FileResponse, HTMLResponse, PlainTextResponse
 from fastapi.templating import Jinja2Templates
 
 from viewlift_ai.api.scope import resolve_client_ids
@@ -21,7 +22,10 @@ from viewlift_ai.services.debug_toolkit import (
     open_deeplink,
     replay_http,
     set_device_location,
+    validate_deeplink,
 )
+from viewlift_ai.services.host.crash_brief import brief_markdown
+from viewlift_ai.services.log_tail import AppAttribution
 from viewlift_ai.services.ott_inspect import enrich_frames
 from viewlift_ai.services.package_detect import AppIdentity, detect_packages
 
@@ -207,6 +211,116 @@ def debug_events(
     return {"events": rows}
 
 
+@router.get("/api/debug/crashes")
+def debug_crashes(request: Request, client_id: str, limit: int = 20) -> dict[str, object]:
+    """Stored crashes for one app, newest first: signals, exceptions, and macOS reports."""
+    _loopback(request)
+    try:
+        rows = _sessions(request).list_events(
+            client_id=client_id,
+            module="crash",
+            limit=max(1, min(limit, 100)),
+        )
+    except LookupError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    return {"events": rows}
+
+
+def _crash(request: Request, client_id: str, crash_id: str) -> dict[str, Any]:
+    try:
+        payload = _sessions(request).crash(client_id, crash_id)
+    except LookupError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    if payload is None:
+        raise HTTPException(status_code=404, detail="crash not found")
+    return payload
+
+
+def _media_file(request: Request, client_id: str, crash_id: str, *, poster: bool) -> Path:
+    _crash(request, client_id, crash_id)
+    media = getattr(_sessions(request), "media", None)
+    if media is None:
+        raise HTTPException(status_code=404, detail="crash media is off")
+    try:
+        path = media.poster_path(crash_id) if poster else media.video_path(crash_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    if not path.is_file():
+        raise HTTPException(status_code=404, detail="replay not uploaded yet")
+    return path
+
+
+@router.get("/api/debug/crashes/{crash_id}/replay.mp4")
+def debug_crash_replay(
+    request: Request, crash_id: str, client_id: str, download: bool = False
+) -> FileResponse:
+    """The last seconds before the crash. Range requests work, so the player can seek."""
+    _loopback(request)
+    path = _media_file(request, client_id, crash_id, poster=False)
+    return FileResponse(
+        path,
+        media_type="video/mp4",
+        filename=f"{crash_id}.mp4",
+        content_disposition_type="attachment" if download else "inline",
+        headers={"Cache-Control": "no-store"},
+    )
+
+
+@router.get("/api/debug/crashes/{crash_id}/poster.jpg")
+def debug_crash_poster(request: Request, crash_id: str, client_id: str) -> FileResponse:
+    _loopback(request)
+    path = _media_file(request, client_id, crash_id, poster=True)
+    return FileResponse(path, media_type="image/jpeg", headers={"Cache-Control": "no-store"})
+
+
+@router.get("/api/debug/crashes/{crash_id}/detail")
+def debug_crash_detail(request: Request, crash_id: str, client_id: str) -> dict[str, object]:
+    """One crash with its diagnosis and markdown brief, for the MCP `crash_detail` tool."""
+    _loopback(request)
+    payload = _crash(request, client_id, crash_id)
+    client = next(
+        (item for item in _sessions(request).list_clients() if item.get("id") == client_id), None
+    )
+    base = f"{request.base_url}api/debug/crashes/{crash_id}"
+    replay = payload.get("replay") if isinstance(payload.get("replay"), dict) else {}
+    ready = replay.get("status") == "ready"
+    poster = None
+    media = getattr(_sessions(request), "media", None)
+    if media is not None and media.poster_path(crash_id).is_file():
+        poster = base64.b64encode(media.poster_path(crash_id).read_bytes()).decode("ascii")
+    return {
+        "id": crash_id,
+        "crash": payload,
+        "brief": brief_markdown(
+            crash_id,
+            payload,
+            client=client,
+            replay_url=f"{base}/replay.mp4?client_id={client_id}" if ready else None,
+        ),
+        "replay_url": f"{base}/replay.mp4?client_id={client_id}" if ready else None,
+        "report_url": f"{base}/report.md?client_id={client_id}",
+        "poster": {"mime": "image/jpeg", "base64": poster} if poster else None,
+    }
+
+
+@router.get("/api/debug/crashes/{crash_id}/report.md")
+def debug_crash_report(
+    request: Request, crash_id: str, client_id: str, download: bool = False
+) -> PlainTextResponse:
+    """Markdown brief for a person or an AI agent: cause, code, stack, steps, timeline."""
+    _loopback(request)
+    payload = _crash(request, client_id, crash_id)
+    client = next(
+        (item for item in _sessions(request).list_clients() if item.get("id") == client_id), None
+    )
+    replay = f"{request.base_url}api/debug/crashes/{crash_id}/replay.mp4?client_id={client_id}"
+    text = brief_markdown(crash_id, payload, client=client, replay_url=replay)
+    headers = {"Cache-Control": "no-store"}
+    if download:
+        headers["Content-Disposition"] = f'attachment; filename="{crash_id}.md"'
+    return PlainTextResponse(text, media_type="text/markdown; charset=utf-8", headers=headers)
+
+
 @router.post("/api/debug/confirm")
 async def debug_confirm(request: Request) -> dict[str, object]:
     _loopback(request)
@@ -313,56 +427,212 @@ async def set_network_profile(request: Request) -> dict[str, object]:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
+def _client(request: Request, client_id: object) -> dict[str, object] | None:
+    if not client_id:
+        return None
+    try:
+        return _sessions(request).get_client(str(client_id))
+    except LookupError:
+        return None
+
+
+def _host_call(request: Request, tool: str, args: dict[str, Any]) -> dict[str, Any]:
+    from viewlift_ai.api.host_routes import toolkit
+
+    return toolkit(request).call(tool, args, confirm=True)
+
+
+def _log_device_udid(request: Request, client: dict[str, object]) -> str | None:
+    """Pick the paired device for a device app's log stream. None lets the collector choose.
+
+    The SDK only knows `vendor:<idfv>`, so with several paired devices the app's hardware
+    model narrows the list. Several devices of the same model is refused, never guessed.
+    """
+    collector = getattr(_log_tail(request), "device", None)
+    if collector is None:
+        return None
+    rows = [row for row in collector.list_devices() if row.get("udid")]
+    if len(rows) <= 1:
+        return None
+    model = str(client.get("device_model") or "")
+    matches = [row for row in rows if model and str(row.get("product") or "") == model]
+    if len(matches) == 1:
+        return str(matches[0]["udid"])
+    names = ", ".join(f"{row.get('name')} ({row.get('udid')})" for row in (matches or rows))
+    raise HTTPException(
+        status_code=409,
+        detail=f"Several paired devices could run this app. Pick one on the Logs page: {names}",
+    )
+
+
 @router.post("/api/debug/deeplink")
 async def debug_deeplink(request: Request) -> dict[str, object]:
+    """Open a URL on a simulator (simctl), a device (devicectl), or inside an SDK app."""
     _loopback(request)
     body = await _json_body(request)
-    udid = str(body.get("udid") or "") or _simulator_udid(request, body.get("client_id"))
+    url = str(body.get("url") or "")
+    udid = str(body.get("udid") or "")
+    client = _client(request, body.get("client_id"))
+    kind = str(body.get("kind") or "")
+    if kind in {"device", "simulator"}:
+        on_device = kind == "device"
+    else:
+        on_device = bool(client and not client.get("is_simulator")) or bool(
+            udid and not client and kind == "device"
+        )
+    if not on_device:
+        sim_udid = udid or (str(client.get("device_key") or "") if client else "")
+        try:
+            result = open_deeplink(url, udid=sim_udid or "booted")
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        if not result.get("ok"):
+            raise HTTPException(status_code=400, detail=str(result.get("detail") or "open failed"))
+        return result
     try:
-        result = open_deeplink(str(body.get("url") or ""), udid=udid or "booted")
+        validate_deeplink(url, "booted")
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
-    if not result.get("ok"):
-        raise HTTPException(status_code=400, detail=str(result.get("detail") or "open failed"))
-    return result
+    args: dict[str, Any] = {"url": url}
+    if udid:
+        args["udid"] = udid
+    if client:
+        args["client"] = client
+        args["bundleId"] = client.get("bundle_id")
+    result = _host_call(request, "open_url", args)
+    if result.get("ok") is not False:
+        return {"ok": True, "detail": "Opened on the device.", "url": url, "via": "devicectl"}
+    if client and client.get("id"):
+        return await _open_in_app(request, str(client["id"]), url, str(result.get("detail") or ""))
+    raise HTTPException(status_code=400, detail=str(result.get("detail") or "open failed"))
 
 
-def _simulator_udid(request: Request, client_id: object) -> str:
-    """Target the simulator the selected app runs on instead of whichever is booted."""
-    if not client_id:
-        return ""
+async def _open_in_app(
+    request: Request, client_id: str, url: str, reason: str
+) -> dict[str, object]:
+    """devicectl could not reach the device (older OS, no tunnel); the SDK opens it in-process."""
     try:
-        client = _sessions(request).get_client(str(client_id))
-    except LookupError:
-        return ""
+        await asyncio.to_thread(
+            _sessions(request).invoke,
+            client_id=client_id,
+            name="nav.open_url",
+            payload={"url": url},
+            mutate=True,
+        )
+    except (LookupError, TimeoutError, PermissionError, ValueError) as exc:
+        detail = f"{reason} The app could not open it either: {exc}".strip()
+        raise HTTPException(status_code=400, detail=detail) from exc
+    return {"ok": True, "detail": "Opened inside the app.", "url": url, "via": "sdk"}
+
+
+def _log_capture_target(client: dict[str, object]) -> tuple[str, str | None]:
+    """Simulator `device_key` is the sim UDID. A phone key is `vendor:<idfv>`, not a serial."""
+    key = str(client.get("device_key") or "").strip() or None
     if client.get("is_simulator"):
-        return str(client.get("device_key") or "")
-    return ""
+        return "simulator", key
+    return "device", None
 
 
 @router.post("/api/debug/location")
 async def debug_location(request: Request) -> dict[str, object]:
+    """Simulated GPS on a simulator (simctl) or a paired iPhone, iPad, or Apple TV."""
     _loopback(request)
     body = await _json_body(request)
-    tail = getattr(request.app.state, "log_tail", None)
-    streaming = bool(
-        tail and tail.status().get("running") and tail.status().get("source") == "device"
-    )
     clear = bool(body.get("clear"))
     lat = body.get("latitude")
     lon = body.get("longitude")
+    udid = str(body.get("udid") or "")
+    client = _client(request, body.get("client_id"))
+    if client and client.get("is_simulator") and not udid:
+        udid = str(client.get("device_key") or "")
+    args: dict[str, Any] = {"clear": clear}
+    if udid:
+        args["udid"] = udid
+    elif client:
+        args["client"] = client
+    else:
+        raise HTTPException(status_code=400, detail="Pass udid or choose an app in Scope.")
+    if not clear:
+        try:
+            args["latitude"] = float(lat)  # type: ignore[arg-type]
+            args["longitude"] = float(lon)  # type: ignore[arg-type]
+        except (TypeError, ValueError) as exc:
+            detail = "Latitude and longitude are required."
+            raise HTTPException(status_code=400, detail=detail) from exc
+    target = await asyncio.to_thread(_host_call, request, "resolve_target", dict(args))
+    if target.get("ok") is False:
+        detail = str(target.get("detail") or "Target not found.")
+        raise HTTPException(status_code=400, detail=detail)
+    if target.get("kind") == "device":
+        tail = getattr(request.app.state, "log_tail", None)
+        status = tail.status() if tail else {}
+        streaming = bool(status.get("running") and status.get("source") == "device")
+        try:
+            return await asyncio.to_thread(
+                set_device_location,
+                str(target["udid"]),
+                args.get("latitude"),
+                args.get("longitude"),
+                clear=clear,
+                streaming=streaming,
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        except RuntimeError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+    result = await asyncio.to_thread(
+        _host_call, request, "set_location", {**args, "udid": target["udid"]}
+    )
+    if result.get("ok") is False:
+        raise HTTPException(status_code=400, detail=str(result.get("detail") or "Location failed."))
+    detail = "Cleared simulated location." if clear else f"Location set to {lat}, {lon}."
+    return {"ok": True, "detail": f"{detail} ({target.get('name')})"}
+
+
+def _log_tail(request: Request):
+    tail = getattr(request.app.state, "log_tail", None)
+    if tail is None:
+        raise HTTPException(status_code=503, detail="Log capture unavailable")
+    return tail
+
+
+@router.post("/api/debug/logs/start")
+async def debug_logs_start(request: Request) -> dict[str, object]:
+    """Stream simulator or device logs for the selected app. Loopback only."""
+    _loopback(request)
+    body = await _json_body(request)
+    client_id = str(body.get("client_id") or "").strip()
+    if not client_id:
+        raise HTTPException(status_code=400, detail="Choose an app in Scope first.")
     try:
-        return set_device_location(
-            str(body.get("udid") or "") or _simulator_udid(request, body.get("client_id")),
-            float(lat) if lat is not None and not clear else None,
-            float(lon) if lon is not None and not clear else None,
-            clear=clear,
-            streaming=streaming,
+        client = _sessions(request).get_client(client_id)
+    except LookupError as exc:
+        raise HTTPException(status_code=404, detail="App is not connected.") from exc
+    source, udid = _log_capture_target(client)
+    if source == "device":
+        udid = await asyncio.to_thread(_log_device_udid, request, client)
+    executable = str(client.get("executable") or "").strip()
+    attribution = (
+        AppAttribution(client_id=client_id, executable=executable) if executable else None
+    )
+    result = _log_tail(request).start(
+        source,
+        udid=udid,
+        process=executable or None,
+        attribution=attribution,
+    )
+    if not result.get("ok"):
+        raise HTTPException(
+            status_code=400,
+            detail=str(result.get("detail") or "Could not start capture."),
         )
-    except ValueError as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
-    except RuntimeError as exc:
-        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    return result
+
+
+@router.post("/api/debug/logs/stop")
+def debug_logs_stop(request: Request) -> dict[str, object]:
+    _loopback(request)
+    return _log_tail(request).stop()
 
 
 @router.post("/api/flows/{flow_id}/replay")
@@ -397,6 +667,43 @@ def replay_flow(request: Request, flow_id: str) -> dict[str, object]:
         "status": sent["status"],
         "headers": redaction.redact_headers(sent["headers"]),
         "body": body.decode("utf-8", errors="replace")[:8000],
+    }
+
+
+@router.post("/api/flows/send")
+async def send_flow(request: Request) -> dict[str, object]:
+    """Send one edited request from this Mac. The body is the form text, not the raw cache."""
+    _loopback(request)
+    payload = await _json_body(request)
+    headers = payload.get("headers") or {}
+    if not isinstance(headers, dict):
+        raise HTTPException(status_code=400, detail="headers must be an object")
+    raw_body = payload.get("body")
+    if raw_body is None:
+        body = b""
+    elif isinstance(raw_body, str):
+        body = raw_body.encode("utf-8")
+    else:
+        raise HTTPException(status_code=400, detail="body must be a string")
+    safe_headers = {str(key): str(value) for key, value in headers.items()}
+    try:
+        sent = replay_http(
+            method=str(payload.get("method") or "GET"),
+            url=str(payload.get("url") or ""),
+            headers=safe_headers,
+            body=body,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except Exception as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
+    redaction = _redaction(request)
+    response_body = redaction.redact_body(sent["body"])
+    return {
+        "ok": True,
+        "status": sent["status"],
+        "headers": redaction.redact_headers(sent["headers"]),
+        "body": response_body.decode("utf-8", errors="replace")[:8000],
     }
 
 

@@ -12,6 +12,10 @@ public struct CaptureConfiguration: Sendable {
     public var maxQueueDepth: Int
     public var debugModules: Set<DebugModule>
     public var performanceSampleInterval: TimeInterval
+    /// When false, requests pass through untouched while the debug bridge stays connected.
+    public var captureNetwork = true
+    /// Content-Type prefixes whose bodies are kept, for example `application/json`. Empty keeps all.
+    public var bodyContentTypes: [String] = []
 
     public init(
         receiverURL: URL,
@@ -37,6 +41,13 @@ public struct CaptureConfiguration: Sendable {
         self.maxQueueDepth = max(1, maxQueueDepth)
         self.debugModules = debugModules
         self.performanceSampleInterval = max(0.25, performanceSampleInterval)
+    }
+
+    /// True when a body with this Content-Type should be kept.
+    func keepsBody(contentType: String?) -> Bool {
+        guard !bodyContentTypes.isEmpty else { return true }
+        guard let contentType = contentType?.lowercased(), !contentType.isEmpty else { return false }
+        return bodyContentTypes.contains { contentType.hasPrefix($0.lowercased()) }
     }
 
     /// Bonjour discovery. The dashboard advertisement replaces host, port, fingerprint, and debug key.

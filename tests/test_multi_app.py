@@ -110,7 +110,7 @@ def _ingest(
         advertiser=_Advertiser(),
     )
     monkeypatch.setattr(IngestService, "start_https_server", lambda self: None)
-    svc.enable(host="", port=8742)
+    svc.enable(host="", port=8743)
     return svc, store
 
 

@@ -3,8 +3,11 @@
 from __future__ import annotations
 
 import hashlib
+import json
+import os
 import secrets
 import ssl
+import tempfile
 import threading
 import time
 import uuid
@@ -20,6 +23,7 @@ from cryptography.hazmat.primitives import hashes, serialization
 from cryptography.hazmat.primitives.asymmetric import rsa
 from cryptography.x509.oid import NameOID
 
+from viewlift_ai import defaults
 from viewlift_ai.models.flow import FlowSource, FlowTiming
 from viewlift_ai.proxy.redact import RedactionService
 from viewlift_ai.services.bind_policy import (
@@ -40,12 +44,25 @@ from viewlift_ai.services.setup import list_ipv4_interfaces
 
 TimeFn = Callable[[], float]
 
-DEFAULT_INGEST_PORT = 8742
+DEFAULT_INGEST_PORT = defaults.INGEST_PORT
+RECEIVER_PREF_FILENAME = "receiver.json"
 PAIRING_TTL_SECONDS = 300.0
 SESSION_TTL_SECONDS = 3600.0
-DEFAULT_MAX_BODY_BYTES = 262_144
+DEFAULT_MAX_BODY_BYTES = defaults.MAX_BODY_BYTES
 DEFAULT_RATE_LIMIT = 600  # requests per minute per session
 DEFAULT_MAX_JSON_BYTES = 1_048_576
+# `stdout`/`stderr` come from the SDK console tee. `sdk` is explicit LogService calls.
+SDK_LOG_SOURCES = frozenset({"sdk", "stdout", "stderr"})
+
+
+def refuse_mcp_clash(host: str, port: int) -> None:
+    """The MCP server listens on loopback. A loopback receiver on the same port cannot bind."""
+    if is_loopback_ip(host) and port == defaults.mcp_port():
+        msg = (
+            f"Port {port} is the MCP server's port. Pick another receiver port, "
+            "or set VIEWLIFT_AI_MCP_PORT to move the MCP server."
+        )
+        raise SetupValidationError(msg)
 
 
 @dataclass(slots=True)
@@ -119,7 +136,7 @@ class IngestActivity:
 class IngestBindState:
     enabled: bool = False
     host: str = "127.0.0.1"
-    port: int = DEFAULT_INGEST_PORT
+    port: int = field(default_factory=defaults.ingest_port)
     iface: str = ""
     # Also listen on VPN addresses (Tailscale, NetBird) and advertise them as alternates.
     include_vpn: bool = False
@@ -203,8 +220,9 @@ class IngestService:
                 "one-use and short-lived; exchange it for a session token."
                 if self._bind.enabled
                 else (
-                    "Receiver is off. Pick localhost, Wi-Fi, or a VPN interface "
-                    "(NetBird or Tailscale) and a port in Setup."
+                    "Receiver is off, so the app stays offline. USB does not register it. "
+                    "Enable Wi-Fi or a VPN interface (NetBird or Tailscale). "
+                    "A proxy is not required."
                 )
             ),
             "max_body_bytes": self.max_body_bytes,
@@ -323,6 +341,7 @@ class IngestService:
     def start_network_watch(self) -> None:
         if self._watch_thread is not None and self._watch_thread.is_alive():
             return
+        self.restore_saved()
         self._manual_disable = False
         self._watch_stop.clear()
         self._watch_thread = threading.Thread(
@@ -343,6 +362,9 @@ class IngestService:
     def _watch_network(self) -> None:
         while not self._watch_stop.is_set():
             try:
+                if not self.enabled and not self._manual_disable:
+                    # The saved interface may not have been up at launch. Keep trying.
+                    self.restore_saved()
                 self.follow_network()
             except (SetupValidationError, OSError):
                 pass
@@ -352,7 +374,7 @@ class IngestService:
         self,
         *,
         host: str,
-        port: int = DEFAULT_INGEST_PORT,
+        port: int | None = None,
         iface: str | None = None,
         include_vpn: bool = False,
     ) -> dict[str, object]:
@@ -373,7 +395,8 @@ class IngestService:
                 (str(row.get("iface") or "") for row in rows if str(row.get("ip") or "") == ip),
                 "lo0" if is_loopback_ip(ip) else "",
             )
-        validated_port = validate_port(port)
+        validated_port = validate_port(defaults.ingest_port() if port is None else port)
+        refuse_mcp_clash(ip, validated_port)
         extras = self.vpn_hosts(rows, primary=ip) if include_vpn else ()
         self._ensure_tls_material()
         with self._lock:
@@ -396,18 +419,102 @@ class IngestService:
             self._mint_pairing_locked()
         self.start_https_server()
         self._publish_receiver()
+        self._save_receiver_pref()
         return self.status()
 
-    def disable(self) -> dict[str, object]:
-        self._manual_disable = True
+    def stop(self) -> None:
+        """Release the listener. Leave receiver.json so the next start can restore it."""
+        previous = self._bind
         self.advertiser.stop()
         self.stop_https_server()
         with self._lock:
-            self._bind = IngestBindState(enabled=False, host="127.0.0.1", port=self._bind.port)
+            self._bind = IngestBindState(enabled=False, host="127.0.0.1", port=previous.port)
             self._pairing.clear()
             self._sessions.clear()
             self._rate.clear()
+
+    def disable(self) -> dict[str, object]:
+        previous = self._bind
+        self._manual_disable = True
+        self.stop()
+        self._save_receiver_pref(
+            enabled=False,
+            iface=previous.iface,
+            port=previous.port,
+            include_vpn=previous.include_vpn,
+        )
         return self.status()
+
+    def restore_saved(self) -> bool:
+        """Bring the last enabled receiver back after a console restart."""
+        if self.enabled:
+            return True
+        pref = self._load_receiver_pref()
+        if not pref or not pref.get("enabled"):
+            return False
+        iface = str(pref.get("iface") or "").strip()
+        if not iface:
+            return False
+        try:
+            port = int(pref.get("port") or defaults.ingest_port())
+        except (TypeError, ValueError):
+            return False
+        try:
+            self.enable(
+                host="",
+                port=port,
+                iface=iface,
+                include_vpn=bool(pref.get("include_vpn")),
+            )
+        except (SetupValidationError, OSError):
+            return False
+        return self.enabled
+
+    def _pref_path(self) -> Path:
+        return self.cert_dir / RECEIVER_PREF_FILENAME
+
+    def _load_receiver_pref(self) -> dict[str, object] | None:
+        path = self._pref_path()
+        if not path.is_file():
+            return None
+        try:
+            raw = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, UnicodeError, json.JSONDecodeError):
+            return None
+        if not isinstance(raw, dict):
+            return None
+        return raw
+
+    def _save_receiver_pref(
+        self,
+        *,
+        enabled: bool | None = None,
+        iface: str | None = None,
+        port: int | None = None,
+        include_vpn: bool | None = None,
+    ) -> None:
+        payload = {
+            "enabled": self._bind.enabled if enabled is None else enabled,
+            "iface": self._bind.iface if iface is None else iface,
+            "port": self._bind.port if port is None else port,
+            "include_vpn": self._bind.include_vpn if include_vpn is None else include_vpn,
+        }
+        text = json.dumps(payload, indent=2, sort_keys=True) + "\n"
+        path = self._pref_path()
+        path.parent.mkdir(parents=True, exist_ok=True)
+        fd, tmp_name = tempfile.mkstemp(prefix=".receiver-", suffix=".tmp", dir=str(path.parent))
+        tmp_path = Path(tmp_name)
+        try:
+            with os.fdopen(fd, "w", encoding="utf-8") as handle:
+                handle.write(text)
+                handle.flush()
+                os.fsync(handle.fileno())
+            os.chmod(tmp_path, 0o600)
+            os.replace(tmp_path, path)
+            os.chmod(path, 0o600)
+        except Exception:
+            tmp_path.unlink(missing_ok=True)
+            raise
 
     def mint_pairing_token(self) -> dict[str, object]:
         if not self._bind.enabled:
@@ -602,17 +709,20 @@ class IngestService:
         if len(message.encode("utf-8")) > self.max_json_bytes:
             msg = "log message exceeds size cap"
             raise ValueError(msg)
+        source = str(payload.get("source") or "sdk")
+        if source not in SDK_LOG_SOURCES:
+            source = "sdk"
         record = self.log_capture.persist(
             level=str(payload.get("level") or "info"),
             subsystem=str(payload.get("subsystem") or "sdk"),
             message=message,
-            source="sdk",
+            source=source,
             request_id=str(payload["request_id"]) if payload.get("request_id") else None,
             log_id=str(payload["id"]) if payload.get("id") else None,
             client_id=client_id,
         )
         self._touch(client_id)
-        return {"ok": True, "id": record.id, "source": "sdk"}
+        return {"ok": True, "id": record.id, "source": source}
 
     def ssl_context(self) -> ssl.SSLContext:
         self._ensure_tls_material()

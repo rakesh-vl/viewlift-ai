@@ -51,6 +51,22 @@ enum CaptureRuntime {
         lock.unlock()
     }
 
+    /// Swaps in new options from the dashboard without restarting capture.
+    static func update(configuration: CaptureConfiguration) {
+        lock.lock()
+        if _active {
+            _configuration = configuration
+        }
+        lock.unlock()
+    }
+
+    /// Active and not paused from the dashboard.
+    static var isCapturingNetwork: Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        return _active && (_configuration?.captureNetwork ?? true)
+    }
+
     static func deactivate() {
         lock.lock()
         _active = false
@@ -66,6 +82,9 @@ enum CaptureRuntime {
         lock.unlock()
         queue.enqueue(exchange)
         handler?(exchange)
+        #if DEBUG || VIEWLIFT_CAPTURE_ENABLED
+        CrashContextWriter.shared.noteRequest(exchange)
+        #endif
     }
 
     static func isInternal(_ request: URLRequest) -> Bool {

@@ -13,7 +13,8 @@ final class CrashHangRecorder: @unchecked Sendable {
 
     private let lock = NSLock()
     private var hangs: [[String: JSONValue]] = []
-    private var crashes: [[String: JSONValue]] = []
+    /// Hangs waiting to be pushed to the dashboard. `hang.list` still returns the full set.
+    private var pending: [[String: JSONValue]] = []
     private var installed = false
     private var previousExceptionHandler: NSUncaughtExceptionHandler?
 
@@ -32,6 +33,7 @@ final class CrashHangRecorder: @unchecked Sendable {
             CrashHangRecorder.shared.previousExceptionHandler?(exception)
         }
         lock.unlock()
+        FatalCrashCoordinator.shared.install()
         HangInteractionTrail.shared.install()
         HangConsoleBuffer.shared.install()
     }
@@ -39,29 +41,27 @@ final class CrashHangRecorder: @unchecked Sendable {
     func storeHang(_ event: [String: JSONValue]) {
         lock.lock()
         hangs.append(event)
+        pending.append(event)
         if hangs.count > Self.maxHangs {
             hangs.removeFirst(hangs.count - Self.maxHangs)
+        }
+        if pending.count > Self.maxHangs {
+            pending.removeFirst(pending.count - Self.maxHangs)
         }
         lock.unlock()
     }
 
-    func recordException(_ exception: NSException) {
-        let symbols = exception.callStackSymbols
-        let event: [String: JSONValue] = [
-            "id": .string(UUID().uuidString),
-            "kind": .string("exception"),
-            "timestamp": .number(Date().timeIntervalSince1970),
-            "name": .string(exception.name.rawValue),
-            "reason": .string(exception.reason ?? ""),
-            "thread": .string(Thread.isMainThread ? "main" : Thread.current.name ?? "background"),
-            "frames": .array(Self.parseFrames(symbols).map(JSONValue.object))
-        ]
+    /// Hangs recorded since the last drain. The bridge sends each one as `hang` / `detected`.
+    func drainHangs() -> [[String: JSONValue]] {
         lock.lock()
-        crashes.append(event)
-        if crashes.count > Self.maxEvents {
-            crashes.removeFirst(crashes.count - Self.maxEvents)
-        }
+        let queued = pending
+        pending.removeAll()
         lock.unlock()
+        return queued
+    }
+
+    func recordException(_ exception: NSException) {
+        FatalCrashCoordinator.shared.recordException(exception)
     }
 
     func hangList() -> [String: JSONValue] {
@@ -81,14 +81,14 @@ final class CrashHangRecorder: @unchecked Sendable {
     }
 
     func crashList() -> [String: JSONValue] {
-        lock.lock()
-        let copy = crashes
-        lock.unlock()
+        let copy = FatalCrashCoordinator.shared.eventList()
         return [
             "count": .number(Double(copy.count)),
             "events": .array(copy.map(JSONValue.object)),
             "note": .string(
-                "In-process exceptions only. Fatal SIGABRT/SIGSEGV after death need device crash reports."
+                "Uncaught exceptions and fatal signals (Swift traps, SIGSEGV, SIGABRT) from this run, "
+                    + "plus a crash from the last run recovered at launch. "
+                    + "The dashboard also receives each one as it arrives."
             )
         ]
     }

@@ -30,7 +30,7 @@ enum HeapCensus {
             isaMask: isaMask()
         )
         withUnsafeMutablePointer(to: &state) { pointer in
-            enumerateZones(context: UnsafeMutableRawPointer(pointer))
+            enumerateZones(context: UnsafeMutableRawPointer(pointer), recorder: censusRecorder)
         }
         return table.rows()
     }
@@ -41,7 +41,12 @@ enum HeapCensus {
         return !bundle.isEmpty && imagePath.hasPrefix(bundle)
     }
 
-    private static func enumerateZones(context: UnsafeMutableRawPointer) {
+    /// Walks in-use blocks of every zone. `recorder` runs with zones locked and must not allocate.
+    typealias RangeRecorder = @convention(c) (
+        task_t, UnsafeMutableRawPointer?, UInt32, UnsafeMutablePointer<vm_range_t>?, UInt32
+    ) -> Void
+
+    static func enumerateZones(context: UnsafeMutableRawPointer, recorder: RangeRecorder) {
         var addresses: UnsafeMutablePointer<vm_address_t>?
         var zoneCount: UInt32 = 0
         // TASK_NULL with an identity reader, as FLEX does; the self task makes some zones lock again.
@@ -58,12 +63,12 @@ enum HeapCensus {
             }
             introspect.pointee.force_lock?(zone)
             _ = enumerator(task, context, UInt32(MALLOC_PTR_IN_USE_RANGE_TYPE), addresses[index],
-                           censusReader, censusRecorder)
+                           censusReader, recorder)
             introspect.pointee.force_unlock?(zone)
         }
     }
 
-    private static func isaMask() -> UInt {
+    static func isaMask() -> UInt {
         let rtldDefault = UnsafeMutableRawPointer(bitPattern: -2)
         guard let symbol = dlsym(rtldDefault, "objc_debug_isa_class_mask") else { return UInt.max }
         return symbol.assumingMemoryBound(to: UInt.self).pointee
@@ -78,7 +83,7 @@ private struct CensusState {
     let isaMask: UInt
 }
 
-private func censusReader(
+func censusReader(
     _ task: task_t,
     _ address: vm_address_t,
     _ size: vm_size_t,
@@ -114,7 +119,7 @@ private func censusRecorder(
             let mid = (low + high) >> 1
             let value = classes[mid]
             if value == isa {
-                if Int(range.size) >= state.pointee.sizes[mid] {
+                if Int(clamping: range.size) >= state.pointee.sizes[mid] {
                     state.pointee.counts[mid] += 1
                 }
                 break

@@ -54,7 +54,7 @@ Copy the receiver URL, a pairing token and the SHA-256 fingerprint from **Setup*
 ```swift
 #if DEBUG
 CaptureService.shared.start(configuration: CaptureConfiguration(
-    receiverURL: URL(string: "https://192.168.1.10:8742")!,
+    receiverURL: URL(string: "https://192.168.1.10:8743")!,
     pairingToken: "<one-use-token>",
     pinnedCertificateSHA256: "<sha256-hex>",
     debugModules: Set(DebugModule.allCases)
@@ -99,8 +99,18 @@ Pass `CaptureConfiguration` only for a fixed receiver or a smaller module set. A
 | `maxQueueDepth` | `64` | In-memory queue; the oldest item is dropped when full |
 | `debugModules` | `[]` on `CaptureConfiguration` | Empty disables the debug bridge. `start()` passes `Set(DebugModule.allCases)`. |
 | `performanceSampleInterval` | `1` | Seconds, minimum 0.25 |
+| `captureNetwork` | `true` | `false` stops `URLProtocol` capture while the debug bridge keeps running |
+| `bodyContentTypes` | `[]` | Content-Type prefixes whose bodies are kept, for example `["application/json"]`. Empty keeps every body. |
 
-`DebugModule` cases: `performance`, `memory`, `ui`, `swiftui`, `assets`, `accessibility`, `storage`, `feature_flags`, `runtime`, `macro`, `bug`, `push`, `ott`, `crash`, `hang`.
+Crashes: the SDK records fatal signals and uncaught exceptions, and the console shows them with the full stack. Signal crashes arrive on the next launch. Exceptions arrive as the app dies. A crash while Xcode's debugger is attached stops in Xcode and reaches neither the SDK nor the system crash report until you continue or detach. Run without the debugger to see it in the console.
+
+Crash context and replay: while the `crash` module is on, the SDK writes what the app is doing to disk once a second (screens, taps, remote presses, the last 10 requests without query strings or bodies, console tail, memory, CPU, thermal and low-power state, app and device). The `replay` module also keeps the last ten seconds of the screen: four small JPEGs a second, longest side 480 px, with the touches in between. After a crash the next launch turns those frames into an MP4 with taps and a countdown drawn on them and uploads it. The dashboard shows it on the crash card and offers it as a download. Recording costs a window snapshot every 250 ms on the main thread and about 120 KB/s of disk writes. Turn it off in Device settings (Crash replay) or leave `replay` out of `debugModules`.
+
+`DebugModule` cases: `performance`, `memory`, `ui`, `swiftui`, `assets`, `accessibility`, `storage`, `feature_flags`, `runtime`, `explorer`, `macro`, `bug`, `push`, `ott`, `crash`, `hang`, `activity`, `playback`, `nav`, `preview`, `replay`.
+
+The Device settings tab in the Debug Suite can override `debugModules`, `captureNetwork`, both body limits and `bodyContentTypes`. Overrides are stored in the `viewlift.capture.settings` defaults suite and applied on top of the configuration passed to `start()`. They can only turn off modules the app enabled, never add new ones. Body limits are capped at 262 144 bytes. Reset deletes the overrides.
+
+The `explorer` module reads live objects through the Objective-C runtime and Swift `Mirror`. Objects are reached through handles issued by the SDK, and handles hold weak references where the class allows it. Writes are type-checked KVC. Calls are limited to zero-argument methods, and selectors such as `init*`, `set*`, `copy*`, `dealloc` and `removeFromSuperview` are refused. Objective-C exceptions are caught by the small `ViewliftCaptureObjC` target and reported as errors.
 
 Redaction defaults are minimal (`cookie`, `set-cookie`, and JSON keys `password` and `secret`). Add `authorization` and your token keys to `extraRedactionKeys`.
 
@@ -155,6 +165,67 @@ OTTDebugRegistry.register(myOTTSnapshot)
 
 The registry holds the provider weakly, so keep a strong reference. Never put token values or other secrets in the snapshot.
 
+Current screen and playback for the Debug Suite Live tab. The tab also takes a screenshot and tails this app's logs. With no provider, it still reports the top screen and any `AVPlayerLayer` (playing, paused, or buffering; live when the item duration is indefinite). Protected video frames stay black in the screenshot. The probe never reads the asset URL.
+
+```swift
+final class MyActivity: ActivityDebugProviding {
+    func activityDebugSnapshot() -> [String: ViewliftNetworkCapture.JSONValue] {
+        ["title": .string("Evening news"), "content_id": .string("item-1"), "is_live": .bool(true)]
+    }
+}
+ActivityDebugRegistry.register(myActivity)
+```
+
+The registry holds the provider weakly. `title`, `content_id`, `state`, `is_live`, `position_seconds`, and `rate` override the player probe. Other keys, including stream URLs and tokens, are dropped.
+
+Playback health for the OTT tab. If you do not attach a player, the SDK follows the `AVPlayer` already on screen. `content_id` from the activity provider is copied onto later events. Do not pass stream URLs.
+
+```swift
+PlaybackDebugService.shared.attach(player, contentId: contentId, playbackId: playbackId)
+PlaybackDebugService.shared.noteAdBreak(started: true, identifier: adId)
+PlaybackDebugService.shared.noteDRM(
+    PlaybackDRMNote(phase: .requestStarted, persistent: false)
+)
+```
+
+FairPlay stays in the host. Observe `AVContentKeySession` there and forward timing with `noteDRM` or `PlaybackDRMProviding`. Never pass SPC, CKC, or key bytes. `playbackDRMDrain` must return only new notes and must not call back into `PlaybackDebugService`.
+
+`playback.waterfall` records playlist, manifest, init, and segment requests (host, status, bytes, TTFB, duration, cache headers). Query strings and bodies are dropped.
+
+`ui.focus` returns the focused view id used by `ui.highlight`, plus the last focus rejection. On Apple TV, Menu, Play/Pause, and Select are posted as `ui` / `remote` events.
+
+`nav.open_url` opens `http`, `https`, or an app scheme on the paired device. `javascript`, `data`, and `file` are rejected. The result omits the query string.
+
+## UI automation
+
+With the `ui` module on, agents can read and drive the app by meaning through the MCP `ui` workflow (`screen_map`, `tap`, `type_text`, `tv_remote`, and the rest). No code is needed in the app. It works on simulators and on real iPhones, iPads, and Apple TVs.
+
+- Elements come from the accessibility tree. SwiftUI views publish their own elements. Stock UIKit views only fill in accessibility values when VoiceOver or a UI-test host is running, so the SDK also describes buttons, labels, text fields, switches, sliders, segmented controls, and cells from their UIKit state.
+- Give important controls an `accessibilityIdentifier`. Identifiers match exactly. Labels match without regard to case.
+- A tap runs the element's action: the control event (`primaryActionTriggered` or `touchUpInside`), a table or collection view selection, a switch toggle, or `accessibilityActivate()`. Gesture recognizers cannot be triggered from code. For views that only have one, tap on a simulator without `client_id`.
+- Swipes and scrolls move the nearest scroll view by most of a page, so lazy lists load the next rows.
+- `type_text` inserts text through the focused input's `UIKeyInput`, so delegates and SwiftUI bindings update. Secure field values are never listed.
+- On Apple TV, `ui.remote` moves focus to the nearest focusable item in the pressed direction, `select` activates it, `menu` dismisses or pops one screen, and `playpause` toggles the player attached to `PlaybackDebugService`.
+- `net.profile` shapes captured traffic inside the app: `wifi`, `4g`, `3g`, `edge`, `gprs`, `offline`, or `off`. It applies only while network capture is on. `latency_ms` and `loss_percent` override a preset.
+- Tree nodes carry `window_id`, `scene_id`, and a screen-space frame. `ui.screenshot` and `ui.find` accept `window_id` and `scene_id`. Preview size comes from the active scene.
+- Registration includes `device_model`, `os_version`, and `device_hint` (a hash of model, OS, and boot time). Apps from different vendors on one phone share that hint until the device reboots. Simulators leave it empty and share `SIMULATOR_UDID`.
+- tvOS sends the background lifecycle report (a short background task) and reports `UIPageControl` pages. Local push on tvOS is badge-only.
+
+## Previews
+
+Register SwiftUI views so agents can render them on the device and compare them with baselines (the MCP `previews` workflow). Register in Debug code only, after `start()`:
+
+```swift
+#if DEBUG
+ViewliftPreviews.register("Login", states: ["empty", "error"]) { state in
+    LoginView(viewModel: .preview(state))
+}
+ViewliftPreviews.register("Settings") { SettingsView() }
+#endif
+```
+
+`preview.render` draws one state in an off-screen window at the requested size, scale, and color scheme, so text, fonts, and UIKit-backed controls render as they do in the app. The PNG must fit in 480 KB; larger renders are retried at a lower scale. Build the view from fixed preview data. Never use a signed-in session or real account data.
+
 ## Build configurations
 
 The package compiles its capture and debug code only under `#if DEBUG || VIEWLIFT_CAPTURE_ENABLED`. In other builds, `CaptureService.start` does nothing.
@@ -176,7 +247,7 @@ Side effects of interception:
 - the app's own `URLSessionDelegate` challenge and redirect handling is bypassed;
 - responses are buffered, so streaming and progress callbacks do not behave as usual;
 - an `X-Viewlift-Capture-Internal: 1` header is added to requests;
-- bodies sent with `httpBodyStream` or upload tasks are recorded as empty.
+- upload tasks and `httpBodyStream` bodies larger than 2 MB are recorded as empty. Smaller stream bodies, including GraphQL JSON that URL loading moves off `httpBody`, are buffered and replayed.
 
 SDK mode is inspection-only. Use the proxy path for breakpoints, mapping, rewrites or throttling.
 
@@ -186,7 +257,7 @@ SDK mode is inspection-only. Use the proxy path for breakpoints, mapping, rewrit
 |---|---|
 | App never appears in the console | SDK receiver enabled in Setup? Both Info.plist keys present? Local network permission granted on the device (Settings, Privacy, Local Network)? |
 | Pinning failures in the Xcode console | Fingerprint must match the one shown in Setup. With discovery, leave it empty. |
-| Simulator cannot reach the receiver | Enable the receiver on `127.0.0.1` or the Mac's LAN IP. On loopback, make sure the MCP server is not also on port 8742. |
+| Simulator cannot reach the receiver | Enable the receiver on `127.0.0.1` or the Mac's LAN IP. The default port is 8743. |
 | Some requests missing | The session was created before `start`, uses a background configuration, or is not `URLSession`. |
 | Logs missing at launch | `LogService` sends logs directly and drops them until pairing finishes. |
 | Debug Suite says module unavailable | Add the module to `debugModules`. |

@@ -1,7 +1,10 @@
 /* Local-only dashboard. No external network calls. */
 (() => {
-  const FLOW_FILTER_IDS = ["f-method", "f-host", "f-status", "f-ctype", "f-text"];
+  const FLOW_FILTER_IDS = ["f-method", "f-host", "f-status", "f-ctype", "f-kind", "f-operation", "f-text"];
   const LOG_FILTER_IDS = ["lf-level", "lf-source", "lf-subsystem", "lf-text"];
+  // App console only: stdout and stderr from the SDK tee. os_log and syslog are not shown.
+  const CONSOLE_SOURCES = "stdout,stderr";
+  const CONSOLE_SOURCE_SET = new Set(["stdout", "stderr"]);
 
   /* control-state */
   function commitButtonPlan(draft, applied) {
@@ -10,21 +13,6 @@
     return { showApply: !active || dirty, showClear: active };
   }
 
-  function streamControlPlan(state) {
-    if (state === "starting") {
-      return { showStart: true, showStop: false, showRestart: false, startLabel: "Starting…", stopLabel: "Stop", busy: true };
-    }
-    if (state === "stopping") {
-      return { showStart: false, showStop: true, showRestart: false, startLabel: "Start", stopLabel: "Stopping…", busy: true };
-    }
-    if (state === "restarting") {
-      return { showStart: false, showStop: true, showRestart: false, startLabel: "Start", stopLabel: "Restarting…", busy: true };
-    }
-    if (state === "running") {
-      return { showStart: false, showStop: true, showRestart: true, startLabel: "Start", stopLabel: "Stop", busy: false };
-    }
-    return { showStart: true, showStop: false, showRestart: false, startLabel: "Start", stopLabel: "Stop", busy: false };
-  }
   /* /control-state */
 
   function fieldValues(ids) {
@@ -41,22 +29,6 @@
     const plan = commitButtonPlan(draft, applied);
     applyBtn.hidden = !plan.showApply;
     clearBtn.hidden = !plan.showClear;
-  }
-
-  function applyStreamPlan(state) {
-    const plan = streamControlPlan(state);
-    const start = document.getElementById("btn-log-start");
-    const stop = document.getElementById("btn-log-stop");
-    const restart = document.getElementById("btn-log-restart");
-    if (!start || !stop || !restart) return;
-    start.hidden = !plan.showStart;
-    stop.hidden = !plan.showStop;
-    restart.hidden = !plan.showRestart;
-    start.disabled = plan.busy && plan.showStart;
-    stop.disabled = plan.busy && plan.showStop;
-    restart.disabled = plan.busy;
-    start.textContent = plan.startLabel;
-    stop.textContent = plan.stopLabel;
   }
 
   const ViewliftNetwork = {
@@ -107,11 +79,21 @@
       });
       FLOW_FILTER_IDS.forEach((id) => {
         const el = document.getElementById(id);
+        if (!el || el.type === "hidden") return;
         el.addEventListener("keydown", (e) => {
           if (e.key === "Enter") apply();
         });
         el.addEventListener("input", () => this.syncFlowFilterButtons());
         if (el.tagName === "SELECT") el.addEventListener("change", apply);
+      });
+      document.querySelectorAll("#kind-switch [data-kind]").forEach((btn) => {
+        btn.addEventListener("click", () => {
+          const input = document.getElementById("f-kind");
+          if (!input) return;
+          input.value = btn.dataset.kind || "";
+          this.syncKindButtons();
+          apply();
+        });
       });
       document.getElementById("view-list")?.addEventListener("click", () => this.setFlowView("list"));
       document.getElementById("view-urls")?.addEventListener("click", () => this.setFlowView("urls"));
@@ -130,6 +112,7 @@
     },
 
     syncFlowFilterButtons() {
+      this.syncKindButtons();
       applyCommitPlan(
         document.getElementById("btn-apply"),
         document.getElementById("btn-clear"),
@@ -138,17 +121,30 @@
       );
     },
 
+    syncKindButtons() {
+      const value = document.getElementById("f-kind")?.value || "";
+      document.querySelectorAll("#kind-switch [data-kind]").forEach((btn) => {
+        const on = (btn.dataset.kind || "") === value;
+        btn.classList.toggle("active", on);
+        btn.setAttribute("aria-pressed", on ? "true" : "false");
+      });
+    },
+
     filterQuery() {
       const params = new URLSearchParams();
       const method = document.getElementById("f-method").value.trim();
       const host = document.getElementById("f-host").value.trim();
       const status = document.getElementById("f-status").value.trim();
       const ctype = document.getElementById("f-ctype").value.trim();
+      const kind = document.getElementById("f-kind").value.trim();
+      const operation = document.getElementById("f-operation").value.trim();
       const text = document.getElementById("f-text").value.trim();
       if (method) params.set("method", method);
       if (host) params.set("host", host);
       if (status) params.set("status", status);
       if (ctype) params.set("content-type", ctype);
+      if (kind) params.set("kind", kind);
+      if (operation) params.set("operation", operation);
       if (text) params.set("text", text);
       if (window.VLScope) window.VLScope.applyTo(params);
       return params.toString();
@@ -253,20 +249,12 @@
       } catch {
         /* private mode */
       }
-      if (next !== "list" && this.followLatest) this.setFollowLatest(false);
       this.renderRows();
-    },
-
-    basePath(item) {
-      let path = String((item && item.path) || "/");
-      const cut = path.indexOf("?");
-      if (cut >= 0) path = path.slice(0, cut);
-      if (!path.startsWith("/")) path = `/${path}`;
-      return path || "/";
+      if (this.followLatest) this.followLatestFlow();
     },
 
     baseUrlKey(item) {
-      return `${String((item && item.host) || "").toLowerCase()}${this.basePath(item)}`;
+      return String((item && item.host) || "").toLowerCase();
     },
 
     collectUrlGroups() {
@@ -276,13 +264,11 @@
         const key = this.baseUrlKey(item);
         let group = map.get(key);
         if (!group) {
-          const path = this.basePath(item);
           const host = String(item.host || "");
           group = {
             key,
             host,
-            path,
-            label: `${host}${path}`,
+            label: host || "(no host)",
             count: 0,
             methodSet: new Set(),
             status: null,
@@ -342,7 +328,7 @@
           heading.title = heading.textContent;
         } else if (showGroups) {
           heading.textContent = "Base URLs";
-          heading.title = "Unique host and path. Query string stays inside the group.";
+          heading.title = "One row per host. Open a row for every request to that host.";
         } else {
           heading.textContent = "Flows";
           heading.title = "";
@@ -381,12 +367,16 @@
         const statusClass = group.status == null ? "" : `status-${String(group.status)[0]}`;
         const statusText = group.status == null ? (group.paused ? "PAUSED" : "—") : String(group.status);
         tr.innerHTML = `
-          <td title="${escapeAttr(group.label)}"><span class="url-host">${escapeHtml(group.host)}</span><span class="url-path">${escapeHtml(group.path)}</span></td>
+          <td title="${escapeAttr(group.label)}"><span class="url-host">${escapeHtml(group.label)}</span></td>
           <td class="col-count">${group.count}</td>
           <td class="col-status ${statusClass}">${escapeHtml(statusText)}</td>
           <td class="col-type">${escapeHtml(group.methods)}</td>
         `;
+        if (this.followLatest && this.flows[0] && group.key === this.baseUrlKey(this.flows[0])) {
+          tr.classList.add("active");
+        }
         tr.addEventListener("click", () => {
+          this.setFollowLatest(false);
           this.openGroupKey = group.key;
           this.openGroupLabel = group.label;
           this.renderRows();
@@ -441,9 +431,9 @@
         tr.innerHTML = `
           <td class="col-method method ${escapeAttr(flow.method)}">${escapeHtml(flow.method)}</td>
           <td>${appBadge(flow.client_id)}${escapeHtml(flow.host)}</td>
-          <td title="${escapeAttr(flow.path)}${flow.query ? "?" + escapeAttr(flow.query) : ""}">${escapeHtml(flow.path)}${flow.query ? '<span class="muted">?…</span>' : ""}</td>
+          <td title="${escapeAttr(flowPathTitle(flow))}">${flowPathCell(flow)}</td>
           <td class="col-status ${statusClass}">${flow.status == null ? "—" : escapeHtml(String(flow.status))}</td>
-          <td class="col-type">${escapeHtml(shortType(flow.content_type))}</td>
+          <td class="col-type">${escapeHtml(flow.graphql ? "graphql" : shortType(flow.content_type))}</td>
           <td class="col-time">${fmtMs(flow.duration_ms)}</td>
           <td class="col-size">${fmtBytes(flow.size_bytes)}</td>
           <td class="col-stage muted">${flow.error === "breakpoint timed out" ? "timeout" : "—"}</td>
@@ -626,6 +616,7 @@
     },
 
     setFollowLatest(on) {
+      const was = this.followLatest;
       this.followLatest = on;
       const button = document.getElementById("btn-follow-latest");
       if (button) {
@@ -633,26 +624,44 @@
         button.setAttribute("aria-pressed", on ? "true" : "false");
         button.textContent = on ? "Following" : "Follow latest";
       }
-      if (!on) return;
-      if (this.flowView !== "list") this.setFlowView("list");
+      if (!on) {
+        this.followSig = "";
+        if (was) this.renderRows();
+        return;
+      }
       this.followLatestFlow();
+    },
+
+    followPool() {
+      if (this.flowView === "urls" && this.openGroupKey) {
+        return this.flows.filter((flow) => this.baseUrlKey(flow) === this.openGroupKey);
+      }
+      return this.flows;
     },
 
     followLatestFlow() {
       if (!this.followLatest) return;
-      const latest = this.flows[0];
+      const overview = this.flowView === "urls" && !this.openGroupKey;
+      const latest = this.followPool()[0];
       if (!latest) return;
       const sig = `${latest.id}|${latest.status}|${latest.size_bytes}|${latest.duration_ms}|${latest.error || ""}`;
       if (sig === this.followSig && latest.id === this.selectedId) {
-        this.scrollFlowRow(latest.id);
+        if (overview) this.scrollGroupRow(this.baseUrlKey(latest));
+        else this.scrollFlowRow(latest.id);
         return;
       }
       this.followSig = sig;
       this.selectFlow(latest.id, true);
+      if (overview) this.scrollGroupRow(this.baseUrlKey(latest));
     },
 
     scrollFlowRow(id) {
       const row = document.querySelector(`#flow-rows tr[data-id="${CSS.escape(id)}"]`);
+      if (row) row.scrollIntoView({ block: "nearest", inline: "nearest" });
+    },
+
+    scrollGroupRow(key) {
+      const row = document.querySelector(`#group-rows tr[data-group-key="${CSS.escape(key)}"]`);
       if (row) row.scrollIntoView({ block: "nearest", inline: "nearest" });
     },
 
@@ -668,6 +677,7 @@
         ["body", "Body"],
         ["timing", "Timing"],
         ["ws", "WebSocket"],
+        ["edit", "Edit"],
       ];
       const active = tabs.some(([id]) => id === this.detailTab) ? this.detailTab : "overview";
       const on = (id) => (id === active ? " active" : "");
@@ -686,7 +696,9 @@
         <div class="tab-panel${on("body")}" data-panel="body">${renderBodies(detail)}</div>
         <div class="tab-panel${on("timing")}" data-panel="timing">${renderTiming(detail.timing, detail.duration_ms)}</div>
         <div class="tab-panel${on("ws")}" data-panel="ws">${renderWs(detail.websocket_messages || [])}</div>
+        <div class="tab-panel${on("edit")}" data-panel="edit">${renderEdit(detail)}</div>
       `;
+      wireEdit(root, detail);
       root.querySelectorAll(".tab").forEach((btn) => {
         btn.addEventListener("click", () => {
           this.rememberDetailTab(btn.dataset.tab);
@@ -781,15 +793,21 @@
       const host = document.getElementById("f-host")?.value.trim().toLowerCase();
       const status = document.getElementById("f-status")?.value.trim();
       const ctype = document.getElementById("f-ctype")?.value.trim().toLowerCase();
+      const kind = document.getElementById("f-kind")?.value.trim().toLowerCase();
+      const operation = document.getElementById("f-operation")?.value.trim().toLowerCase();
       const text = document.getElementById("f-text")?.value.trim().toLowerCase();
       if (window.VLScope && !window.VLScope.matches(flow.client_id)) return false;
       if (method && String(flow.method || "").toUpperCase() !== method) return false;
       if (host && !String(flow.host || "").toLowerCase().includes(host)) return false;
       if (status && String(flow.status) !== status) return false;
       if (ctype && !String(flow.content_type || "").toLowerCase().includes(ctype)) return false;
+      if (kind === "graphql" && !flow.graphql) return false;
+      if (kind === "http" && flow.graphql) return false;
+      if (operation && !String(flow.operation || "").toLowerCase().includes(operation)) return false;
       if (text) {
         const hay = [
-          flow.method, flow.host, flow.path, flow.query, flow.content_type, flow.error, flow.protocol,
+          flow.method, flow.host, flow.path, flow.query, flow.operation,
+          flow.content_type, flow.error, flow.protocol,
         ].join(" ").toLowerCase();
         if (!hay.includes(text)) return false;
       }
@@ -797,9 +815,23 @@
     },
   };
 
+  function flowPathTitle(flow) {
+    const path = `${flow.path || ""}${flow.query ? `?${flow.query}` : ""}`;
+    return flow.graphql && flow.operation ? `${flow.operation} ${path}` : path;
+  }
+
+  function flowPathCell(flow) {
+    const path = escapeHtml(flow.path || "");
+    const query = flow.query ? '<span class="muted">?…</span>' : "";
+    if (flow.graphql && flow.operation) {
+      return `<span class="op-name">${escapeHtml(flow.operation)}</span> <span class="muted">${path}</span>`;
+    }
+    return `${path}${query}`;
+  }
+
   function renderOverview(d) {
     const o = d.overview || {};
-    return kvTable([
+    const rows = [
       ["URL", o.url],
       ["Method", o.method],
       ["Status", o.status],
@@ -809,18 +841,258 @@
       ["Duration", fmtMs(o.duration_ms)],
       ["Size", fmtBytes(o.size_bytes)],
       ["Content-Type", d.content_type],
+    ];
+    if (d.graphql) rows.push(["Operation", d.operation || "anonymous"]);
+    rows.push(
       ["Request ID", o.request_id],
       ["TLS failed", o.tls_failed ? "yes" : "no"],
       ["Error", o.error],
-    ]);
+    );
+    return kvTable(rows);
+  }
+
+  const EDIT_METHODS = ["GET", "POST", "PUT", "PATCH", "DELETE", "HEAD"];
+  const EDIT_SKIP_HEADERS = new Set([
+    "content-length", "host", "connection", "transfer-encoding", "keep-alive",
+  ]);
+
+  function renderEdit(detail) {
+    const model = editModel(detail);
+    const method = String(detail.method || "GET").toUpperCase();
+    const methods = EDIT_METHODS.includes(method) ? EDIT_METHODS : EDIT_METHODS.concat(method);
+    const note = detail.revealed
+      ? ""
+      : `<p class="muted">Cookies and secret fields stay redacted until reveal is unlocked and this flow is reopened.</p>`;
+    const binary = model.binary
+      ? `<p class="muted">Body is not text. Type a replacement or leave it empty.</p>`
+      : "";
+    const fields = model.mode === "graphql"
+      ? `<label>Operation <input id="edit-operation" type="text" autocomplete="off" spellcheck="false"></label>
+         <label>Query <textarea id="edit-query" rows="10" spellcheck="false"></textarea></label>
+         <label>Variables <textarea id="edit-variables" rows="6" spellcheck="false"></textarea></label>`
+      : `<label>Body <textarea id="edit-body" rows="10" spellcheck="false"></textarea></label>`;
+    return `
+      <form class="edit-request" id="edit-form" data-mode="${model.mode}" autocomplete="off">
+        ${note}
+        ${binary}
+        <label>Method
+          <select id="edit-method">
+            ${methods.map((item) => `<option value="${item}">${item}</option>`).join("")}
+          </select>
+        </label>
+        <label>URL <input id="edit-url" type="text" autocomplete="off" spellcheck="false"></label>
+        <label>Headers <textarea id="edit-headers" rows="6" spellcheck="false"></textarea></label>
+        ${fields}
+        <div class="edit-actions">
+          <button type="button" id="edit-copy" class="btn ghost">Copy cURL</button>
+          <button type="button" id="edit-send" class="btn">Send</button>
+        </div>
+      </form>
+      <div id="edit-result"></div>
+    `;
+  }
+
+  function editModel(detail) {
+    const view = (detail.request && detail.request.body) || {};
+    const raw = typeof view.raw === "string" ? view.raw : "";
+    if (detail.graphql && raw) {
+      try {
+        const parsed = JSON.parse(raw);
+        if (Array.isArray(parsed)) {
+          return { mode: "body", body: view.pretty || raw, extras: null, binary: false };
+        }
+        if (parsed && typeof parsed === "object") {
+          const operation = typeof parsed.operationName === "string" ? parsed.operationName : "";
+          const query = typeof parsed.query === "string" ? parsed.query : "";
+          const hasVariables = Object.prototype.hasOwnProperty.call(parsed, "variables");
+          const variables = hasVariables ? JSON.stringify(parsed.variables, null, 2) : "{}";
+          return { mode: "graphql", operation, query, variables, extras: parsed, binary: false };
+        }
+      } catch {
+        const named = detail.operation && detail.operation !== "anonymous" ? detail.operation : "";
+        return { mode: "graphql", operation: named, query: raw, variables: "{}", extras: null, binary: false };
+      }
+    }
+    if (detail.graphql) {
+      return { mode: "graphql", operation: "", query: "", variables: "{}", extras: null, binary: view.kind === "binary" };
+    }
+    return {
+      mode: "body",
+      body: view.kind === "binary" ? "" : (view.pretty || raw),
+      extras: null,
+      binary: view.kind === "binary",
+    };
+  }
+
+  function wireEdit(root, detail) {
+    const form = root.querySelector("#edit-form");
+    if (!form) return;
+    const model = editModel(detail);
+    const method = form.querySelector("#edit-method");
+    const current = String(detail.method || "GET").toUpperCase();
+    if (method) method.value = current;
+    const url = form.querySelector("#edit-url");
+    if (url) url.value = (detail.overview && detail.overview.url) || "";
+    const headers = form.querySelector("#edit-headers");
+    if (headers) headers.value = headerLines(detail.request && detail.request.headers);
+    if (model.mode === "graphql") {
+      const operation = form.querySelector("#edit-operation");
+      const query = form.querySelector("#edit-query");
+      const variables = form.querySelector("#edit-variables");
+      if (operation) operation.value = model.operation;
+      if (query) query.value = model.query;
+      if (variables) variables.value = model.variables;
+    } else {
+      const body = form.querySelector("#edit-body");
+      if (body) body.value = model.body;
+    }
+    form.querySelector("#edit-copy")?.addEventListener("click", async () => {
+      let command;
+      try {
+        command = editedCurl(form, model.extras);
+      } catch (err) {
+        toast(err.message || "Could not build cURL");
+        return;
+      }
+      try {
+        await navigator.clipboard.writeText(command);
+        toast("cURL copied");
+      } catch {
+        toast(command.slice(0, 120));
+      }
+    });
+    form.querySelector("#edit-send")?.addEventListener("click", () => sendEdited(form, model.extras));
+  }
+
+  function headerLines(headers) {
+    return Object.entries(headers || {})
+      .filter(([key]) => !EDIT_SKIP_HEADERS.has(String(key).toLowerCase()))
+      .map(([key, value]) => `${key}: ${value}`)
+      .join("\n");
+  }
+
+  function parseHeaderLines(text) {
+    const headers = [];
+    for (const line of String(text || "").split("\n")) {
+      const trimmed = line.trim();
+      if (!trimmed) continue;
+      const splitAt = trimmed.indexOf(":");
+      if (splitAt <= 0) continue;
+      const key = trimmed.slice(0, splitAt).trim();
+      const value = trimmed.slice(splitAt + 1).trim();
+      if (!key || EDIT_SKIP_HEADERS.has(key.toLowerCase())) continue;
+      headers.push([key, value]);
+    }
+    return headers;
+  }
+
+  function editedRequest(form, extras) {
+    const method = form.querySelector("#edit-method").value;
+    const url = form.querySelector("#edit-url").value.trim();
+    if (!url) throw new Error("URL is required.");
+    const headers = parseHeaderLines(form.querySelector("#edit-headers").value);
+    let body = "";
+    if (form.dataset.mode === "graphql") {
+      const operation = form.querySelector("#edit-operation").value.trim();
+      const query = form.querySelector("#edit-query").value;
+      const variablesText = form.querySelector("#edit-variables").value.trim() || "{}";
+      let variables;
+      try {
+        variables = JSON.parse(variablesText);
+      } catch {
+        throw new Error("Variables must be JSON.");
+      }
+      const variablesOk = variables === null || (typeof variables === "object" && !Array.isArray(variables));
+      if (!variablesOk) throw new Error("Variables must be a JSON object.");
+      if (extras && typeof extras === "object" && !Array.isArray(extras)) {
+        const next = { ...extras, query, variables };
+        if (operation) next.operationName = operation;
+        else delete next.operationName;
+        body = JSON.stringify(next);
+      } else if (operation || variablesText !== "{}") {
+        const next = { query, variables };
+        if (operation) next.operationName = operation;
+        body = JSON.stringify(next);
+        if (!headers.some(([key]) => key.toLowerCase() === "content-type")) {
+          headers.push(["Content-Type", "application/json"]);
+        }
+      } else {
+        body = query;
+      }
+    } else {
+      body = form.querySelector("#edit-body").value;
+    }
+    return { method, url, headers, body };
+  }
+
+  function shellQuote(value) {
+    return "'" + String(value).replace(/'/g, "'\\''") + "'";
+  }
+
+  function editedCurl(form, extras) {
+    const request = editedRequest(form, extras);
+    const parts = ["curl", "-X", shellQuote(request.method), shellQuote(request.url)];
+    for (const [key, value] of request.headers) {
+      parts.push("-H", shellQuote(`${key}: ${value}`));
+    }
+    if (request.body && request.method !== "GET" && request.method !== "HEAD") {
+      parts.push("--data-raw", shellQuote(request.body));
+    }
+    return parts.map((part, index) => (index === parts.length - 1 ? part : `${part} \\`)).join("\n");
+  }
+
+  async function sendEdited(form, extras) {
+    const result = document.getElementById("edit-result");
+    let request;
+    try {
+      request = editedRequest(form, extras);
+    } catch (err) {
+      if (result) {
+        result.innerHTML = `<p class="warn-text">${escapeHtml(err.message || "Invalid request")}</p>`;
+      }
+      return;
+    }
+    if (result) result.innerHTML = `<p class="muted">Sending…</p>`;
+    const send = form.querySelector("#edit-send");
+    if (send) send.disabled = true;
+    try {
+      const res = await fetch("/api/flows/send", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          method: request.method,
+          url: request.url,
+          headers: Object.fromEntries(request.headers),
+          body: request.body,
+        }),
+      });
+      const data = await res.json();
+      if (!result) return;
+      if (!res.ok) {
+        result.innerHTML = `<p class="warn-text">${escapeHtml(data.detail || "Send failed")}</p>`;
+        return;
+      }
+      const headerText = Object.entries(data.headers || {})
+        .map(([key, value]) => `${key}: ${value}`)
+        .join("\n");
+      const pretty = prettyJson(data.body || "");
+      const bodyHtml = pretty
+        ? copyBlockHtml(pretty, "Copy JSON")
+        : (data.body ? copyBlockHtml(data.body, "Copy") : "");
+      const headerHtml = headerText ? `<pre class="pre">${escapeHtml(headerText)}</pre>` : "";
+      result.innerHTML = `<h3>Response ${escapeHtml(String(data.status))}</h3>${headerHtml}${bodyHtml}`;
+    } catch {
+      if (result) result.innerHTML = `<p class="warn-text">Send failed</p>`;
+    } finally {
+      if (send) send.disabled = false;
+    }
   }
 
   function renderSide(side) {
     if (!side) return `<p class="muted">—</p>`;
     return `
       ${kvTable(Object.entries(side.headers || {}).map(([k, v]) => [k, v]))}
-      <h4 class="muted" style="margin:12px 0 6px">Body</h4>
-      ${renderBody(side.body)}
+      ${labeledBody("Body", side.body)}
     `;
   }
 
@@ -844,11 +1116,46 @@
 
   function renderBodies(d) {
     return `
-      <h4 class="muted">Request</h4>
-      ${renderBody(d.request && d.request.body)}
-      <h4 class="muted" style="margin-top:12px">Response</h4>
-      ${renderBody(d.response && d.response.body)}
+      ${labeledBody("Request", d.request && d.request.body)}
+      ${labeledBody("Response", d.response && d.response.body)}
     `;
+  }
+
+  function prettyJson(value) {
+    if (typeof value !== "string") return "";
+    const text = value.trim();
+    if (!text || (text[0] !== "{" && text[0] !== "[")) return "";
+    try {
+      return JSON.stringify(JSON.parse(text), null, 2);
+    } catch {
+      return "";
+    }
+  }
+
+  function copyBlockHtml(text, label, title) {
+    const heading = title ? `<h4 class="muted">${escapeHtml(title)}</h4>` : "";
+    return `<div class="copy-block">
+      <div class="copy-block-bar">${heading}<button type="button" class="btn ghost" data-copy-text data-copy-label="${escapeAttr(label)}">${escapeHtml(label)}</button></div>
+      <pre class="pre">${escapeHtml(text)}</pre>
+    </div>`;
+  }
+
+  function logMessageBlock(message) {
+    const text = message == null ? "" : String(message);
+    if (!text) return `<p class="muted">empty</p>`;
+    const pretty = prettyJson(text);
+    return copyBlockHtml(pretty || text, pretty ? "Copy JSON" : "Copy");
+  }
+
+  function labeledBody(title, body) {
+    const heading = `<h4 class="muted">${escapeHtml(title)}</h4>`;
+    if (!body || body.kind === "empty") {
+      return `<div class="copy-block"><div class="copy-block-bar">${heading}</div><p class="muted">empty</p></div>`;
+    }
+    if (body.kind === "json" && body.pretty) return copyBlockHtml(body.pretty, "Copy JSON", title);
+    if (body.raw != null && body.raw !== "") return copyBlockHtml(String(body.raw), "Copy", title);
+    if (body.hex_preview) return copyBlockHtml(body.hex_preview, "Copy", title);
+    return `<div class="copy-block"><div class="copy-block-bar">${heading}</div>${renderBody(body)}</div>`;
   }
 
   function renderBody(body) {
@@ -890,12 +1197,14 @@
 
   function renderWs(messages) {
     if (!messages.length) return `<p class="muted">No WebSocket messages</p>`;
-    return messages.map((m, i) => `
-      <div style="margin-bottom:8px">
-        <div class="muted">#${i + 1} ${m.from_client ? "client→server" : "server→client"} · ${m.is_text ? "text" : "binary"} · ${fmtBytes(m.size_bytes)}</div>
-        <pre class="pre">${escapeHtml(m.content != null ? m.content : (m.hex_preview || ""))}</pre>
-      </div>
-    `).join("");
+    return messages.map((m, i) => {
+      const raw = m.content != null ? String(m.content) : (m.hex_preview || "");
+      const pretty = m.is_text ? prettyJson(raw) : "";
+      const text = pretty || raw;
+      const meta = `#${i + 1} ${m.from_client ? "client→server" : "server→client"} · ${m.is_text ? "text" : "binary"} · ${fmtBytes(m.size_bytes)}`;
+      if (!text) return `<p class="muted">${escapeHtml(meta)}</p>`;
+      return copyBlockHtml(text, pretty ? "Copy JSON" : "Copy", meta);
+    }).join("");
   }
 
   function renderPairs(pairs) {
@@ -1361,29 +1670,16 @@
     document.getElementById("btn-log-pause").addEventListener("click", () => {
       this.setLogPaused(!this.logPaused);
     });
-    this.logStreamState = "idle";
     this.appliedLogFilters = fieldValues(LOG_FILTER_IDS);
-    document.getElementById("btn-log-start").addEventListener("click", () => this.startLogStream());
-    document.getElementById("btn-log-stop").addEventListener("click", () => this.stopLogStream());
-    document.getElementById("btn-log-restart").addEventListener("click", () => this.restartLogStream());
-    document.getElementById("btn-log-refresh-sources").addEventListener("click", () => this.reloadLogSources());
     document.getElementById("btn-log-apply").addEventListener("click", () => this.applyLogFilter());
     document.getElementById("btn-log-delete").addEventListener("click", () => this.deleteLogs());
     document.getElementById("btn-log-clear").addEventListener("click", () => {
-      ["log-process", ...LOG_FILTER_IDS].forEach((id) => {
+      LOG_FILTER_IDS.forEach((id) => {
         const el = document.getElementById(id);
         if (el) el.value = "";
       });
       this.applyLogFilter();
     });
-    document.getElementById("log-source").addEventListener("change", () => this.reloadLogSources());
-    const processInput = document.getElementById("log-process");
-    if (processInput) {
-      processInput.addEventListener("keydown", (e) => {
-        if (e.key === "Enter") this.applyLogFilter();
-      });
-      processInput.addEventListener("input", () => this.scheduleLogFilter());
-    }
     LOG_FILTER_IDS.forEach((id) => {
       const el = document.getElementById(id);
       if (!el) return;
@@ -1399,31 +1695,18 @@
     });
     document.addEventListener("vl:scope-change", () => {
       this.reloadLogs();
-      this.appTargetApplied = false;
       this.applyPairedAppHints();
     });
     document.addEventListener("vl:apps-change", () => {
       this.renderLogRows();
       this.applyPairedAppHints();
     });
-    this.syncLogStreamControls("idle");
     this.syncLogFilterButtons();
-    this.reloadLogSources();
     this.reloadLogs();
     this.connectLogWs();
+    const focusLog = new URLSearchParams(location.search).get("id");
+    if (focusLog) this.selectLog(focusLog);
     this.applyPairedAppHints();
-  };
-
-  ViewliftNetwork.syncLogStreamControls = function syncLogStreamControls(state) {
-    this.logStreamState = state;
-    applyStreamPlan(state);
-  };
-
-  ViewliftNetwork.logStreamBusy = function logStreamBusy() {
-    return this.logStreamState === "starting"
-      || this.logStreamState === "stopping"
-      || this.logStreamState === "restarting"
-      || this.logStreamState === "settling";
   };
 
   ViewliftNetwork.syncLogFilterButtons = function syncLogFilterButtons() {
@@ -1435,31 +1718,8 @@
     );
   };
 
-  ViewliftNetwork.logStreamPayload = function logStreamPayload() {
-    return {
-      source: document.getElementById("log-source").value,
-      udid: document.getElementById("log-udid").value.trim() || null,
-      process: document.getElementById("log-process").value.trim() || null,
-      client_id: (window.VLScope && window.VLScope.clientId()) || null,
-    };
-  };
-
-  ViewliftNetwork.finishLogStreamOp = async function finishLogStreamOp(ok, detail) {
-    this.logStreamState = "settling";
-    try {
-      await this.reloadLogSources(true);
-    } catch (_) {
-      this.syncLogStreamControls(ok ? "running" : "idle");
-    }
-    if (!ok) {
-      const status = document.getElementById("log-stream-status");
-      if (status) status.textContent = detail || "failed";
-    }
-  };
-
-  /* Retarget the Mac-side stream once per scope choice so manual changes stick. */
+  /* Logs come from the SDK over ingest. Nothing is started from this page. */
   ViewliftNetwork.applyPairedAppHints = async function applyPairedAppHints() {
-    const processInput = document.getElementById("log-process");
     const scope = window.VLScope;
     let client = scope ? scope.selectedApp() : null;
     if (!client) {
@@ -1468,30 +1728,10 @@
         const res = await fetch(`/api/debug/app${id ? `?client_id=${encodeURIComponent(id)}` : ""}`);
         if (res.ok) client = (await res.json()).client;
       } catch (_) {
-        /* several apps online or none paired: keep generic hints */
+        /* several apps online or none paired: no subsystem hint */
       }
     }
-    if (processInput) processInput.placeholder = (client && client.executable) || "e.g. MyApp";
     if (client && client.bundle_id) this.noteLogSubsystem(client.bundle_id);
-    if (!client || this.appTargetApplied) return;
-    this.appTargetApplied = true;
-    this.selectAppStreamTarget(client);
-  };
-
-  ViewliftNetwork.selectAppStreamTarget = function selectAppStreamTarget(client) {
-    const sourceSel = document.getElementById("log-source");
-    const udidSel = document.getElementById("log-udid");
-    if (!sourceSel || !udidSel) return;
-    const wanted = client.is_simulator ? "simulator" : "device";
-    if (sourceSel.value !== wanted) {
-      sourceSel.value = wanted;
-      this.reloadLogSources().then(() => this.selectAppStreamTarget(client));
-      return;
-    }
-    if (client.is_simulator && client.device_key) {
-      const match = Array.from(udidSel.options).some((o) => o.value === client.device_key);
-      if (match) udidSel.value = client.device_key;
-    }
   };
 
   ViewliftNetwork.logFilterQuery = function logFilterQuery() {
@@ -1500,93 +1740,13 @@
     const source = document.getElementById("lf-source").value.trim();
     const subsystem = document.getElementById("lf-subsystem").value.trim();
     const text = document.getElementById("lf-text").value.trim();
-    const process = document.getElementById("log-process").value.trim();
+    // Default view is the app console only: stdout and stderr, never explicit sdk log calls.
+    params.set("source", source || CONSOLE_SOURCES);
     if (level) params.set("level", level);
-    if (source) params.set("source", source);
     if (subsystem) params.set("subsystem", subsystem);
     if (text) params.set("text", text);
-    else if (process && !subsystem) params.set("text", process);
     if (window.VLScope) window.VLScope.applyTo(params);
     return params.toString();
-  };
-
-  ViewliftNetwork.reloadLogSources = async function reloadLogSources(force) {
-    const res = await fetch("/api/logs/sources");
-    const data = await res.json();
-    const note = document.getElementById("log-private-note");
-    if (note && data.testflight_note) note.textContent = data.testflight_note;
-    const kind = document.getElementById("log-source").value;
-    const sel = document.getElementById("log-udid");
-    const rows =
-      kind === "device" ? data.devices || [] : data.simulators || [];
-    const options = rows
-      .filter((r) => r.udid)
-      .map((r) => {
-        const label = `${r.name || r.udid}${r.connection ? " · " + r.connection : ""}${
-          r.platform ? " · " + r.platform : ""
-        }`;
-        return `<option value="${escapeAttr(r.udid)}">${escapeHtml(label)}</option>`;
-      });
-    if (!options.length) {
-      options.push(`<option value="">${escapeHtml(
-        kind === "device" ? "No paired device" : "No booted simulator"
-      )}</option>`);
-    }
-    sel.innerHTML = options.join("");
-    const active = data.active || {};
-    const status = document.getElementById("log-stream-status");
-    status.textContent = active.running
-      ? `streaming ${active.source} ${active.udid || ""}`.trim()
-      : "idle";
-    if (force || !this.logStreamBusy()) this.syncLogStreamControls(active.running ? "running" : "idle");
-  };
-
-  ViewliftNetwork.postLogStart = async function postLogStart() {
-    this.pushLogFilter();
-    const res = await fetch("/api/logs/start", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(this.logStreamPayload()),
-    });
-    const data = await res.json().catch(() => ({}));
-    return { ok: res.ok, detail: data.detail || (res.ok ? "started" : "failed") };
-  };
-
-  ViewliftNetwork.startLogStream = async function startLogStream() {
-    if (this.logStreamBusy() || this.logStreamState === "running") return;
-    this.syncLogStreamControls("starting");
-    let ok = false;
-    let detail = "failed";
-    try {
-      const result = await this.postLogStart();
-      ok = result.ok;
-      detail = result.detail;
-    } catch (_) {
-      ok = false;
-      detail = "failed";
-    }
-    await this.finishLogStreamOp(ok, detail);
-  };
-
-  ViewliftNetwork.restartLogStream = async function restartLogStream() {
-    if (this.logStreamState !== "running") return;
-    this.syncLogStreamControls("restarting");
-    let ok = false;
-    let detail = "failed";
-    try {
-      const stopRes = await fetch("/api/logs/stop", { method: "POST" });
-      if (!stopRes.ok) {
-        detail = "stop failed";
-      } else {
-        const result = await this.postLogStart();
-        ok = result.ok;
-        detail = result.detail || (ok ? "restarted" : "failed");
-      }
-    } catch (_) {
-      ok = false;
-      detail = "failed";
-    }
-    await this.finishLogStreamOp(ok, detail);
   };
 
   ViewliftNetwork.deleteLogs = async function deleteLogs() {
@@ -1609,23 +1769,6 @@
     toast(data.deleted ? `Deleted ${data.deleted} logs` : "No logs to delete");
   };
 
-  ViewliftNetwork.stopLogStream = async function stopLogStream() {
-    if (this.logStreamState !== "running") return;
-    this.syncLogStreamControls("stopping");
-    let ok = false;
-    let detail = "failed";
-    try {
-      const res = await fetch("/api/logs/stop", { method: "POST" });
-      const data = await res.json().catch(() => ({}));
-      ok = res.ok;
-      detail = data.detail || (res.ok ? "stopped" : "failed");
-    } catch (_) {
-      ok = false;
-      detail = "failed";
-    }
-    await this.finishLogStreamOp(ok, detail);
-  };
-
   ViewliftNetwork.scheduleLogFilter = function scheduleLogFilter() {
     this.renderLogRows();
     clearTimeout(this.logFilterTimer);
@@ -1635,18 +1778,7 @@
   ViewliftNetwork.applyLogFilter = function applyLogFilter() {
     this.appliedLogFilters = fieldValues(LOG_FILTER_IDS);
     this.syncLogFilterButtons();
-    this.pushLogFilter();
     this.reloadLogs();
-  };
-
-  ViewliftNetwork.pushLogFilter = function pushLogFilter() {
-    const process = document.getElementById("log-process").value.trim();
-    const subsystem = document.getElementById("lf-subsystem").value.trim();
-    fetch("/api/logs/filter", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ process, subsystem }),
-    }).catch(() => {});
   };
 
   ViewliftNetwork.reloadLogs = async function reloadLogs() {
@@ -1660,6 +1792,7 @@
     this.absorbLogSubsystems(this.logs);
     this.logPending = [];
     this.renderLogRows();
+    this.followLiveLog();
   };
 
   ViewliftNetwork.noteLogSubsystem = function noteLogSubsystem(subsystem) {
@@ -1701,12 +1834,9 @@
     const text = document.getElementById("lf-text").value.trim().toLowerCase();
     if (window.VLScope && !window.VLScope.matches(log.client_id)) return false;
     if (level && (log.level || "").toLowerCase() !== level) return false;
+    if (!CONSOLE_SOURCE_SET.has(log.source || "")) return false;
     if (source && (log.source || "") !== source) return false;
     const sub = (log.subsystem || "").toLowerCase();
-    const process = document.getElementById("log-process").value.trim().toLowerCase();
-    if (process && !sub.includes(process) && !(log.message || "").toLowerCase().includes(process)) {
-      return false;
-    }
     if (subsystem && !sub.includes(subsystem) && !(log.message || "").toLowerCase().includes(subsystem)) {
       return false;
     }
@@ -1750,12 +1880,50 @@
   };
 
   ViewliftNetwork.flushLogPending = function flushLogPending() {
-    if (!this.logPending.length) return;
-    const fresh = this.logPending.reverse();
-    this.logPending = [];
-    this.logs = fresh.concat(this.logs);
-    if (this.logs.length > LOG_ROW_CAP) this.logs.length = LOG_ROW_CAP;
-    this.renderLogRows();
+    if (this.logPending.length) {
+      const fresh = this.logPending.reverse();
+      this.logPending = [];
+      this.logs = fresh.concat(this.logs);
+      if (this.logs.length > LOG_ROW_CAP) this.logs.length = LOG_ROW_CAP;
+      this.renderLogRows();
+    }
+    this.followLiveLog();
+  };
+
+  ViewliftNetwork.followLiveLog = function followLiveLog() {
+    if (this.logPaused) return null;
+    const latest = (this.logs || []).find((log) => this.logMatchesFilters(log));
+    if (!latest || latest.id === this.selectedLogId) return null;
+    return this.selectLog(latest.id, true, false);
+  };
+
+  ViewliftNetwork.scrollLogRow = function scrollLogRow(id) {
+    const row = document.querySelector(`#log-rows tr[data-id="${CSS.escape(id)}"]`);
+    if (row) row.scrollIntoView({ block: "nearest", inline: "nearest" });
+  };
+
+  ViewliftNetwork.paintLogDetail = function paintLogDetail(d) {
+    const title = document.getElementById("log-detail-title");
+    const body = document.getElementById("log-detail-body");
+    if (!title || !body) return;
+    title.textContent = d.subsystem || "Detail";
+    const flowLink = d.linked_flow_id
+      ? `<a href="/flows/${encodeURIComponent(d.linked_flow_id)}">Open network flow</a>`
+      : (d.request_id ? `<span class="muted">No matching flow for requestId</span>` : `<span class="muted">—</span>`);
+    body.innerHTML = `
+      <table class="kv">
+        <tr><th>Time</th><td>${escapeHtml(d.created_at || "")}</td></tr>
+        <tr><th>Level</th><td>${escapeHtml(d.level || "")}</td></tr>
+        <tr><th>Source</th><td>${escapeHtml(d.source || "")}${d.udid ? ` <span class="muted">${escapeHtml(d.udid)}</span>` : ""}</td></tr>
+        <tr><th>App</th><td>${appBadge(d.client_id)}${escapeHtml(appLabel(d.client_id))}</td></tr>
+        <tr><th>Subsystem</th><td>${escapeHtml(d.subsystem || "")}</td></tr>
+        <tr><th>Request ID</th><td>${escapeHtml(d.request_id || "—")}</td></tr>
+        <tr><th>Linked flow</th><td>${flowLink}</td></tr>
+      </table>
+      <h3>Message</h3>
+      ${logMessageBlock(d.message)}
+      <p class="muted">${escapeHtml(d.console_note || "")}</p>
+    `;
   };
 
   ViewliftNetwork.renderLogRows = function renderLogRows() {
@@ -1768,43 +1936,37 @@
         <td>${escapeHtml(log.level || "")}</td>
         <td>${appBadge(log.client_id)}${escapeHtml(log.source || "")}</td>
         <td title="${escapeAttr(log.subsystem || "")}">${escapeHtml(log.subsystem || "")}</td>
-        <td title="${escapeAttr(log.message || "")}">${escapeHtml(log.message || "")}</td>
+        <td class="log-message" title="${escapeAttr(log.message || "")}">${escapeHtml(log.message || "")}</td>
       </tr>`);
     tbody.innerHTML = html.join("");
   };
 
-  ViewliftNetwork.selectLog = async function selectLog(id, fetchDetail = true) {
+  ViewliftNetwork.selectLog = async function selectLog(id, fetchDetail = true, userPick = true) {
+    const gen = (this.logDetailGen = (this.logDetailGen || 0) + 1);
     this.selectedLogId = id;
     document.querySelectorAll("#log-rows tr.active").forEach((tr) => tr.classList.remove("active"));
     const row = document.querySelector(`#log-rows tr[data-id="${CSS.escape(id)}"]`);
     if (row) row.classList.add("active");
-    if (!this.logPaused) this.setLogPaused(true);
+    if (userPick && !this.logPaused) this.setLogPaused(true);
+    this.scrollLogRow(id);
+    const known = (this.logs || []).find((log) => log.id === id);
+    if (known) this.paintLogDetail(known);
     if (!fetchDetail) return;
-    const res = await fetch(`/api/logs/${encodeURIComponent(id)}`);
+    let res;
+    try {
+      res = await fetch(`/api/logs/${encodeURIComponent(id)}`);
+    } catch (_) {
+      return;
+    }
+    if (this.logDetailGen !== gen || this.selectedLogId !== id) return;
     if (!res.ok) {
-      document.getElementById("log-detail-body").innerHTML =
-        `<p class="muted empty">Log not found</p>`;
+      const missing = document.getElementById("log-detail-body");
+      if (missing) missing.innerHTML = `<p class="muted empty">Log not found</p>`;
       return;
     }
     const d = await res.json();
-    document.getElementById("log-detail-title").textContent = d.subsystem || "Detail";
-    const flowLink = d.linked_flow_id
-      ? `<a href="/flows/${encodeURIComponent(d.linked_flow_id)}">Open network flow</a>`
-      : (d.request_id ? `<span class="muted">No matching flow for requestId</span>` : `<span class="muted">—</span>`);
-    document.getElementById("log-detail-body").innerHTML = `
-      <table class="kv">
-        <tr><th>Time</th><td>${escapeHtml(d.created_at || "")}</td></tr>
-        <tr><th>Level</th><td>${escapeHtml(d.level || "")}</td></tr>
-        <tr><th>Source</th><td>${escapeHtml(d.source || "")}${d.udid ? ` <span class="muted">${escapeHtml(d.udid)}</span>` : ""}</td></tr>
-        <tr><th>App</th><td>${appBadge(d.client_id)}${escapeHtml(appLabel(d.client_id))}</td></tr>
-        <tr><th>Subsystem</th><td>${escapeHtml(d.subsystem || "")}</td></tr>
-        <tr><th>Request ID</th><td>${escapeHtml(d.request_id || "—")}</td></tr>
-        <tr><th>Linked flow</th><td>${flowLink}</td></tr>
-      </table>
-      <h3>Message</h3>
-      <pre class="pre">${escapeHtml(d.message || "")}</pre>
-      <p class="muted">${escapeHtml(d.testflight_private_note || "")}</p>
-    `;
+    if (this.logDetailGen !== gen || this.selectedLogId !== id) return;
+    this.paintLogDetail(d);
   };
 
   ViewliftNetwork.connectLogWs = function connectLogWs() {
@@ -1814,7 +1976,12 @@
     const proto = location.protocol === "https:" ? "wss" : "ws";
     const ws = new WebSocket(`${proto}://${location.host}/ws/logs`);
     this.logWs = ws;
+    const status = document.getElementById("log-stream-status");
+    ws.addEventListener("open", () => {
+      if (status) status.textContent = "live";
+    });
     ws.addEventListener("close", () => {
+      if (status) status.textContent = "reconnecting";
       setTimeout(() => this.connectLogWs(), 1500);
     });
     ws.addEventListener("message", (ev) => {
@@ -1831,7 +1998,21 @@
     document.getElementById("btn-apply-proxy").addEventListener("click", () => this.applyProxyBind());
     document.getElementById("btn-sim-ca").addEventListener("click", () => this.simInstallCa());
     document.getElementById("btn-sim-proxy").addEventListener("click", () => this.simConfigureProxy());
+    const tunnelStart = document.getElementById("btn-tunnel-start");
+    if (tunnelStart) {
+      tunnelStart.addEventListener("click", () => this.startDeviceTunnel());
+      document.getElementById("btn-tunnel-stop").addEventListener("click", () => this.stopDeviceTunnel());
+      document.getElementById("btn-pair-browse").addEventListener("click", () => this.browsePairing());
+      document.getElementById("btn-pair-start").addEventListener("click", () => this.startPairing());
+      document.getElementById("btn-pair-pin").addEventListener("click", () => this.sendPairingPin());
+      this.refreshTunnelStatus();
+    }
     document.getElementById("btn-test").addEventListener("click", () => this.runSetupTest());
+    const rootsBtn = document.getElementById("btn-save-roots");
+    if (rootsBtn) {
+      rootsBtn.addEventListener("click", () => this.saveProjectRoots());
+      this.loadProjectRoots();
+    }
     const enableBtn = document.getElementById("btn-sdk-enable");
     if (enableBtn) {
       enableBtn.addEventListener("click", () => this.enableSdkReceiver());
@@ -2027,6 +2208,138 @@
     document.getElementById("sim-msg").textContent = JSON.stringify(data, null, 2);
   };
 
+  ViewliftNetwork.targets = async function targets() {
+    if (!this._targets) {
+      const res = await fetch("/api/host/targets");
+      const data = await res.json().catch(() => ({}));
+      this._targets = Array.isArray(data.targets) ? data.targets : [];
+    }
+    return this._targets;
+  };
+
+  ViewliftNetwork.fillTargetSelect = async function fillTargetSelect(select) {
+    if (!select || select.dataset.filled === "1") return;
+    if (select._filling) return select._filling;
+    select._filling = this._fillTargetSelect(select);
+    return select._filling;
+  };
+
+  ViewliftNetwork._fillTargetSelect = async function _fillTargetSelect(select) {
+    const capability = select.dataset.cap || "";
+    const rows = (await this.targets()).filter((row) => {
+      return !capability || (row.capabilities || []).includes(capability);
+    });
+    const previous = select.value;
+    select.replaceChildren(new Option("Selected app", ""));
+    rows.forEach((row) => {
+      const kind = row.kind === "device" ? "Device" : "Simulator";
+      const option = new Option(
+        `${row.name} · ${kind} · ${row.platform} · ${row.state || row.transport || ""}`,
+        row.udid,
+      );
+      option.dataset.kind = row.kind;
+      option.dataset.model = row.product_type || row.model || "";
+      select.append(option);
+    });
+    select.dataset.filled = "1";
+    if (previous) select.value = previous;
+  };
+
+  ViewliftNetwork.targetChoice = function targetChoice(select) {
+    const option = select && select.selectedOptions ? select.selectedOptions[0] : null;
+    return {
+      udid: select ? select.value.trim() : "",
+      kind: option && option.dataset.kind ? option.dataset.kind : "",
+    };
+  };
+
+  ViewliftNetwork.hostTool = async function hostTool(tool, args) {
+    const res = await fetch("/api/host/call", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ tool, args, confirm: true }),
+    });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) return { ok: false, detail: data.detail || "Request failed." };
+    return data;
+  };
+
+  ViewliftNetwork.refreshTunnelStatus = async function refreshTunnelStatus() {
+    const data = await this.hostTool("device_tunnel_status", {});
+    const node = document.getElementById("tunnel-msg");
+    if (node) node.textContent = data.detail || data.address || JSON.stringify(data);
+  };
+
+  ViewliftNetwork.startDeviceTunnel = async function startDeviceTunnel() {
+    const ok = window.confirm(
+      "Start the iOS 17+ developer tunnel? macOS will ask for an administrator password. The console itself stays unprivileged.",
+    );
+    if (!ok) return;
+    const data = await this.hostTool("device_tunnel_start", {});
+    document.getElementById("tunnel-msg").textContent = data.detail || JSON.stringify(data, null, 2);
+  };
+
+  ViewliftNetwork.stopDeviceTunnel = async function stopDeviceTunnel() {
+    if (!window.confirm("Stop the developer tunnel?")) return;
+    const data = await this.hostTool("device_tunnel_stop", {});
+    document.getElementById("tunnel-msg").textContent = data.detail || JSON.stringify(data, null, 2);
+  };
+
+  ViewliftNetwork.browsePairing = async function browsePairing() {
+    const data = await this.hostTool("device_pair_browse", {});
+    const select = document.getElementById("pair-device");
+    select.replaceChildren();
+    (data.devices || []).forEach((row) => {
+      const option = new Option(row.name || row.identifier, row.identifier || "");
+      select.append(option);
+    });
+    document.getElementById("pair-msg").textContent = data.detail
+      || `${(data.devices || []).length} device(s) advertising. On Apple TV open Settings, Remotes and Devices.`;
+  };
+
+  ViewliftNetwork.startPairing = async function startPairing() {
+    const identifier = document.getElementById("pair-device").value;
+    if (!identifier) return;
+    if (!window.confirm("Start pairing? The Apple TV will show a PIN.")) return;
+    const data = await this.hostTool("device_pair_start", { identifier });
+    document.getElementById("pair-msg").textContent = data.detail || data.state || JSON.stringify(data);
+  };
+
+  ViewliftNetwork.sendPairingPin = async function sendPairingPin() {
+    const pin = document.getElementById("pair-pin").value.trim();
+    const data = await this.hostTool("device_pair_pin", { pin });
+    document.getElementById("pair-pin").value = "";
+    document.getElementById("pair-msg").textContent = data.detail || data.state || "PIN sent.";
+  };
+
+  ViewliftNetwork.renderProjectRoots = function renderProjectRoots(data) {
+    document.getElementById("project-roots").value = (data.saved || []).join("\n");
+    const env = (data.env || []).length ? ` Env adds: ${data.env.join(", ")}.` : "";
+    document.getElementById("roots-msg").textContent =
+      `${(data.active || []).length} active root(s).${env}`;
+  };
+
+  ViewliftNetwork.loadProjectRoots = async function loadProjectRoots() {
+    const res = await fetch("/api/host/roots");
+    if (res.ok) this.renderProjectRoots(await res.json());
+  };
+
+  ViewliftNetwork.saveProjectRoots = async function saveProjectRoots() {
+    const roots = document.getElementById("project-roots").value
+      .split("\n").map((line) => line.trim()).filter(Boolean);
+    const res = await fetch("/api/host/roots", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ roots }),
+    });
+    const data = await res.json();
+    if (!res.ok) {
+      document.getElementById("roots-msg").textContent = data.detail || "Could not save roots";
+      return;
+    }
+    this.renderProjectRoots(data);
+  };
+
   ViewliftNetwork.runSetupTest = async function runSetupTest() {
     const url = document.getElementById("test-url").value.trim() || "http://example.com/";
     const res = await fetch("/api/setup/test", {
@@ -2048,7 +2361,12 @@
       block.innerHTML = `<h2>Replay</h2><p class="warn-text">${escapeHtml(data.detail || "Replay failed")}</p>`;
     } else {
       const headers = Object.entries(data.headers || {}).map(([k, v]) => `${k}: ${v}`).join("\n");
-      block.innerHTML = `<h2>Replay ${escapeHtml(String(data.status))}</h2><pre class="pre">${escapeHtml(headers)}\n\n${escapeHtml(data.body || "")}</pre>`;
+      const pretty = prettyJson(data.body || "");
+      const bodyHtml = pretty
+        ? copyBlockHtml(pretty, "Copy JSON")
+        : (data.body ? copyBlockHtml(data.body, "Copy") : "");
+      const headerHtml = headers ? `<pre class="pre">${escapeHtml(headers)}</pre>` : "";
+      block.innerHTML = `<h2>Replay ${escapeHtml(String(data.status))}</h2>${headerHtml}${bodyHtml}`;
     }
     pane.prepend(block);
   };
@@ -2109,13 +2427,17 @@
         : `<p class="muted">No log lines match.</p>`;
     });
 
+    await this.fillTargetSelect(document.getElementById("deeplink-udid"));
+    await this.fillTargetSelect(document.getElementById("loc-udid"));
     document.getElementById("deeplink-form").addEventListener("submit", async (event) => {
       event.preventDefault();
+      const choice = this.targetChoice(document.getElementById("deeplink-udid"));
       const res = await fetch("/api/debug/deeplink", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          udid: document.getElementById("deeplink-udid").value.trim(),
+          udid: choice.udid,
+          kind: choice.kind,
           url: document.getElementById("deeplink-url").value.trim(),
         }),
       });
@@ -2172,8 +2494,10 @@
   };
 
   ViewliftNetwork.sendLocation = async function sendLocation(clear) {
+    const choice = this.targetChoice(document.getElementById("loc-udid"));
     const body = {
-      udid: document.getElementById("loc-udid").value.trim(),
+      udid: choice.udid,
+      kind: choice.kind,
       clear,
     };
     if (!clear) {
@@ -2188,6 +2512,24 @@
     const data = await res.json();
     document.getElementById("location-status").textContent = data.detail || "Failed";
   };
+
+  ViewliftNetwork.copyBlockHtml = copyBlockHtml;
+
+  document.addEventListener("click", async (event) => {
+    const btn = event.target && event.target.closest && event.target.closest("[data-copy-text]");
+    if (!btn) return;
+    const pre = btn.closest(".copy-block") && btn.closest(".copy-block").querySelector("pre");
+    const text = pre ? pre.textContent : "";
+    if (!text) return;
+    const label = btn.dataset.copyLabel || btn.textContent;
+    try {
+      await navigator.clipboard.writeText(text);
+      btn.textContent = "Copied";
+    } catch {
+      btn.textContent = "Copy failed";
+    }
+    window.setTimeout(() => { btn.textContent = label; }, 1200);
+  });
 
   window.ViewliftNetwork = ViewliftNetwork;
 })();

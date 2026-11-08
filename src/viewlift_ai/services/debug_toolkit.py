@@ -2,9 +2,7 @@
 
 from __future__ import annotations
 
-import asyncio
 import re
-import threading
 from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Any
@@ -211,7 +209,12 @@ DEBUG_MODULES: tuple[DebugModule, ...] = (
         note=_APP_ONLY,
     ),
     DebugModule(
-        "ui-inspector", "UI", "UI Inspector", "Live view properties.", "app-only", note=_APP_ONLY
+        "ui-inspector",
+        "UI",
+        "UI Inspector",
+        "Layout box, constraints, flex, and view properties.",
+        "app-only",
+        note=_APP_ONLY,
     ),
     DebugModule(
         "hierarchy", "UI", "3D View Hierarchy", "Exploded view tree.", "app-only", note=_APP_ONLY
@@ -361,6 +364,51 @@ DEBUG_MODULES: tuple[DebugModule, ...] = (
         note="Needs the host app to register an OTTDebugSnapshotProviding provider.",
     ),
     DebugModule(
+        "playback",
+        "OTT",
+        "Playback timeline",
+        "Stalls, bitrate, live-edge lag, route, and ad breaks.",
+        "app-only",
+        "/debug",
+        note="Attach an AVPlayer or leave the player on screen. No stream URLs.",
+    ),
+    DebugModule(
+        "playback-drm",
+        "OTT",
+        "FairPlay timeline",
+        "License step timing and error codes.",
+        "app-only",
+        "/debug",
+        note="Host calls noteDRM. SPC and CKC stay on the device.",
+    ),
+    DebugModule(
+        "playback-manifests",
+        "OTT",
+        "Manifest waterfall",
+        "Playlist and segment timing without bodies or tokens.",
+        "app-only",
+        "/debug",
+        note="Metadata only. Query strings are dropped.",
+    ),
+    DebugModule(
+        "tvos-focus",
+        "OTT",
+        "tvOS focus",
+        "Focused view, focus rejection, Menu, Play/Pause, and Select.",
+        "app-only",
+        "/debug",
+        note=_APP_ONLY,
+    ),
+    DebugModule(
+        "device-url",
+        "OTT",
+        "Open on device",
+        "Open a scheme URL on the paired iPhone or Apple TV.",
+        "app-only",
+        "/debug#network-tools",
+        note="Debug build only. The dashboard does not echo the query string.",
+    ),
+    DebugModule(
         "hang-stacks",
         "OTT",
         "Hang Stacks",
@@ -506,7 +554,7 @@ def set_device_location(
     streaming: bool = False,
     runner: LocationRunner | None = None,
 ) -> dict[str, object]:
-    """Simulate GPS on a paired iPhone. Refuses while a log stream holds USB."""
+    """Simulate GPS on a paired iPhone, iPad, or Apple TV. Refuses while a log stream holds USB."""
     device = (udid or "").strip()
     if not re.fullmatch(r"[A-Za-z0-9-]{8,80}", device):
         raise ValueError("A paired device UDID is required.")
@@ -548,40 +596,7 @@ def _urllib_open(
 
 
 def _dvt_location(udid: str, latitude: float | None, longitude: float | None, clear: bool) -> None:
-    async def _run() -> None:
-        from pymobiledevice3.lockdown import create_using_usbmux
-        from pymobiledevice3.services.dvt.instruments.dvt_provider import DvtProvider
-        from pymobiledevice3.services.dvt.instruments.location_simulation import LocationSimulation
+    """RSD through tunneld for iOS/tvOS 17+, usbmux lockdown (USB, then Wi-Fi) for older OS."""
+    from viewlift_ai.services.host.device_tunnel import set_location
 
-        lockdown = await create_using_usbmux(serial=udid, connection_type="USB", autopair=False)
-        try:
-            async with DvtProvider(lockdown) as dvt, LocationSimulation(dvt) as simulation:
-                if clear:
-                    await simulation.clear()
-                else:
-                    await simulation.set(float(latitude), float(longitude))
-        finally:
-            await lockdown.close()
-
-    _run_coro(_run())
-
-
-def _run_coro(coro: Any) -> None:
-    try:
-        asyncio.get_running_loop()
-    except RuntimeError:
-        asyncio.run(coro)
-        return
-    box: list[BaseException] = []
-
-    def _worker() -> None:
-        try:
-            asyncio.run(coro)
-        except BaseException as exc:  # noqa: BLE001 - re-raised on the caller thread
-            box.append(exc)
-
-    thread = threading.Thread(target=_worker, daemon=True)
-    thread.start()
-    thread.join()
-    if box:
-        raise box[0]
+    set_location(udid, latitude, longitude, clear)

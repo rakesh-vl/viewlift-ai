@@ -35,9 +35,9 @@
 
 <section class="rules-block" id="deeplink">
   <h2>Deeplink</h2>
-  <p class="muted">Opens the URL on a booted simulator with simctl. Not sent to the iPhone.</p>
+  <p class="muted">Opens the URL on the chosen simulator or paired device.</p>
   <form id="deeplink-form" class="filters">
-    <label>UDID <input id="deeplink-udid" value="booted" autocomplete="off"></label>
+    <label>Target <select id="deeplink-udid" data-cap="deeplink" aria-label="Deeplink target"></select></label>
     <label class="grow">URL <input id="deeplink-url" placeholder="scheme://path" autocomplete="off"></label>
     <button type="submit" class="btn">Open</button>
   </form>
@@ -46,9 +46,9 @@
 
 <section class="rules-block" id="location">
   <h2>Simulated location</h2>
-  <p class="muted">Paired iPhone, iOS 17+. Stop the log stream first or the phone drops off USB.</p>
+  <p class="muted">Simulator, or a paired iPhone, iPad, or Apple TV. On a device, stop the log stream first or the phone drops off USB.</p>
   <form id="location-form" class="filters">
-    <label>UDID <input id="loc-udid" placeholder="device UDID" autocomplete="off"></label>
+    <label>Target <select id="loc-udid" data-cap="location" aria-label="Location target"></select></label>
     <label>Lat <input id="loc-lat" type="number" step="any" placeholder="40.69"></label>
     <label>Lon <input id="loc-lon" type="number" step="any" placeholder="-74.04"></label>
     <button type="submit" class="btn">Set</button>

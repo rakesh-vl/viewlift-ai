@@ -305,28 +305,15 @@ def stream_device_syslog(
     _ = process
 
     async def _run() -> None:
-        from pymobiledevice3.lockdown import create_using_usbmux
         from pymobiledevice3.services.os_trace import OsTraceService
         from pymobiledevice3.services.syslog import SyslogService
 
-        lockdown = None
-        last_error: Exception | None = None
-        for connection_type in ("USB", "Network"):
+        from viewlift_ai.services.host.device_tunnel import service_provider
+
+        # tunneld serves iOS/tvOS 17+ devices (Apple TV over Wi-Fi included); usbmux the rest.
+        async with service_provider(udid) as provider:
             try:
-                lockdown = await create_using_usbmux(
-                    serial=udid,
-                    connection_type=connection_type,
-                    autopair=True,
-                )
-                break
-            except Exception as exc:
-                last_error = exc
-                lockdown = None
-        if lockdown is None:
-            raise last_error or RuntimeError(f"Device {udid} is not connected")
-        try:
-            try:
-                async with OsTraceService(lockdown=lockdown) as service:
+                async with OsTraceService(lockdown=provider) as service:
                     async for entry in service.syslog():
                         if stop.is_set():
                             break
@@ -343,15 +330,13 @@ def stream_device_syslog(
                 return
             except Exception as os_trace_exc:
                 logger.info("OsTraceService unavailable, falling back: %s", os_trace_exc)
-            async with SyslogService(service_provider=lockdown) as service:
+            async with SyslogService(service_provider=provider) as service:
                 async for line in service.watch():
                     if stop.is_set():
                         break
                     text = line if isinstance(line, str) else repr(line)
                     level, subsystem, message = parse_device_syslog_line(text)
                     on_line(level, subsystem, message, subsystem)
-        finally:
-            await lockdown.close()
 
     loop = asyncio.new_event_loop()
     try:

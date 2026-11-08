@@ -10,6 +10,7 @@ from urllib.parse import parse_qsl
 
 from viewlift_ai.models.flow import FlowRecord, FlowTiming, WebSocketMessageRecord
 from viewlift_ai.proxy.redact import RedactionService
+from viewlift_ai.services.flow_graphql import graphql_meta
 from viewlift_ai.services.reveal import RawFlowPayload
 
 _IMAGE_PREFIXES = (
@@ -24,6 +25,7 @@ _MAX_IMAGE_PREVIEW = 512_000
 
 
 def flow_summary(flow: FlowRecord) -> dict[str, Any]:
+    meta = graphql_meta(flow)
     return {
         "id": flow.id,
         "method": flow.method,
@@ -41,6 +43,9 @@ def flow_summary(flow: FlowRecord) -> dict[str, Any]:
         "error": flow.error,
         "tls_failed": flow.tls_failed,
         "request_id": flow.request_id,
+        "graphql": meta.graphql,
+        "operation": meta.operation,
+        "operation_type": meta.operation_type,
         "timing": timing_dict(flow.timing),
     }
 

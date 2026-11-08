@@ -1,0 +1,144 @@
+{% extends "base.html" %}
+{% block title %}Devices · Viewlift AI{% endblock %}
+{% block content %}
+<link rel="stylesheet" href="/static/css/simulator.css?v=2">
+<div class="sim-page" id="sim-page">
+  <header class="sim-head">
+    <h1>Devices</h1>
+    <p class="sim-lede">
+      Build, run, and drive an iPhone, iPad, or Apple TV. The list covers simulators and paired
+      devices. Each action appears only when that target supports it. Paths must sit inside a
+      project root from <a href="/setup">Setup</a>. Changes ask first.
+    </p>
+    <p class="sim-banner" id="sim-banner" role="status" aria-live="polite" hidden></p>
+  </header>
+
+  <div class="sim-grid">
+    <section class="sim-panel" aria-labelledby="sim-devices-title">
+      <div class="sim-panel-head">
+        <h2 id="sim-devices-title">Target</h2>
+        <button type="button" class="btn ghost" id="sim-refresh">Refresh</button>
+      </div>
+      <label class="sim-field">
+        <span>Simulator or device</span>
+        <select id="sim-select" aria-label="Simulator or device">
+          <option value="">Loading…</option>
+        </select>
+      </label>
+      <p class="muted" id="sim-caps"></p>
+      <div class="sim-actions">
+        <button type="button" class="btn ghost" data-kind="simulator" id="sim-boot">Boot</button>
+        <button type="button" class="btn ghost" data-cap="screenshot" id="sim-screenshot">Screenshot</button>
+        <button type="button" class="btn ghost" data-cap="launch" id="sim-launch">Launch app</button>
+        <button type="button" class="btn ghost" data-cap="stop" id="sim-stop">Stop app</button>
+        <button type="button" class="btn ghost" data-cap="video" id="sim-record">Record</button>
+        <button type="button" class="btn ghost" data-cap="video" id="sim-record-stop">Stop recording</button>
+        <button type="button" class="btn ghost" data-cap="ui_runner" id="sim-runner">Start UI runner</button>
+        <button type="button" class="btn ghost" data-cap="ui_runner" id="sim-runner-stop">Stop UI runner</button>
+      </div>
+    </section>
+
+    <section class="sim-panel" aria-labelledby="sim-project-title">
+      <div class="sim-panel-head">
+        <h2 id="sim-project-title">Project</h2>
+      </div>
+      <form id="sim-defaults-form" class="sim-form">
+        <label class="sim-field">
+          <span>Project or workspace path</span>
+          <input id="sim-project-path" name="path" autocomplete="off" spellcheck="false">
+        </label>
+        <label class="sim-field">
+          <span>Scheme</span>
+          <input id="sim-scheme" name="scheme" autocomplete="off" spellcheck="false">
+        </label>
+        <label class="sim-field">
+          <span>Bundle ID</span>
+          <input id="sim-bundle" name="bundleId" autocomplete="off" spellcheck="false">
+        </label>
+        <label class="sim-field">
+          <span>Development team (devices)</span>
+          <input id="sim-team" name="developmentTeam" autocomplete="off" spellcheck="false">
+        </label>
+        <div class="sim-actions">
+          <button type="submit" class="btn ghost">Save defaults</button>
+          <button type="button" class="btn" id="sim-build-run" data-cap="build">Build and run</button>
+        </div>
+      </form>
+      <form id="sim-url-form" class="sim-form" data-cap="deeplink">
+        <label class="sim-field">
+          <span>Open URL</span>
+          <input id="sim-url" autocomplete="off" spellcheck="false">
+        </label>
+        <button type="submit" class="btn ghost">Open</button>
+      </form>
+      <form id="sim-location-form" class="sim-form" data-cap="location">
+        <label class="sim-field">
+          <span>Latitude</span>
+          <input id="sim-lat" type="number" step="any" autocomplete="off">
+        </label>
+        <label class="sim-field">
+          <span>Longitude</span>
+          <input id="sim-lon" type="number" step="any" autocomplete="off">
+        </label>
+        <div class="sim-actions">
+          <button type="submit" class="btn ghost">Set location</button>
+          <button type="button" class="btn ghost" id="sim-location-clear">Clear location</button>
+        </div>
+      </form>
+      <div class="sim-job" id="sim-job" hidden>
+        <p class="sim-job-state" id="sim-job-state"></p>
+        <pre class="sim-log" id="sim-job-log" tabindex="0"></pre>
+      </div>
+    </section>
+
+    <section class="sim-panel sim-panel-wide" aria-labelledby="sim-shot-title">
+      <div class="sim-panel-head">
+        <h2 id="sim-shot-title">Screenshot</h2>
+      </div>
+      <figure class="sim-shot">
+        <img id="sim-shot" alt="Screenshot of the selected target" hidden>
+        <figcaption class="muted" id="sim-shot-note">No screenshot yet.</figcaption>
+      </figure>
+    </section>
+
+    <section class="sim-panel sim-panel-wide" id="sim-screen-panel" aria-labelledby="sim-screen-title" data-kind="simulator" data-cap="ui_host">
+      <div class="sim-panel-head">
+        <h2 id="sim-screen-title">Screen</h2>
+        <div class="sim-actions">
+          <button type="button" class="btn ghost" id="sim-read-screen">Read screen</button>
+          <button type="button" class="btn ghost" id="sim-screen-map">Screen map</button>
+        </div>
+      </div>
+      <p class="muted">Host taps use the simulator UI driver. A device uses the UI runner instead.</p>
+      <div class="sim-screen">
+        <div class="sim-elements">
+          <label class="sim-field">
+            <span>Filter elements</span>
+            <input id="sim-filter" type="search" autocomplete="off">
+          </label>
+          <ul id="sim-element-list" class="sim-element-list" aria-label="Screen elements"></ul>
+          <p class="muted" id="sim-element-count"></p>
+          <form id="sim-type-form" class="sim-form sim-type">
+            <label class="sim-field">
+              <span>Type text into the focused field (test data only)</span>
+              <input id="sim-type-text" autocomplete="off" maxlength="2000" spellcheck="false">
+            </label>
+            <button type="submit" class="btn ghost">Type</button>
+          </form>
+        </div>
+      </div>
+    </section>
+
+    <section class="sim-panel sim-panel-wide" aria-labelledby="sim-output-title">
+      <div class="sim-panel-head">
+        <h2 id="sim-output-title">Last result</h2>
+        <button type="button" class="btn ghost" id="sim-output-clear">Clear</button>
+      </div>
+      <pre class="sim-output" id="sim-output" tabindex="0" aria-live="polite">Pick a target and run an action.</pre>
+    </section>
+  </div>
+</div>
+{% endblock %}
+{% block scripts %}
+<script src="/static/js/simulator.js?v=2"></script>
+{% endblock %}

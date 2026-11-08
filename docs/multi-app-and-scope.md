@@ -8,6 +8,7 @@ One device or simulator can run several apps with the SDK at once (for example t
 |---|---|---|
 | `client_id` | SDK, `UserDefaults` key `com.viewlift.networkcapture.client-id` | One app install. Sanitized to `[A-Za-z0-9._-]`, at most 128 characters. |
 | `device_key` | SDK `DeviceIdentity` | `SIMULATOR_UDID` on a simulator, `vendor:<identifierForVendor>` on hardware, `hint:<model>\|<name>` as a fallback. |
+| `device_hint` | SDK `DeviceIdentity` | Stable across apps on one physical device until reboot. The dashboard groups those apps together. Empty on simulators. |
 | `bundle_id`, `executable` | SDK `AppIdentity` | Used for display, package detection and log attribution. |
 
 An ingest session is bound to exactly one `client_id`; a different id on the same session gets `403`.

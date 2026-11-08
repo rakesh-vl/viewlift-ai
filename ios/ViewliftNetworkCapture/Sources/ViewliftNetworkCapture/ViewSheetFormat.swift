@@ -20,9 +20,7 @@ struct ViewSheetSection {
 
 enum ViewSheetFormat {
     static func point(_ value: CGFloat) -> String {
-        let rounded = (value * 10).rounded() / 10
-        if rounded == rounded.rounded() { return String(Int(rounded)) }
-        return String(format: "%.1f", Double(rounded))
+        SafeNumber.text(Double(value))
     }
 
     static func clip(_ text: String, limit: Int = 160) -> String {

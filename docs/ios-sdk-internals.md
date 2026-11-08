@@ -11,7 +11,7 @@ The package follows a service-oriented design with protocol seams for testing:
 - Debug features are separate services (`StateDebugService`, `UIInspectionService`, `MemoryDebugService` and so on) dispatched by `DebugCommandExecutor`.
 - Shared state lives in `CaptureRuntime`, guarded by locks.
 
-The package has no external dependencies. It uses Foundation, ObjectiveC runtime, CommonCrypto, Security, OSLog, Network, SQLite3, and UIKit, SwiftUI and UserNotifications where available.
+The package has no external dependencies. It uses Foundation, ObjectiveC runtime, CommonCrypto, Security, OSLog, Network, SQLite3, AVFoundation, and UIKit, SwiftUI and UserNotifications where available.
 
 ## Files
 
@@ -50,10 +50,33 @@ The package has no external dependencies. It uses Foundation, ObjectiveC runtime
 | `StateDebugService.swift` | UserDefaults, keychain metadata, sandbox files, read-only SQLite, snapshots |
 | `UIInspectionService.swift` | Hierarchy, highlight, edit, screenshot, asset and accessibility audits |
 | `QADebugService.swift` | `MacroRecorder` and `PushDebugService` |
-| `CrashHangRecorder.swift` | `NSException` handler, hang events, frame parsing |
+| `CrashHangRecorder.swift` | Hang events and frame parsing. Installs the crash coordinator and the `NSException` handler |
+| `ViewliftCrashSignals.c` | Async-signal-safe handler for fatal signals. Writes a text record to a pre-opened file |
+| `FatalCrashCoordinator.swift` | Recovers last-run crashes, stages events on disk, sends an `NSException` crash before the app dies |
+| `CrashRecordParser.swift` | Parses the signal record and builds the `crash` / `fatal` event with frames and images |
+| `CrashStore.swift` | `Caches/ViewliftCrash`: the pending record and up to 10 unsent events |
+| `ExceptionCrashRecord.swift` | Builds a record from `NSException.callStackReturnAddresses` |
+| `CrashContextWriter.swift` | Writes `context.json` (screens, taps, presses, requests, console, performance, environment) once a second |
+| `CrashReplayRing.swift`, `CrashReplayRecorder.swift` | 40-slot JPEG ring on disk, four frames a second, with touches per frame |
+| `CrashReplayEncoder.swift` | `AVAssetWriter` H.264 MP4 from a frozen ring, taps and a countdown caption drawn |
+| `CrashReplayUploader.swift` | Encodes on the next launch and sends `crash/replay-chunk` events, resuming after an interrupted upload |
 | `SwiftUIRenderTracker.swift` | `viewliftRenderProbe` counts |
 | `RuntimeBrowser.swift` | ObjC class search and describe |
 | `OTTDebugProvider.swift` | Host OTT snapshot hook |
+| `ActivityDebugService.swift` | Live screen and playback sample, host activity hook, one-second feed |
+| `PlaybackDebugService.swift` | Playback timeline, DRM notes, and the visible-player follower |
+| `PlaybackPlayerBinding.swift` | AVPlayer status, stalls, bitrate, live edge, route. No asset URL |
+| `PlaybackWaterfall.swift` | HLS/DASH metadata recorder. No query string or body |
+| `FocusDebugMonitor.swift` | Focused view, focus rejection, Menu / Play/Pause / Select |
+| `NavigationDebug.swift` | `nav.open_url` on the device. Query is not echoed |
+| `AutomationModels.swift` | Payload reads, `ElementQuery`, role names, scroll math, focus direction picking. Foundation only |
+| `AccessibilityTreeService.swift` | Accessibility tree walk, element lookup, `ui.wait_for`, screen name |
+| `UIKitSemantics.swift` | Labels, values, and traits for stock UIKit views when the accessibility runtime is not loaded |
+| `UIAutomationService.swift` | Tap, custom actions, scroll, typing, and keys |
+| `TVRemoteService.swift` | tvOS focus moves, select, menu, and play/pause |
+| `PreviewRegistry.swift` | `ViewliftPreviews.register` and the thread-safe preview store |
+| `PreviewRenderService.swift` | Off-screen preview rendering to PNG |
+| `DebugCommandExecutor+Automation.swift` | Routes `ui.*` automation and `preview.*` commands |
 | `DebugFeatureFlags.swift` | Host-registered flags with in-memory overrides |
 | `IntegrationGuidance.swift` | Integration notes and the local network usage string |
 
@@ -98,7 +121,7 @@ sequenceDiagram
 ## Identity
 
 - `UserDefaultsClientIdentity` stores a UUID under `com.viewlift.networkcapture.client-id`.
-- `DeviceIdentity` uses `SIMULATOR_UDID` on simulators, `vendor:<identifierForVendor>` on hardware, or `hint:<model>|<name>`. `sdkVersion` is reported in registration.
+- `DeviceIdentity` uses `SIMULATOR_UDID` on simulators, `vendor:<identifierForVendor>` on hardware, or `hint:<model>|<name>`. `device_hint` is a SHA-256 prefix of model, OS version, and boot time, empty on simulators. `sdkVersion` is reported in registration.
 - `AppIdentity.current` collects display name, bundle id, version, build, executable, URL schemes and up to 400 non-system frameworks.
 
 ## Debug bridge loop
@@ -125,7 +148,7 @@ A `401` on any request clears the token so the pair loop runs again. Two consecu
 
 The Bonjour TXT record can carry `alt=<ip>,<ip>` next to `ip`. `ReceiverCandidates` keeps the primary address first and the alternates after it. The last accepted dashboard (hosts, port, fingerprint, debug key) is stored in `UserDefaults` under `com.viewlift.networkcapture.receiver`. On launch, when no key was configured, the transport reuses it before Bonjour answers, so a phone away from the Mac's Wi-Fi can reach the Tailscale address. Bonjour results still take precedence when they arrive. The stored debug key is a local debug credential, protected by the certificate pin like the rest of the exchange.
 
-Capabilities: enabled modules report `available`; `memory`, `swiftui` and `macro` report `partial`; disabled ones `unsupported`; `push` is `unsupported` on tvOS.
+Capabilities: enabled modules report `available`; `memory`, `swiftui` and `macro` report `partial`; disabled ones `unsupported`; `push` is `partial` on tvOS (badge only). `network_shaping` is `available` when network capture is on. An extra `ui_automation` key reports `partial` when the `ui` module is on, because long presses and raw touches need the UI runner or the simulator path. `BackgroundGrace` covers iOS and tvOS.
 
 ## Commands
 
@@ -134,31 +157,49 @@ The prefix before the first dot selects the module. A disabled module returns `m
 | Module | Commands and payload |
 |---|---|
 | performance | `performance.snapshot` |
-| memory | `memory.snapshot`, `memory.graph`, `memory.leaks`, `memory.heap`, `memory.live_start`, `memory.live_stop`; pushed events `memory/live` (not stored) and `memory/leak` |
-| ui | `ui.hierarchy`, `ui.describe {id}`, `ui.highlight {id}`, `ui.edit {id, alpha?, hidden?}`, `ui.screenshot` |
+| memory | `memory.snapshot`, `memory.graph`, `memory.leaks`, `memory.heap`, `memory.object {id}`, `memory.live_start`, `memory.live_stop`; pushed events `memory/live` (not stored) and `memory/leak` |
+| ui | `ui.hierarchy`, `ui.layers {offset?, ids?, scale?}`, `ui.describe {id}`, `ui.highlight {id}`, `ui.edit {id, alpha?, hidden?}`, `ui.visual {slow?, guidelines?, baselines?, oversized?, repaint?}`, `ui.screenshot`, `ui.focus`. Pushed events `ui/focus` and `ui/remote` (not stored). Remote events are Menu, Play/Pause, and Select. Automation: `ui.accessibility_tree {limit?}`, `ui.find {label?, identifier?, text?, role?, view_id?, index?}`, `ui.wait_for {query keys, gone?, timeout?}`, `ui.tap {query keys or x, y}`, `ui.long_press {query keys, action?}`, `ui.swipe {direction, query keys?, fraction?}`, `ui.scroll {direction, query keys?, fraction?}`, `ui.type_text {text, query keys?, replace?, submit?}`, `ui.key {key, count?}`, `ui.remote {press, repeat?}` (tvOS). |
+| preview | `preview.list`, `preview.render {name, state?, color_scheme?, width?, height?, scale?}` |
 | bug | `bug.capture` (screenshot, performance, memory) |
 | swiftui | `swiftui.renders` |
 | assets | `assets.audit` |
 | accessibility | `accessibility.audit` |
-| storage | `storage.defaults`, `storage.defaults_set {key, value}`, `storage.keychain_metadata`, `storage.files {path}`, `storage.file_read {path}`, `storage.file_write {path, content, base64?}`, `storage.sqlite_schema {path}`, `storage.sqlite_query {path, query}`, `storage.snapshot_create {paths}`, `storage.snapshot_restore {snapshot}` |
+| storage | `storage.defaults`, `storage.defaults_set {key, value}`, `storage.defaults_delete {key}`, `storage.keychain_metadata`, `storage.files {path}`, `storage.file_read {path}`, `storage.file_write {path, content, base64?}`, `storage.file_rename {path, name}`, `storage.file_delete {path}`, `storage.sqlite_schema {path}`, `storage.sqlite_query {path, query}`, `storage.snapshot_create {paths}`, `storage.snapshot_restore {snapshot}`, `storage.cookies`, `storage.cookie_delete {name, domain, path}` |
 | feature_flags | `feature_flags.list`, `feature_flags.set {key, enabled}`, `feature_flags.reset {key}` |
-| runtime | `runtime.search {query}`, `runtime.describe {class}` |
+| runtime | `runtime.search {query}`, `runtime.describe {class}`, `runtime.libraries`, `runtime.image_classes {image}` |
+| explorer | `explorer.roots`, `explorer.object {handle?, view_id?, memory_id?}`, `explorer.instances {class, limit?}`, `explorer.set {handle, key, value}`, `explorer.call {handle, selector}`. Handles are weak. `explorer.call` refuses `init`, `set`, `copy`, `dealloc`, and teardown selectors |
+| settings | `settings.get`, `settings.set {modules?, capture_network?, max_request_body_bytes?, max_response_body_bytes?, body_content_types?, reset?}`. Overrides can disable modules the app enabled. They cannot add modules |
 | macro | `macro.record_start`, `macro.record_stop`, `macro.list`, `macro.replay {actions}` |
 | push | `push.local {title, body, sound?, badge?, user_info?, delay?}` |
 | ott | `ott.snapshot` |
-| crash, hang | `crash.list`, `hang.list` (screen class, screenshot, taps and scrolls, console, stack) |
+| crash, hang | `crash.list` (fatal signals and uncaught exceptions with frames and images), `hang.list` (screen class, screenshot, taps and scrolls, console, stack) |
+| activity | `activity.snapshot`, `activity.live_start {preview?}`, `activity.live_stop`; pushed events `activity/live` and `activity/frame` (not stored). Screen class and title, foreground or background, and playback (`playing`, `paused`, `buffering`, or `none`; live when duration is indefinite). No asset URL. Host keys `title`, `content_id`, `state`, `is_live`, `position_seconds`, `rate` override the probe. `preview: true` pushes a small JPEG about three times a second. |
+| playback | `playback.snapshot`, `playback.drm`, `playback.waterfall`. Pushed event `playback/event` (not stored). Stalls, bitrate, live-edge lag, variant size, dropped frames, route, external playback, ad breaks, and DRM step timing. No stream URL, query string, SPC, or CKC. The waterfall keeps 120 playlist, manifest, init, and segment rows. |
+| nav | `nav.open_url {url}`. Opens the URL in the debug build. `javascript`, `data`, and `file` are rejected. The reply omits query and userinfo. |
 
 Notable limits:
 
 - Storage paths are relative to `NSHomeDirectory()`; absolute paths and NUL bytes are rejected. Files up to 512 KB. SQLite opens read-only and accepts a single `SELECT`, `PRAGMA`, `WITH` or `EXPLAIN`, up to 1,000 rows. Keychain returns attributes only.
 - Screenshots up to 480 KB (400 KB in `bug.capture`).
-- Hierarchy depth 100, 500 children per view.
+- Hierarchy depth 100, 2,500 nodes per capture. View controllers appear as parents of their root views.
+- SwiftUI hosts expand into the SwiftUI view tree from `_UIHostingView.makeViewDebugData()`, the private method Xcode's view debugger uses. UIKit views hosted by SwiftUI are placed under the SwiftUI node whose frame contains them. SwiftUI records this tree only when `SWIFTUI_VIEW_DEBUG` is set before the first hosting view exists. The debug bridge sets it to `29` (type, transform, position, size) when the `ui` module starts, unless the scheme already sets it. Hosts created earlier fall back to accessibility nodes.
+- `ui.layers` pages per-view images from the last `ui.hierarchy`: each view's own pixels with its direct subviews hidden, about 420 KB per page, longest side 1,024 px. Video, Metal, and blur views come back in `crop` so the dashboard uses the window screenshot. Views with no pixels come back in `empty`.
 - Macros record `UIControl` target-action only, up to 1,000 actions.
-- Crash capture covers `NSException` only, kept in memory.
-- Hang capture keeps 12 stalls. Each JPEG screenshot is at most 32 KB. `hang.list` drops older screenshots after 220 KB so the reply stays under the debug event cap. The stack is sampled by suspending the main thread on arm64 iOS and tvOS. The screenshot is taken when that thread resumes, because UIKit cannot draw during the stall.
+- The accessibility tree lists at most 1,000 elements, 80 levels deep, and only elements whose frame is inside a visible window. `ui.wait_for` polls every 250 ms for at most 10 seconds; the MCP tool repeats it to reach 20. Typed text is capped at 2,000 characters and is not echoed. Secure field values are never listed.
+- `ui.remote` and focus moves need a focused item. Directions pick the nearest focusable item whose center lies that way, weighting sideways drift double.
+- Preview renders are at most 2,400 points per side and scale 1 to 3, and must fit in 480 KB; the scale is halved until they do.
+- Crash capture covers fatal signals (`SIGABRT`, `SIGSEGV`, `SIGBUS`, `SIGILL`, `SIGTRAP`, `SIGFPE`, `SIGSYS`) and uncaught `NSException`. Swift runtime traps (arithmetic overflow, force unwrap of `nil`, failed preconditions) raise `SIGTRAP` or `SIGILL`, which the exception handler never sees.
+- A signal crash cannot use the network. The handler walks frame pointers, writes the record, restores the previous handlers, and returns so the system still files its own `.ips`. The SDK sends the event on the next launch (`previous_session: true`). An uncaught exception is saved, then sent synchronously for up to one second before the app dies.
+- The SDK records raw addresses and image UUIDs. The console adds symbols, files, and lines (see [Crash reports](mcp-server.md#crash-reports)). `tvOS` has no `sigaltstack`, so a stack overflow there is left to the `.ips`.
+- With a debugger attached no handler runs and no report is filed. The registration carries `debugger_attached` so the console can say so.
+- Crash events use module `crash`, kind `fatal`. Payload `kind` is `fatal` or `exception`. `source` is `sdk-signal` or `sdk-exception`.
+- Replay layout under `Caches/ViewliftCrash`: `replay/` is the live ring (`frame-00.jpg` to `frame-39.jpg`, `index.json`, `context.json`). On a crash the folder moves to `replays/<crash id>/` (at once for an exception, at the next launch for a signal) and gets `crash.json` (pid and time). A launch without a crash deletes `replay/`. At most 3 frozen replays are kept.
+- The crash event carries `context` and `replay: {status: "pending", frames, duration_ms}`. The video (about 600 kbit/s, typically under 1 MB) is sent after its crash event, in chunks of 225 000 bytes (300 000 base64 characters), with `index`, `total`, `pid`, and on chunk 0 the frame `timeline` and a `poster` JPEG. Progress is kept in `progress.json`, and the folder is deleted after the last chunk. An encoding error sends `crash/replay-failed`.
+- Replay frames are taken with `drawHierarchy(afterScreenUpdates: false)`, so video, Metal, and secure fields may show black, as in other snapshots. Frames stop while the app is not active.
+- Hang capture keeps 12 stalls. Each JPEG screenshot is at most 32 KB. `hang.list` drops older screenshots after 220 KB so the reply stays under the debug event cap. The stack is sampled by suspending the main thread on arm64 iOS and tvOS. The screenshot is taken when that thread resumes, because UIKit cannot draw during the stall. Each new stall is also pushed as module `hang`, kind `detected`, so the dashboard can show it without waiting for `hang.list`.
 - Runtime browser and memory graph see Objective-C metadata only.
 
-To add a command, see [Contributing](contributing.md#add-a-debug-command).
+Which of these an agent may call, and how the results are masked, is in [MCP server and tools](mcp-server.md). To add a command, see [Contributing](contributing.md#add-a-debug-command).
 
 ## Compile guards
 
@@ -177,7 +218,7 @@ Do not disable rules unless there is no alternative; if you must, scope the disa
 
 ## Tests
 
-[Tests/ViewliftNetworkCaptureTests](../ios/ViewliftNetworkCapture/Tests/ViewliftNetworkCaptureTests) has XCTest coverage for redaction, body caps, the queue, recursion guard, start and stop, configuration injection, interception (with a stub upstream protocol), `JSONValue`, storage path safety, feature flags, keychain metadata, the runtime browser, identity and discovery address replacement. Pinning, the drain loop, command routing and UIKit paths are not covered by `swift test` on macOS.
+[Tests/ViewliftNetworkCaptureTests](../ios/ViewliftNetworkCapture/Tests/ViewliftNetworkCaptureTests) has XCTest coverage for redaction, body caps, the queue, recursion guard, start and stop, configuration injection, interception (with a stub upstream protocol), `JSONValue`, storage path safety, feature flags, keychain metadata, the runtime browser, identity and discovery address replacement, element queries, scroll and focus math, and the preview registry. `AccessibilityTreeTests` (tree walk, UIKit fallback, activation, text inputs) and the preview render guards need UIKit, so run them with `xcodebuild test` on an iOS or tvOS simulator. Pinning and the drain loop are not covered.
 
 ## Known issues
 

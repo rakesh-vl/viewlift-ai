@@ -22,6 +22,7 @@ from viewlift_ai.models.flow import (
     WebSocketMessageRecord,
 )
 from viewlift_ai.models.log import LogLevel, LogRecord
+from viewlift_ai.services.flow_graphql import graphql_meta
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS flows (
@@ -253,6 +254,10 @@ class EncryptedSqliteStore:
             )
         return out
 
+    def debug_event_ids(self, *, module: str) -> set[str]:
+        rows = self._conn.execute("SELECT id FROM debug_events WHERE module = ?", (module,))
+        return {str(row["id"]) for row in rows.fetchall()}
+
     def delete_debug_events(self, *, client_id: str | None = None) -> int:
         if client_id:
             cursor = self._conn.execute(
@@ -279,8 +284,14 @@ class EncryptedSqliteStore:
         status: int | None = None,
         content_type: str | None = None,
         text: str | None = None,
+        kind: str | None = None,
+        operation: str | None = None,
         client_ids: Sequence[str] | None = None,
     ) -> list[FlowRecord]:
+        kind_value = (kind or "").strip().lower() or None
+        if kind_value not in {None, "graphql", "http"}:
+            raise ValueError("kind must be graphql or http")
+        operation_needle = (operation or "").strip().lower() or None
         clauses: list[str] = []
         params: list[object] = []
         _client_clause(client_ids, clauses, params)
@@ -297,8 +308,9 @@ class EncryptedSqliteStore:
             clauses.append("content_type LIKE ?")
             params.append(f"%{content_type}%")
         where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
-        # Fetch extra rows when text filter needs post-decrypt matching.
-        fetch_limit = limit if not text else min(max(limit * 5, 500), 2000)
+        # Text and GraphQL filters match after decrypt, so fetch a wider window.
+        post_filter = bool(text or kind_value or operation_needle)
+        fetch_limit = limit if not post_filter else min(max(limit * 5, 500), 2000)
         params.append(fetch_limit)
         rows = self._conn.execute(
             f"SELECT * FROM flows {where} ORDER BY created_at DESC LIMIT ?",
@@ -308,6 +320,19 @@ class EncryptedSqliteStore:
         if text:
             needle = text.lower()
             flows = [f for f in flows if _flow_matches_text(f, needle)]
+        if kind_value or operation_needle:
+            matched: list[FlowRecord] = []
+            for flow in flows:
+                meta = graphql_meta(flow)
+                if kind_value == "graphql" and not meta.graphql:
+                    continue
+                if kind_value == "http" and meta.graphql:
+                    continue
+                label = (meta.operation or "").lower()
+                if operation_needle and operation_needle not in label:
+                    continue
+                matched.append(flow)
+            flows = matched
         return flows[:limit]
 
     def delete_flows(self) -> int:
@@ -451,8 +476,14 @@ class EncryptedSqliteStore:
         params: list[object] = []
         _client_clause(client_ids, clauses, params)
         if source:
-            clauses.append("source = ?")
-            params.append(source)
+            # Comma list such as "stdout,stderr" for the Logs page. Placeholders only.
+            names = [part.strip() for part in source.split(",") if part.strip()]
+            if len(names) > 1:
+                clauses.append(f"source IN ({', '.join('?' * len(names))})")
+                params.extend(names)
+            elif names:
+                clauses.append("source = ?")
+                params.append(names[0])
         if level:
             clauses.append("level = ?")
             params.append(level.lower())

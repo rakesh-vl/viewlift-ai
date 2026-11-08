@@ -398,51 +398,47 @@
     return issues;
   }
 
+  /** Picks the newest available simulator of a platform on the CI runner, so no device name is baked in. */
+  function pickSimulatorStep(platform) {
+    const script = [
+      "id=$(xcrun simctl list devices available -j | python3 -c \"",
+      "import json,sys",
+      "rows=[(r,d) for r,ds in json.load(sys.stdin)['devices'].items() if '" + platform + "' in r for d in ds]",
+      "rows.sort(key=lambda x: [int(p) for p in x[0].rsplit('-',2)[-2:] if p.isdigit()], reverse=True)",
+      "print(rows[0][1]['udid'] if rows else '')\")",
+      "test -n \"$id\" || { echo 'No " + platform + " simulator on this runner'; exit 1; }",
+      "echo \"SIM_ID=$id\" >> \"$GITHUB_ENV\"",
+    ].join("\n");
+    return { name: "Pick " + platform + " simulator", run: script };
+  }
+
   function ghaWorkflow(v) {
-    const xcode = String(v.xcode || "16.2").trim();
-    const scheme = String(v.scheme || "App").trim();
-    const destination = String(v.destination || "platform=iOS Simulator,name=iPhone 16").trim();
-    const runner = v.runner || "macos-15";
+    const xcode = String(v.xcode || "").trim();
+    const scheme = String(v.scheme || "").trim();
+    const runner = v.runner || "macos-latest";
     const checkout = "actions/checkout@v4";
+    const trigger = { push: { branches: ["main"] }, pull_request: {} };
     if (v.preset === "spm") {
       return {
         name: "Swift package",
-        on: { push: { branches: ["main"] }, pull_request: {} },
+        on: trigger,
         permissions: { contents: "read" },
         jobs: { test: { "runs-on": runner, steps: [{ uses: checkout }, { name: "Test", run: "swift test" }] } },
       };
     }
-    if (v.preset === "tvos") {
-      return {
-        name: "tvOS",
-        on: { push: { branches: ["main"] }, pull_request: {} },
-        permissions: { contents: "read" },
-        jobs: {
-          test: {
-            "runs-on": runner,
-            steps: [
-              { uses: checkout },
-              { name: "Select Xcode", run: "sudo xcode-select -s /Applications/Xcode_" + xcode + ".app" },
-              { name: "Test", run: "xcodebuild test -scheme " + scheme + " -destination 'platform=tvOS Simulator,name=Apple TV' -quiet" },
-            ],
-          },
-        },
-      };
-    }
+    const platform = v.preset === "tvos" ? "tvOS" : "iOS";
+    const custom = String(v.destination || "").trim();
+    const steps = [{ uses: checkout }];
+    if (xcode) steps.push({ name: "Select Xcode", run: "sudo xcode-select -s /Applications/Xcode_" + xcode + ".app" });
+    if (!custom) steps.push(pickSimulatorStep(platform));
+    const destination = custom || "id=$SIM_ID";
+    const schemeArg = scheme ? " -scheme " + scheme : "";
+    steps.push({ name: "Build and test", run: "xcodebuild test" + schemeArg + " -destination \"" + destination + "\" -quiet" });
     return {
-      name: "iOS",
-      on: { push: { branches: ["main"] }, pull_request: {} },
+      name: platform,
+      on: trigger,
       permissions: { contents: "read" },
-      jobs: {
-        test: {
-          "runs-on": runner,
-          steps: [
-            { uses: checkout },
-            { name: "Select Xcode", run: "sudo xcode-select -s /Applications/Xcode_" + xcode + ".app" },
-            { name: "Build and test", run: "xcodebuild test -scheme " + scheme + " -destination '" + destination + "' -quiet" },
-          ],
-        },
-      },
+      jobs: { test: { "runs-on": runner, steps } },
     };
   }
 
@@ -859,10 +855,10 @@
       keywords: "github actions xcode swift ios tvos ci generate",
       inputs: [
         { id: "preset", label: "Workflow", type: "select", options: [["ios", "iOS test"], ["tvos", "tvOS test"], ["spm", "Swift package"]], value: "ios" },
-        { id: "runner", label: "Runner", type: "select", options: ["macos-15", "macos-14", "macos-latest"], value: "macos-15" },
-        { id: "scheme", label: "Scheme", type: "text", value: "App", show: (v) => v.preset !== "spm" },
-        { id: "xcode", label: "Xcode", type: "text", value: "16.2", show: (v) => v.preset !== "spm", hint: "Selects /Applications/Xcode_<version>.app" },
-        { id: "destination", label: "Destination", type: "text", value: "platform=iOS Simulator,name=iPhone 16", show: (v) => v.preset === "ios", wide: true },
+        { id: "runner", label: "Runner", type: "select", options: ["macos-latest", "macos-15", "macos-14"], value: "macos-latest" },
+        { id: "scheme", label: "Scheme", type: "text", value: "", show: (v) => v.preset !== "spm", hint: "Leave empty when the project has one scheme." },
+        { id: "xcode", label: "Xcode", type: "text", value: "", show: (v) => v.preset !== "spm", hint: "Optional. Selects /Applications/Xcode_<version>.app; empty uses the runner default." },
+        { id: "destination", label: "Destination", type: "text", value: "", show: (v) => v.preset !== "spm", wide: true, hint: "Optional. Empty picks the newest simulator installed on the runner." },
       ],
       async run(v, ctx) {
         const doc = ghaWorkflow(v);

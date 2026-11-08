@@ -1,7 +1,7 @@
 #if DEBUG || VIEWLIFT_CAPTURE_ENABLED
 import Foundation
 import ObjectiveC.runtime
-#if os(iOS)
+#if os(iOS) || os(tvOS)
 import UserNotifications
 #endif
 
@@ -132,9 +132,7 @@ final class MacroRecorder: @unchecked Sendable {
     @MainActor
     private func findControl(identifier: String) -> UIControl? {
         guard !identifier.isEmpty else { return nil }
-        let windows = UIApplication.shared.connectedScenes
-            .compactMap { $0 as? UIWindowScene }
-            .flatMap(\.windows)
+        let windows = AutomationScreen.allWindows()
         for window in windows {
             if let match = findControl(identifier: identifier, root: window) {
                 return match
@@ -157,19 +155,30 @@ final class MacroRecorder: @unchecked Sendable {
     #endif
 }
 
+/// Local notifications for QA. tvOS shows only the app badge, so title, body, and sound are
+/// ignored there and the result says so.
 enum PushDebugService {
-    static func schedule(payload: [String: JSONValue]) async throws {
-        #if os(iOS)
+    static func schedule(payload: [String: JSONValue]) async throws -> [String: JSONValue] {
+        #if os(iOS) || os(tvOS)
         let content = UNMutableNotificationContent()
+        #if os(iOS)
         content.title = string(payload["title"])
         content.body = string(payload["body"])
         content.sound = payload["sound"] == .bool(false) ? nil : .default
+        #endif
         if case let .number(badge) = payload["badge"] {
-            content.badge = NSNumber(value: Int(badge))
+            content.badge = NSNumber(value: max(0, Int(safe: badge)))
         }
+        #if os(tvOS)
+        guard content.badge != nil else {
+            return ["scheduled": .bool(false), "detail": .string("tvOS shows only a badge. Pass badge.")]
+        }
+        #endif
+        #if os(iOS)
         if case let .object(userInfo) = payload["user_info"] {
             content.userInfo = userInfo.mapValues(foundation)
         }
+        #endif
         let delay: TimeInterval
         if case let .number(value) = payload["delay"] {
             delay = max(1, min(value, 86_400))
@@ -183,6 +192,11 @@ enum PushDebugService {
             trigger: trigger
         )
         try await UNUserNotificationCenter.current().add(request)
+        #if os(tvOS)
+        return ["scheduled": .bool(true), "badge_only": .bool(true)]
+        #else
+        return ["scheduled": .bool(true)]
+        #endif
         #else
         throw DebugBridgeError.unsupportedCommand
         #endif
@@ -195,7 +209,9 @@ enum PushDebugService {
         }
         return ""
     }
+    #endif
 
+    #if os(iOS) || os(tvOS)
     private static func foundation(_ value: JSONValue) -> Any {
         switch value {
         case let .string(item): return item

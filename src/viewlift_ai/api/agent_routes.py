@@ -36,6 +36,30 @@ def _mcp_status() -> dict[str, object]:
     }
 
 
+def _connected_device(request: Request) -> dict[str, object] | None:
+    """The device with the most connected apps, so the diagram shows the user's own setup."""
+    sessions = getattr(request.app.state, "debug_sessions", None)
+    if sessions is None:
+        return None
+    groups: dict[str, dict[str, object]] = {}
+    for row in sessions.list_clients():
+        key = str(row.get("device_key") or row.get("id"))
+        group = groups.setdefault(
+            key,
+            {
+                "name": row.get("device_name") or row.get("device_model") or "Device",
+                "is_simulator": bool(row.get("is_simulator")),
+                "apps": [],
+            },
+        )
+        apps = group["apps"]
+        if isinstance(apps, list) and len(apps) < 3:
+            apps.append({"name": row.get("app_name") or row.get("bundle_id"), "id": row.get("id")})
+    if not groups:
+        return None
+    return max(groups.values(), key=lambda item: len(item["apps"]))  # type: ignore[arg-type]
+
+
 @router.get("/agent", response_class=HTMLResponse)
 async def agent_page(request: Request) -> HTMLResponse:
     return TEMPLATES.TemplateResponse(
@@ -51,6 +75,7 @@ async def agent_page(request: Request) -> HTMLResponse:
             "tool_count": len(tool_names()),
             "read_commands": read_commands(),
             "write_commands": write_commands(),
+            "device": _connected_device(request),
         },
     )
 

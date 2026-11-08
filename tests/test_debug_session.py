@@ -96,14 +96,51 @@ def test_register_enqueue_poll_and_event(tmp_path: Path) -> None:
     assert rows[0]["payload"] == {"cpu": 7.5}
 
 
+def test_playback_digest_is_not_stored(tmp_path: Path) -> None:
+    service, store = _service(tmp_path)
+    client = _register(service)
+    service.ingest_event(
+        client,
+        {
+            "module": "playback",
+            "kind": "digest",
+            "payload": {"status": "playing", "live_edge_lag_sec": 4.2},
+        },
+    )
+    assert store.list_debug_events(client_id=client, module="playback") == []
+
+
+def test_activity_live_events_are_ephemeral_and_allowed(tmp_path: Path) -> None:
+    service, store = _service(tmp_path)
+    client = _register(service)
+    service.ingest_event(
+        client,
+        {"module": "activity", "kind": "live", "payload": {"screen_class": "Player"}},
+    )
+    service.ingest_event(
+        client,
+        {"module": "activity", "kind": "frame", "payload": {"mime": "image/jpeg", "base64": "aa"}},
+    )
+    assert store.list_debug_events(client_id=client, module="activity") == []
+    for name in ("activity.snapshot", "activity.live_start", "activity.live_stop"):
+        assert service.enqueue(client_id=client, name=name, payload={})["name"] == name
+
+
 def test_live_memory_events_publish_without_persisting(tmp_path: Path) -> None:
     service, store = _service(tmp_path)
     client = _register(service)
-    service.ingest_event(client, {"module": "memory", "kind": "live", "payload": {"tracked_count": 3}})
-    service.ingest_event(client, {"module": "memory", "kind": "leak", "payload": {"class": "DetailVC"}})
+    service.ingest_event(
+        client, {"module": "memory", "kind": "live", "payload": {"tracked_count": 3}}
+    )
+    service.ingest_event(
+        client, {"module": "memory", "kind": "leak", "payload": {"class": "DetailVC"}}
+    )
     rows = store.list_debug_events(client_id=client, module="memory")
     assert [row["kind"] for row in rows] == ["leak"]
-    assert service.enqueue(client_id=client, name="memory.live_start", payload={})["name"] == "memory.live_start"
+    assert (
+        service.enqueue(client_id=client, name="memory.live_start", payload={})["name"]
+        == "memory.live_start"
+    )
 
 
 def test_mutation_requires_one_use_matching_confirmation(tmp_path: Path) -> None:
@@ -129,6 +166,45 @@ def test_mutation_requires_one_use_matching_confirmation(tmp_path: Path) -> None
             payload={"key": "b"},
             confirmation=str(token),
         )
+
+
+@pytest.mark.parametrize(
+    "name",
+    [
+        "explorer.set",
+        "explorer.call",
+        "storage.defaults_delete",
+        "storage.file_rename",
+        "storage.file_delete",
+        "storage.cookie_delete",
+        "settings.set",
+    ],
+)
+def test_explorer_and_settings_writes_need_confirmation(tmp_path: Path, name: str) -> None:
+    service, _ = _service(tmp_path)
+    client = _register(service)
+    with pytest.raises(PermissionError, match="confirmation"):
+        service.enqueue(client_id=client, name=name, payload={})
+    token = service.mint_confirmation(client, name)["token"]
+    service.enqueue(client_id=client, name=name, payload={}, confirmation=str(token))
+
+
+@pytest.mark.parametrize(
+    "name",
+    [
+        "explorer.roots",
+        "explorer.object",
+        "explorer.instances",
+        "runtime.libraries",
+        "runtime.image_classes",
+        "storage.cookies",
+        "settings.get",
+    ],
+)
+def test_explorer_and_settings_reads_need_no_confirmation(tmp_path: Path, name: str) -> None:
+    service, _ = _service(tmp_path)
+    client = _register(service)
+    service.enqueue(client_id=client, name=name, payload={"handle": "h1"})
 
 
 def test_unknown_command_and_large_payload_rejected(tmp_path: Path) -> None:
@@ -222,6 +298,41 @@ def _answer(service: DebugSessionService, client_id: str, result: dict[str, obje
             )
             return
         time.sleep(0.01)
+
+
+def test_apps_from_different_vendors_on_one_phone_share_a_device(tmp_path: Path) -> None:
+    service, _store = _service(tmp_path)
+    phone = {"device_name": "iPhone", "device_model": "iPhone17,1", "platform": "iOS"}
+    service.register(
+        {
+            **phone,
+            "client_id": "a",
+            "bundle_id": "com.a",
+            "device_key": "vendor:A",
+            "device_hint": "h1",
+        }
+    )
+    service.register(
+        {
+            **phone,
+            "client_id": "b",
+            "bundle_id": "com.b",
+            "device_key": "vendor:B",
+            "device_hint": "h1",
+        }
+    )
+    service.register(
+        {
+            **phone,
+            "client_id": "c",
+            "bundle_id": "com.c",
+            "device_key": "vendor:C",
+            "device_hint": "h2",
+        }
+    )
+    groups = [sorted(app["id"] for app in item["apps"]) for item in service.list_devices()]
+    assert sorted(groups) == [["a", "b"], ["c"]]
+    assert service.get_client("a")["device_hint"] == "h1"
 
 
 def test_invoke_returns_matching_event(tmp_path: Path) -> None:

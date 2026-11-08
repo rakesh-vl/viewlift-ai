@@ -1,4 +1,5 @@
 import Foundation
+import ViewliftCaptureObjC
 
 public enum DebugCapability: String, Codable, Sendable {
     case available
@@ -22,6 +23,13 @@ public enum DebugModule: String, CaseIterable, Hashable, Sendable {
     case ott
     case crash
     case hang
+    case activity
+    case playback
+    case navigation = "nav"
+    case explorer
+    case preview
+    /// Keeps the last ten seconds of the screen on disk so a crash comes with a replay video.
+    case replay
 }
 
 public enum JSONValue: Codable, Sendable, Equatable {
@@ -53,7 +61,13 @@ public enum JSONValue: Codable, Sendable, Equatable {
         var value = encoder.singleValueContainer()
         switch self {
         case let .string(item): try value.encode(item)
-        case let .number(item): try value.encode(item)
+        case let .number(item):
+            // JSON has no NaN or infinity. One bad frame would fail the whole reply.
+            if item.isFinite {
+                try value.encode(item)
+            } else {
+                try value.encodeNil()
+            }
         case let .bool(item): try value.encode(item)
         case let .object(item): try value.encode(item)
         case let .array(item): try value.encode(item)
@@ -84,7 +98,10 @@ public struct DebugClientRegistration: Codable, Sendable {
     public let deviceName: String
     public let deviceModel: String
     public let isSimulator: Bool
+    public let deviceHint: String
     public let sdkVersion: String
+    /// A debugger holds a fatal trap, so a silent app may be paused in Xcode rather than gone.
+    public let debuggerAttached: Bool
 
     public init(
         clientId: String,
@@ -104,7 +121,9 @@ public struct DebugClientRegistration: Codable, Sendable {
         self.deviceName = device?.deviceName ?? ""
         self.deviceModel = device?.deviceModel ?? ""
         self.isSimulator = device?.isSimulator ?? false
+        self.deviceHint = device?.deviceHint ?? ""
         self.sdkVersion = DeviceIdentity.sdkVersion
+        self.debuggerAttached = VLCCrashSignalsDebuggerAttached()
         self.clientId = clientId
         self.appName = appName
         self.bundleId = bundleId
@@ -134,7 +153,9 @@ public struct DebugClientRegistration: Codable, Sendable {
         case deviceName = "device_name"
         case deviceModel = "device_model"
         case isSimulator = "is_simulator"
+        case deviceHint = "device_hint"
         case sdkVersion = "sdk_version"
+        case debuggerAttached = "debugger_attached"
     }
 }
 

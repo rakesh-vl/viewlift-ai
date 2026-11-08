@@ -54,6 +54,45 @@ def test_every_command_has_a_note() -> None:
     assert set(COMMAND_NOTES) == ALLOWED_COMMANDS
 
 
+def test_debug_page_has_layout_explorer(tmp_path: Path) -> None:
+    with TestClient(create_app(_config(tmp_path))) as client:
+        page = client.get("/debug")
+        assert page.status_code == 200
+        html = page.text
+        for marker in (
+            "ui-guides",
+            "ui-baselines",
+            "ui-oversized",
+            "ui-hover",
+            "ui-slow",
+            "ui-device-repaint",
+            "ui-path",
+            "ui-match-next",
+            "ui-zoom-label",
+            "System views",
+            "Zoom out",
+            "Only this",
+        ):
+            assert marker in html
+
+
+def test_debug_page_has_explorer_and_settings(tmp_path: Path) -> None:
+    with TestClient(create_app(_config(tmp_path))) as client:
+        html = client.get("/debug").text
+        for marker in (
+            'data-panel="explorer"',
+            'data-panel="settings"',
+            "explorer-roots",
+            "explorer-instances",
+            "explorer-result",
+            "settings-result",
+            "ui-explore",
+            "/static/js/explorer.js",
+        ):
+            assert marker in html
+        assert client.get("/static/js/explorer.js").status_code == 200
+
+
 def test_catalog_matches_registered_tools() -> None:
     pytest.importorskip("mcp")
     from viewlift_ai.mcp_server.server import mcp

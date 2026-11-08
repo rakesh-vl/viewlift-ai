@@ -141,11 +141,10 @@ enum HangScreen {
     }
 
     #if canImport(UIKit)
+    /// UIKit is main-thread only; watchdog threads get nil instead of racing it.
     static func keyWindow() -> UIWindow? {
-        UIApplication.shared.connectedScenes
-            .compactMap { $0 as? UIWindowScene }
-            .flatMap(\.windows)
-            .first(where: \.isKeyWindow)
+        guard Thread.isMainThread else { return nil }
+        return MainActor.assumeIsolated { AutomationScreen.keyWindow() }
     }
 
     private static func top(_ controller: UIViewController?) -> UIViewController? {
@@ -166,8 +165,7 @@ enum HangScreen {
 enum HangScreenshot {
     static func jpegBase64(maxBytes: Int) -> String? {
         #if canImport(UIKit)
-        guard let window = HangScreen.keyWindow() else { return nil }
-        let image = scaled(window)
+        guard let window = HangScreen.keyWindow(), let image = scaled(window) else { return nil }
         for quality in [0.5, 0.35, 0.2] as [CGFloat] {
             guard let data = image.jpegData(compressionQuality: quality),
                   data.count <= maxBytes else {
@@ -183,10 +181,8 @@ enum HangScreenshot {
     }
 
     #if canImport(UIKit)
-    private static func scaled(_ window: UIWindow) -> UIImage {
-        let full = UIGraphicsImageRenderer(bounds: window.bounds).image { _ in
-            window.drawHierarchy(in: window.bounds, afterScreenUpdates: false)
-        }
+    private static func scaled(_ window: UIWindow) -> UIImage? {
+        guard let full = WindowSnapshot.image(of: window, scale: 1) else { return nil }
         let width = min(window.bounds.width, 280)
         let height = width * window.bounds.height / max(window.bounds.width, 1)
         let size = CGSize(width: width, height: height)
@@ -267,7 +263,7 @@ final class HangInteractionTrail: @unchecked Sendable {
         let copy = actions
         lock.unlock()
         let now = date.timeIntervalSince1970
-        return copy.suffix(limit).map { record in
+        return copy.suffix(max(0, limit)).map { record in
             var row: [String: JSONValue] = [
                 "kind": .string(record.kind),
                 "target_class": .string(record.target),
@@ -328,6 +324,11 @@ private extension UIApplication {
 
 private enum HangTouchObserver {
     static func record(_ event: UIEvent) {
+        if event.type == .presses {
+            noteReplayPresses(event)
+            FocusDebugMonitor.shared.notePresses(event)
+            return
+        }
         guard event.type == .touches, let touches = event.allTouches else { return }
         for touch in touches {
             let id = ObjectIdentifier(touch)
@@ -359,11 +360,22 @@ private enum HangTouchObserver {
         }
         guard let bounds = touch.window?.bounds, bounds.width > 0, bounds.height > 0 else { return }
         let point = touch.location(in: nil)
-        LeakReplayRecorder.shared.noteTouch(
-            phase: phase,
-            pointX: Double(point.x / bounds.width),
-            pointY: Double(point.y / bounds.height)
+        let pointX = Double(point.x / bounds.width)
+        let pointY = Double(point.y / bounds.height)
+        LeakReplayRecorder.shared.noteTouch(phase: phase, pointX: pointX, pointY: pointY)
+        let label = phase == "began" ? String((touch.view?.accessibilityLabel ?? "").prefix(40)) : ""
+        CrashReplayRecorder.shared.noteTouch(
+            CrashReplayTouch(phase: phase, pointX: pointX, pointY: pointY, label: label)
         )
+    }
+
+    private static func noteReplayPresses(_ event: UIEvent) {
+        guard let presses = event as? UIPressesEvent else { return }
+        for press in presses.allPresses where press.phase == .began {
+            guard let name = FocusDebugMonitor.buttonName(press.type) else { continue }
+            CrashReplayRecorder.shared.notePress(name)
+            CrashContextWriter.shared.notePress(name)
+        }
     }
 
     private static func meaningfulClass(_ view: UIView?) -> String {

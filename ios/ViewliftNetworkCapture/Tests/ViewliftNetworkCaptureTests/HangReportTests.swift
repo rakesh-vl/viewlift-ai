@@ -76,4 +76,14 @@ final class HangReportTests: XCTestCase {
         XCTAssertEqual(row["screen_class"], .string("HomeViewController"))
         XCTAssertEqual(row["label"], .string("Play"))
     }
+
+    func testDrainHangsReturnsEachStallOnce() {
+        let recorder = CrashHangRecorder.shared
+        _ = recorder.drainHangs()
+        recorder.storeHang(["id": .string("hang-toast-1"), "duration_ms": .number(800)])
+        let first = recorder.drainHangs()
+        XCTAssertEqual(first.count, 1)
+        XCTAssertEqual(first[0]["id"], .string("hang-toast-1"))
+        XCTAssertTrue(recorder.drainHangs().isEmpty)
+    }
 }

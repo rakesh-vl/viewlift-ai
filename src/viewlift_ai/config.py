@@ -12,6 +12,7 @@ from typing import Any
 
 from platformdirs import user_data_dir
 
+from viewlift_ai import defaults
 from viewlift_ai.models.flow import RetentionPolicy
 from viewlift_ai.services.bind_policy import (
     SetupValidationError,
@@ -27,7 +28,10 @@ CommandRunner = Callable[..., Any]
 
 
 def default_data_dir() -> Path:
-    """~/Library/Application Support/ViewliftAI on macOS."""
+    """`VIEWLIFT_DATA_DIR`, else ~/Library/Application Support/ViewliftAI on macOS."""
+    override = (os.environ.get("VIEWLIFT_DATA_DIR") or "").strip()
+    if override:
+        return Path(override).expanduser().resolve()
     return Path(user_data_dir(APP_NAME, appauthor=False))
 
 
@@ -48,10 +52,10 @@ class AppConfig:
     retention: RetentionPolicy
     secret: SecretKeyState
     host: str = "127.0.0.1"
-    port: int = 8741
+    port: int = defaults.CONSOLE_PORT
     proxy_enabled: bool = True
     proxy_host: str = "127.0.0.1"
-    proxy_port: int = 8080
+    proxy_port: int = defaults.PROXY_PORT
     allowlist_hosts: tuple[str, ...] = ()
 
     @property
@@ -215,19 +219,28 @@ def load_config(
     resolved_proxy_host = proxy_host or os.environ.get("VIEWLIFT_PROXY_HOST", "127.0.0.1")
     # Fail-closed: env/startup non-loopback requires Setup LAN flow (minted auth).
     resolved_proxy_host = validate_loopback_or_refuse_env(resolved_proxy_host)
+    console_host = validate_loopback_or_refuse_env(
+        (os.environ.get("VIEWLIFT_HOST") or "127.0.0.1").strip()
+    )
     return AppConfig(
         data_dir=root,
         database_path=root / "viewlift.db",
         secret_key_path=secret_path,
         retention=policy,
         secret=secret,
+        host=console_host,
+        port=defaults.console_port(),
         proxy_enabled=(
             proxy_enabled
             if proxy_enabled is not None
             else _env_bool("VIEWLIFT_PROXY_ENABLED", True)
         ),
         proxy_host=resolved_proxy_host,
-        proxy_port=proxy_port if proxy_port is not None else _env_int("VIEWLIFT_PROXY_PORT", 8080),
+        proxy_port=(
+            proxy_port
+            if proxy_port is not None
+            else _env_int("VIEWLIFT_PROXY_PORT", defaults.PROXY_PORT)
+        ),
         allowlist_hosts=(
             allowlist_hosts if allowlist_hosts is not None else _env_host_list("VIEWLIFT_ALLOWLIST")
         ),

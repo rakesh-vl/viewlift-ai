@@ -1,8 +1,8 @@
 {% extends "base.html" %}
 {% block title %}Remote Debug Suite · Viewlift AI{% endblock %}
 {% block content %}
-<link rel="stylesheet" href="/static/css/debug.css?v=10">
-<link rel="stylesheet" href="/static/css/memory.css?v=1">
+<link rel="stylesheet" href="/static/css/debug.css?v=23">
+<link rel="stylesheet" href="/static/css/memory.css?v=2">
 <section class="debug-session-bar">
   <span id="debug-client-name" class="debug-client-name">No app selected</span>
   <button type="button" class="btn ghost" id="debug-refresh">Refresh apps</button>
@@ -10,16 +10,42 @@
 </section>
 
 <nav class="debug-tabs" id="debug-tabs" aria-label="Debug tools">
-  {% for tab, label in [("ott", "OTT"), ("analytics", "Analytics"), ("hangs", "Hangs"), ("performance", "Performance"),
+  {% for tab, label in [("live", "Live"), ("ott", "OTT"), ("analytics", "Analytics"), ("hangs", "Hangs"), ("performance", "Performance"),
                         ("memory", "Memory"), ("ui", "UI"), ("swiftui", "SwiftUI"), ("assets", "Assets"),
                         ("accessibility", "Accessibility"), ("storage", "Storage"), ("flags", "Flags"),
-                        ("bug", "Bug report"), ("macro", "Macros"), ("runtime", "Runtime"), ("push", "Push"),
-                        ("network-tools", "Network tools")] %}
+                        ("bug", "Bug report"), ("macro", "Macros"), ("runtime", "Runtime"), ("explorer", "Explorer"),
+                        ("push", "Push"), ("network-tools", "Network tools"), ("settings", "Device settings")] %}
   <button type="button" class="btn ghost" data-debug-tab="{{ tab }}">{{ label }}</button>
   {% endfor %}
 </nav>
 
-<section class="debug-panel" data-panel="ott">
+<section class="debug-panel" data-panel="live">
+  <div class="panel-title"><h2>Live activity</h2>
+    <span id="live-activity-pill" class="memory-pill" role="status">Off</span>
+    <button type="button" class="btn ghost" id="live-screenshot">Screenshot</button>
+    <button type="button" class="btn ghost" id="live-follow" aria-pressed="false">Follow screen</button>
+  </div>
+  <p class="muted">Protected video frames stay black. This view is the current screen, playback state, a UI snapshot, and logs. Stream URLs stay on the device.</p>
+  <div id="live-note"></div>
+  <div id="live-now" class="metric-grid"></div>
+  <p id="live-updated" class="muted"></p>
+  <div class="live-split">
+    <figure id="live-shot" class="live-shot">
+      <p class="muted">No screenshot yet.</p>
+    </figure>
+    <div class="live-logs">
+      <div class="panel-title">
+        <h3>Logs</h3>
+        <button type="button" class="btn ghost" id="live-log-start" aria-pressed="false">Start capture</button>
+        <button type="button" class="btn ghost" id="live-log-stop" disabled>Stop capture</button>
+      </div>
+      <p id="live-log-status" class="muted">Stored lines for this app. Start capture to stream the simulator or device.</p>
+      <ol id="live-log-list" class="live-log-list"></ol>
+    </div>
+  </div>
+</section>
+
+<section class="debug-panel hidden" data-panel="ott">
   <div class="panel-title"><h2>App runtime snapshot</h2>
     <button class="btn ghost" data-command="ott.snapshot">Refresh snapshot</button>
     <button class="btn ghost" id="ott-spm-refresh" type="button">Detect packages</button>
@@ -27,6 +53,16 @@
   <p class="muted">Sections come from the paired app's snapshot provider. Tokens, PINs and stream URLs stay on the device.</p>
   <div id="app-identity" class="metric-grid"></div>
   <div id="ott-summary" class="metric-grid"></div>
+  <div class="panel-title"><h3>Playback timeline</h3>
+    <button class="btn ghost" data-command="playback.snapshot">Refresh playback</button>
+    <button class="btn ghost" data-command="playback.drm">DRM</button>
+    <button class="btn ghost" data-command="playback.waterfall">Manifests</button>
+  </div>
+  <p class="muted" id="playback-align">Stalls, bitrate, DRM, and playlist requests. Segment bytes and license material stay on the device.</p>
+  <div id="playback-summary" class="metric-grid"></div>
+  <div id="playback-timeline" class="playback-strip"></div>
+  <div id="playback-drm" class="debug-result"></div>
+  <div id="playback-waterfall" class="debug-result"></div>
   <div id="ott-sections" class="ott-sections"></div>
   <h3>Swift packages</h3>
   <p class="muted" id="ott-spm-source">Detected from the paired app's newest Xcode build.</p>
@@ -40,7 +76,7 @@
     <button class="btn ghost" id="analytics-refresh" type="button">Refresh traffic</button>
     <button class="btn ghost" data-command="ott.snapshot">Device clients</button>
   </div>
-  <p class="muted">Beacon URLs and analytics clients come from the paired app's snapshot. Select a row for params, request, and body.</p>
+  <p class="muted">Rows arrive as the app sends them. Select a row for params, request, and body.</p>
   <div id="analytics-summary" class="metric-grid"></div>
   <div class="filters analytics-filters" id="analytics-filters">
     <label>Kind
@@ -116,7 +152,8 @@
     <button class="btn ghost" data-command="hang.list">Hang stacks</button>
     <button class="btn ghost" data-command="crash.list">Crash / exception stacks</button>
   </div>
-  <p class="muted">A hang is a main-thread stall over 400 ms. Each card shows the screen class, a screenshot from when the UI recovered, taps and scrolls before the stall, console lines, and the stack. Click the screenshot to enlarge it. Copy report for a bug note. Fatal SIG* after death still need device crash reports.</p>
+  <p class="muted">A crash appears here as it happens. Each card says in plain words what failed, shows the code at the crash line, the likely cause, and where to fix it. Below that are the steps that led there, a timeline you can click to jump in the replay video, the last requests, console lines, the environment, and the whole stack as file and line. The replay is the last ten seconds of the screen with taps drawn; it uploads on the app's next launch and can be downloaded. Copy for AI copies a markdown brief an agent can fix the crash from. File and line need the app's dSYM on this Mac, which a Debug build from Xcode provides. If Xcode is paused at the crash, continue the app so it can report. A hang is a main-thread stall over 400 ms. Each hang card shows the screen class, a screenshot from when the UI recovered, taps and scrolls before the stall, console lines, and the stack. Click the screenshot to enlarge it. Copy report for a bug note.</p>
+  <div id="crashes-live" class="debug-result"></div>
   <div id="hangs-result" class="debug-result"></div>
 </section>
 
@@ -131,7 +168,7 @@
 <section class="debug-panel hidden" data-panel="memory">
   <div class="panel-title"><h2>Leak tracker and memory graph</h2>
     <span id="memory-live-pill" class="memory-pill" role="status">Not tracking</span>
-    <button type="button" class="btn" id="memory-live-toggle" aria-pressed="false">Start live tracking</button>
+    <button type="button" class="btn memory-toggle" id="memory-live-toggle" aria-pressed="false"><span class="memory-spinner" aria-hidden="true"></span><span class="memory-toggle-label">Start live tracking</span></button>
     <button type="button" class="btn ghost" data-command="memory.leaks">Load leak reports</button>
   </div>
   <p class="muted">Every view controller is tracked from viewDidLoad with the stack that created it. A screen still alive 3 seconds after it closes is a leak. With live tracking on, the app also records a small screen replay with your taps, so each leak comes with the steps to reproduce it, the class, its creation stack, what still holds it, and retain cycle candidates. Register other objects, such as view models, with <code>MemoryDebugService.shared.track(_:)</code>.</p>
@@ -158,6 +195,12 @@
 
   <h3>Live objects by class</h3>
   <div id="memory-classes" class="memory-bars"></div>
+
+  <div class="panel-title memory-subtitle"><h3>Live objects <span id="memory-object-count" class="muted"></span></h3>
+    <input id="memory-object-filter" type="search" placeholder="Filter by class, screen, or kind" aria-label="Filter live objects">
+    <button type="button" class="btn ghost" data-command="memory.snapshot">Refresh</button>
+  </div>
+  <div id="memory-objects" class="memory-objects" role="list" aria-label="Live tracked objects"></div>
 
   <h3>Leaks <span id="memory-leak-count" class="muted"></span></h3>
   <div id="memory-leaks"></div>
@@ -186,24 +229,86 @@
     <button type="button" class="btn ghost" data-command="memory.heap">Take heap snapshot</button>
   </div>
   <div id="memory-heap"><p class="muted">Counts live instances of every app class by walking the heap. Take one snapshot, repeat a flow a few times, then take another. Classes that keep growing are leaking.</p></div>
+
+  <div id="memory-inspector-scrim" class="memory-scrim" hidden></div>
+  <aside id="memory-inspector" class="memory-inspector" aria-label="Object details" aria-hidden="true" tabindex="-1">
+    <header class="memory-inspector-head">
+      <h3>Object details</h3>
+      <button type="button" class="btn ghost" id="memory-inspector-refresh">Refresh</button>
+      <button type="button" class="btn ghost" id="memory-inspector-copy">Copy</button>
+      <button type="button" class="btn ghost" id="memory-inspector-close" aria-label="Close object details">Close</button>
+    </header>
+    <div id="memory-inspector-body" class="memory-inspector-body" aria-live="polite"></div>
+  </aside>
 </section>
 
 <section class="debug-panel hidden" data-panel="ui">
   <div class="panel-title"><h2>UI inspector and 3D hierarchy</h2>
-    <button class="btn ghost" data-command="ui.hierarchy">Capture hierarchy</button>
-    <button class="btn ghost" data-command="ui.screenshot">Screenshot</button>
-    <button class="btn ghost" id="ui-expand" type="button">Expand all</button>
-    <button class="btn ghost" id="ui-collapse" type="button">Collapse all</button>
-    <button class="btn ghost" id="ui-zoom-out" type="button">Shrink</button>
-    <button class="btn ghost" id="ui-zoom-in" type="button">Expand</button>
-    <button class="btn ghost" id="ui-3d-flat" type="button">Flat</button>
-    <button class="btn ghost" id="ui-3d-reset" type="button">3D</button>
-    <label class="muted">Spacing <input id="ui-3d-spacing" type="range" min="0" max="120" value="18"></label>
+    <button type="button" class="btn ghost" data-command="ui.hierarchy">Capture hierarchy</button>
+    <button type="button" class="btn ghost" data-command="ui.screenshot">Screenshot</button>
+    <button type="button" class="btn ghost" data-command="ui.focus">Focused view</button>
+    <button type="button" class="btn ghost" id="ui-explore">Explore selected view</button>
   </div>
+  <div class="ui-controls">
+    <div class="ui-toolbar" role="toolbar" aria-label="Layer view">
+      <span class="ui-group-label">Layers</span>
+      <button type="button" class="btn ghost" id="ui-3d-flat" aria-pressed="false">Flat</button>
+      <button type="button" class="btn ghost active" id="ui-3d-reset" aria-pressed="true">3D</button>
+      <button type="button" class="btn ghost" id="ui-zoom-out">Zoom out</button>
+      <button type="button" class="btn ghost" id="ui-zoom-in">Zoom in</button>
+      <span id="ui-zoom-label" class="ui-zoom">100%</span>
+      <label class="ui-range">Spacing <input id="ui-3d-spacing" type="range" min="0" max="120" value="18" aria-label="Layer spacing"></label>
+      <label class="ui-range">Depth
+        <select id="ui-3d-depth" aria-label="Layer depth">
+          <option value="overlap" selected>Overlap</option>
+          <option value="tree">Tree</option>
+        </select>
+      </label>
+      <label class="ui-range ui-zrange">Range
+        <input id="ui-3d-zlow" type="range" min="0" max="100" value="0" aria-label="Lowest layer shown">
+        <input id="ui-3d-zhigh" type="range" min="0" max="100" value="100" aria-label="Highest layer shown">
+      </label>
+      <span id="ui-layer-status" class="muted ui-layer-status" aria-live="polite"></span>
+      <label class="ui-check"><input type="checkbox" id="ui-guides"> Guidelines</label>
+      <label class="ui-check"><input type="checkbox" id="ui-baselines"> Baselines</label>
+      <label class="ui-check"><input type="checkbox" id="ui-oversized"> Oversized images</label>
+      <label class="ui-check is-on"><input type="checkbox" id="ui-hover" checked> Hover inspect</label>
+    </div>
+    <div class="ui-toolbar" role="toolbar" aria-label="On device">
+      <span class="ui-group-label">On device</span>
+      <label class="ui-check"><input type="checkbox" id="ui-slow"> Slow animations 5×</label>
+      <label class="ui-check"><input type="checkbox" id="ui-device-guides"> Guidelines</label>
+      <label class="ui-check"><input type="checkbox" id="ui-device-baselines"> Baselines</label>
+      <label class="ui-check"><input type="checkbox" id="ui-device-images"> Oversized images</label>
+      <label class="ui-check"><input type="checkbox" id="ui-device-repaint"> Highlight repaints</label>
+      <span id="ui-device-note" class="muted"></span>
+    </div>
+  </div>
+  <p class="muted">Layer toggles draw on the captured hierarchy. On device toggles paint the running app and ask before each change.</p>
+  <div id="ui-focus" class="debug-result ui-focus"></div>
+  <figure id="ui-shot" class="ui-shot" hidden></figure>
   <div class="inspector-split">
-    <div id="ui-tree" class="tree"></div>
-    <canvas id="ui-3d" width="800" height="520"></canvas>
-    <div id="ui-properties" class="debug-result">Select a view to see its class, properties, and whether it is UIKit or SwiftUI.</div>
+    <div class="tree-pane">
+      <div class="tree-nav">
+        <input id="ui-filter" type="search" placeholder="Filter class, text, or id" aria-label="Filter view tree">
+        <span id="ui-match-count" class="muted"></span>
+        <button type="button" class="btn ghost" id="ui-match-prev" disabled>Prev</button>
+        <button type="button" class="btn ghost" id="ui-match-next" disabled>Next</button>
+        <label class="ui-check is-on"><input type="checkbox" id="ui-system" checked> System views</label>
+        <button type="button" class="btn ghost" id="ui-expand">Expand all</button>
+        <button type="button" class="btn ghost" id="ui-collapse">Collapse all</button>
+        <button type="button" class="btn ghost" id="ui-up" disabled>Up</button>
+        <button type="button" class="btn ghost" id="ui-branch" disabled>Only this</button>
+        <button type="button" class="btn ghost" id="ui-branch-clear" hidden>Show all</button>
+      </div>
+      <nav id="ui-path" class="tree-path" aria-label="Selected view path"></nav>
+      <div id="ui-tree" class="tree" tabindex="0" role="tree" aria-label="View hierarchy"></div>
+    </div>
+    <div class="ui-stage">
+      <canvas id="ui-3d" width="800" height="520"></canvas>
+      <div id="ui-hover-tip" class="ui-hover" hidden></div>
+    </div>
+    <div id="ui-properties" class="debug-result">Select a view to see its layout box, constraints, and properties.</div>
   </div>
 </section>
 
@@ -234,6 +339,7 @@
     <h2>Storage and state</h2>
     <button class="btn ghost" type="button" data-storage-run="storage.defaults">UserDefaults</button>
     <button class="btn ghost" type="button" data-storage-run="storage.keychain_metadata">Keychain metadata</button>
+    <button class="btn ghost" type="button" data-storage-run="storage.cookies">Cookies</button>
     <button class="btn ghost" id="storage-snapshot" type="button">Snapshot selected</button>
   </div>
   <p class="muted">Keychain values never leave the device. Click a folder to open it, or a file to preview it. Paths stay inside the app sandbox.</p>
@@ -288,12 +394,42 @@
 </section>
 
 <section class="debug-panel hidden" data-panel="runtime">
-  <h2>Objective-C runtime browser</h2>
+  <div class="panel-title"><h2>Objective-C runtime browser</h2>
+    <button class="btn ghost" type="button" data-command="runtime.libraries">Loaded libraries</button>
+  </div>
   <form data-command-form="runtime.search">
     <input name="query" placeholder="Class name">
     <button class="btn">Search</button>
   </form>
   <div id="runtime-result" class="debug-result"></div>
+</section>
+
+<section class="debug-panel hidden" data-panel="explorer">
+  <div class="panel-title"><h2>Object explorer</h2>
+    <button class="btn ghost" type="button" data-command="explorer.roots">Shortcuts</button>
+  </div>
+  <p class="muted">Live objects in the app: properties, ivars, Swift fields, methods, and collection elements. Edits and method calls ask first. Only objects the app hands out can be opened, never a raw address.</p>
+  <form id="explorer-instances" class="explorer-search">
+    <input name="class" placeholder="Class name, for example UIViewController" autocomplete="off" aria-label="Class to find on the heap" required>
+    <button class="btn ghost" type="submit">Find live instances</button>
+  </form>
+  <div class="explorer-split">
+    <div id="explorer-roots" class="explorer-roots"><p class="muted">Load shortcuts to start from the app, its windows, or a shared singleton.</p></div>
+    <div class="explorer-main">
+      <nav id="explorer-crumb" class="storage-crumb" aria-label="Explored objects"></nav>
+      <input id="explorer-filter" type="search" placeholder="Filter fields and methods" autocomplete="off" aria-label="Filter fields and methods">
+      <div id="explorer-call" class="explorer-call" hidden></div>
+      <div id="explorer-result" class="debug-result"></div>
+    </div>
+  </div>
+</section>
+
+<section class="debug-panel hidden" data-panel="settings">
+  <div class="panel-title"><h2>Device debug settings</h2>
+    <button class="btn ghost" type="button" data-command="settings.get">Refresh</button>
+  </div>
+  <p class="muted">Turn debug modules and network capture on or off in the running app. Changes are saved on the device and stay in effect after relaunch until you reset them.</p>
+  <div id="settings-result" class="debug-result"></div>
 </section>
 
 <section class="debug-panel hidden" data-panel="push">
@@ -313,17 +449,32 @@
   <p id="profile-status" class="muted"></p>
   <div id="waterfall" class="waterfall"></div>
   <form id="deeplink-form" class="filters">
-    <input id="deeplink-udid" placeholder="Simulator UDID (selected app's simulator, else booted)">
+    <select id="deeplink-udid" data-cap="deeplink" aria-label="Deeplink target"></select>
     <input id="deeplink-url" placeholder="scheme://path">
     <button class="btn">Open deeplink</button>
   </form>
   <p id="deeplink-status" class="muted"></p>
+  <form id="location-form" class="filters">
+    <select id="loc-udid" data-cap="location" aria-label="Location target"></select>
+    <input id="loc-lat" type="number" step="any" placeholder="Latitude">
+    <input id="loc-lon" type="number" step="any" placeholder="Longitude">
+    <button class="btn">Set location</button>
+    <button type="button" id="loc-clear" class="btn ghost">Clear</button>
+  </form>
+  <p id="location-status" class="muted"></p>
+  <form data-command-form="nav.open_url" class="filters">
+    <input name="url" placeholder="scheme://content/id on the paired iPhone or Apple TV">
+    <button class="btn">Open on device</button>
+  </form>
+  <p id="nav-status" class="muted"></p>
 </section>
 {% endblock %}
 {% block scripts %}
 <script src="/static/js/storage_preview.js?v=1"></script>
 <script src="/static/js/memory_visuals.js?v=1"></script>
-<script src="/static/js/memory.js?v=1"></script>
-<script src="/static/js/debug.js?v=14"></script>
+<script src="/static/js/memory.js?v=5"></script>
+<script src="/static/js/live.js?v=3"></script>
+<script src="/static/js/explorer.js?v=4"></script>
+<script src="/static/js/debug.js?v=35"></script>
 <script>document.addEventListener("DOMContentLoaded", () => ViewliftDebug.init());</script>
 {% endblock %}

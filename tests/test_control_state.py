@@ -1,4 +1,4 @@
-"""Stream and filter buttons follow committed state."""
+"""Filter buttons follow committed state. Logs page has no Start/Stop stream buttons."""
 
 from __future__ import annotations
 
@@ -14,33 +14,6 @@ CSS = ROOT / "src/viewlift_ai/web/static/css/app.css"
 
 NODE = r"""
 const assert = require("assert");
-const idle = streamControlPlan("idle");
-assert.equal(idle.showStart, true);
-assert.equal(idle.showStop, false);
-assert.equal(idle.showRestart, false);
-assert.equal(idle.startLabel, "Start");
-
-const starting = streamControlPlan("starting");
-assert.equal(starting.showStart, true);
-assert.equal(starting.startLabel, "Starting…");
-assert.equal(starting.showStop, false);
-assert.equal(starting.busy, true);
-
-const running = streamControlPlan("running");
-assert.equal(running.showStart, false);
-assert.equal(running.showStop, true);
-assert.equal(running.showRestart, true);
-assert.equal(running.stopLabel, "Stop");
-
-const stopping = streamControlPlan("stopping");
-assert.equal(stopping.showStart, false);
-assert.equal(stopping.showRestart, false);
-assert.equal(stopping.stopLabel, "Stopping…");
-
-const restarting = streamControlPlan("restarting");
-assert.equal(restarting.showRestart, false);
-assert.equal(restarting.stopLabel, "Restarting…");
-
 const empty = commitButtonPlan({ host: "" }, { host: "" });
 assert.equal(empty.showApply, true);
 assert.equal(empty.showClear, false);
@@ -63,9 +36,10 @@ def test_pages_hide_the_inactive_action() -> None:
     logs = LOGS.read_text()
     dashboard = DASHBOARD.read_text()
     css = CSS.read_text()
-    assert 'id="btn-log-start"' in logs
-    assert 'id="btn-log-stop"' in logs and "hidden" in logs.split('id="btn-log-stop"', 1)[1][:80]
-    assert 'id="btn-log-restart"' in logs
+    # Logs page streams only from the SDK, so no simctl or device start/stop buttons.
+    assert 'id="btn-log-start"' not in logs
+    assert 'id="btn-log-stop"' not in logs
+    assert 'id="btn-log-restart"' not in logs
     assert 'id="btn-log-clear"' in logs and "hidden" in logs.split('id="btn-log-clear"', 1)[1][:80]
     assert 'id="btn-clear"' in dashboard and "hidden" in dashboard.split('id="btn-clear"', 1)[1][:80]
     assert ".btn[hidden]" in css

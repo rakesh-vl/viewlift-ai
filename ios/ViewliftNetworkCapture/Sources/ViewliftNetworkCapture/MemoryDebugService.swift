@@ -26,6 +26,7 @@ public final class MemoryDebugService: @unchecked Sendable {
     static let maxLeaks = 10
     static let maxActivity = 200
     static let liveInterval: TimeInterval = 1
+    static let liveObjectLimit = 80
     static let creationFrameLimit = 24
     static let leaksReplyBudget = 420_000
     static let liveDefaultsKey = "viewlift.memory.live"
@@ -130,7 +131,7 @@ public final class MemoryDebugService: @unchecked Sendable {
     func snapshot() -> [String: JSONValue] {
         lock.lock()
         pruneLocked()
-        let rows = tracked.values.map(Self.describe)
+        let rows = tracked.values.map { MemoryObjectDetail.row($0, leaked: leakIds.contains($0.id)) }
         let summaries = leaks.map(LeakReport.summary)
         let isLive = live
         lock.unlock()
@@ -177,6 +178,18 @@ public final class MemoryDebugService: @unchecked Sendable {
         let leaked = leakIds
         lock.unlock()
         return MemoryGraphBuilder.build(live: alive, leaked: leaked)
+    }
+
+    @MainActor
+    func objectDetail(id: String) -> [String: JSONValue] {
+        lock.lock()
+        pruneLocked()
+        let record = tracked[id]
+        let leaked = leakIds.contains(id)
+        let others = tracked.values.compactMap { item in item.value.map { (id: item.id, object: $0) } }
+        lock.unlock()
+        guard let record, let object = record.value else { return MemoryObjectDetail.missing(id: id) }
+        return MemoryObjectDetail.make(object: object, record: record, leaked: leaked, others: others)
     }
 
     func heap() -> [String: JSONValue] {
@@ -262,6 +275,8 @@ public final class MemoryDebugService: @unchecked Sendable {
             .object(["class": .string(item.key), "count": .number(Double(item.value))])
         }
         let openLeaks = leaks.filter { $0["status"] == .string("alive") }.count
+        let objects = tracked.values.sorted { $0.createdAt > $1.createdAt }.prefix(Self.liveObjectLimit)
+            .map { MemoryObjectDetail.row($0, leaked: leakIds.contains($0.id)) }
         return [
             "timestamp": .number(now.timeIntervalSince1970),
             "footprint_bytes": .number(Double(MemoryFootprint.current())),
@@ -269,6 +284,7 @@ public final class MemoryDebugService: @unchecked Sendable {
             "leak_count": .number(Double(openLeaks)),
             "recording": .bool(LeakReplayRecorder.shared.isRecording),
             "classes": .array(classes),
+            "objects": .array(objects),
             "activity": .array(activity.map { item in
                 .object([
                     "kind": .string(item.kind),
@@ -280,14 +296,14 @@ public final class MemoryDebugService: @unchecked Sendable {
         ]
     }
 
-    private static func describe(_ item: MemoryTrackedRecord) -> JSONValue {
-        .object([
-            "id": .string(item.id),
-            "class": .string(item.className),
-            "context": .string(item.context),
-            "screen": .string(item.screen),
-            "age_seconds": .number(Date().timeIntervalSince(item.createdAt))
-        ])
+}
+
+/// Lets the object explorer open a tracked object by its memory id.
+extension MemoryDebugService {
+    func trackedObject(id: String) -> AnyObject? {
+        lock.lock()
+        defer { lock.unlock() }
+        return tracked[id]?.value
     }
 }
 

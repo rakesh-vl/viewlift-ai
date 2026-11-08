@@ -49,12 +49,12 @@ Then open `http://127.0.0.1:8741`.
 
 | Listener | Default | Bind | Notes |
 |---|---|---|---|
-| Dashboard and API (uvicorn) | 8741 | `127.0.0.1` | Fixed in `AppConfig`; never exposed to the LAN |
+| Dashboard and API (uvicorn) | 8741 | `127.0.0.1` | `VIEWLIFT_HOST` and `VIEWLIFT_PORT`. Loopback only |
 | mitmproxy | 8080 | `127.0.0.1` | LAN bind only from the Setup page, with generated basic auth |
-| SDK ingest (HTTPS) | 8742 | off | Enabled from Setup on a loopback, LAN or VPN address |
+| SDK ingest (HTTPS) | 8743 | off | `VIEWLIFT_INGEST_PORT`. Enabled from Setup on a loopback, LAN, or VPN address |
 | MCP (streamable HTTP) | 8742, path `/mcp` | `127.0.0.1` | Set `VIEWLIFT_AI_MCP_PORT` to move it |
 
-The MCP server and the SDK receiver share the default port 8742. They only collide when the receiver is enabled on `127.0.0.1`. If you need the receiver on loopback (for example for a simulator), move one of them. See [Security model, known gaps](security-model.md#known-gaps).
+The receiver refuses to bind the MCP port. A simulator on the same Mac can use the receiver on `127.0.0.1:8743` while MCP stays on 8742.
 
 ## Where data lives
 

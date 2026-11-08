@@ -10,8 +10,18 @@ from urllib import error as urlerror
 from urllib import parse as urlparse
 from urllib import request as urlrequest
 
-DEFAULT_URL = "http://127.0.0.1:8741"
+from viewlift_ai import defaults
+
+_LOOPBACK_HOST = "127.0.0.1"
 _LOOPBACK = {"127.0.0.1", "localhost", "::1"}
+
+
+def default_url() -> str:
+    """Console URL from `VIEWLIFT_HOST` and `VIEWLIFT_PORT`, the same env the console reads."""
+    host = (os.environ.get("VIEWLIFT_HOST") or _LOOPBACK_HOST).strip()
+    if ":" in host:
+        host = f"[{host}]"
+    return f"http://{host}:{defaults.console_port()}"
 
 
 class ConsoleError(Exception):
@@ -22,7 +32,8 @@ class ConsoleError(Exception):
 
 
 def console_base_url(value: str | None = None) -> str:
-    raw = (value if value is not None else os.environ.get("VIEWLIFT_AI_URL") or DEFAULT_URL).strip()
+    configured = value if value is not None else os.environ.get("VIEWLIFT_AI_URL")
+    raw = (configured or default_url()).strip()
     parsed = urlparse.urlsplit(raw)
     host = parsed.hostname
     if parsed.scheme not in {"http", "https"} or host not in _LOOPBACK:

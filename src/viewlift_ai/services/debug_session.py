@@ -2,17 +2,25 @@
 
 from __future__ import annotations
 
+import base64
+import binascii
 import json
+import logging
 import secrets
 import threading
 import time
 import uuid
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from typing import Any
 
+from viewlift_ai import defaults
+from viewlift_ai.services.crash_media import CrashMediaStore
 from viewlift_ai.services.encrypted_store import EncryptedSqliteStore
 from viewlift_ai.services.event_bus import EventBus
+
+logger = logging.getLogger(__name__)
 
 MAX_EVENT_BYTES = 512_000
 MAX_COMMAND_BYTES = 64_000
@@ -22,10 +30,11 @@ CLIENT_TTL_SECONDS = 45.0
 BACKGROUND_GRACE_SECONDS = 1800.0
 LIFECYCLE_STATES = frozenset({"foreground", "background"})
 PERSIST_INTERVAL_SECONDS = 30.0
+STALL_HINT_SECONDS = 8.0
 COMMAND_TTL_SECONDS = 30.0
 CONFIRM_TTL_SECONDS = 30.0
-INVOKE_DEFAULT_TIMEOUT = 12.0
-INVOKE_MAX_TIMEOUT = 25.0
+INVOKE_DEFAULT_TIMEOUT = defaults.COMMAND_TIMEOUT_SECONDS
+INVOKE_MAX_TIMEOUT = defaults.JOB_WAIT_SECONDS
 
 READ_COMMANDS = {
     "performance.snapshot",
@@ -33,10 +42,12 @@ READ_COMMANDS = {
     "memory.graph",
     "memory.leaks",
     "memory.heap",
+    "memory.object",
     "memory.live_start",
     "memory.live_stop",
     "ui.hierarchy",
     "ui.describe",
+    "ui.layers",
     "ui.screenshot",
     "swiftui.renders",
     "assets.audit",
@@ -55,11 +66,31 @@ READ_COMMANDS = {
     "ott.snapshot",
     "hang.list",
     "crash.list",
+    "activity.snapshot",
+    "activity.live_start",
+    "activity.live_stop",
+    "playback.snapshot",
+    "playback.drm",
+    "playback.waterfall",
+    "ui.focus",
+    "runtime.libraries",
+    "runtime.image_classes",
+    "explorer.roots",
+    "explorer.object",
+    "explorer.instances",
+    "storage.cookies",
+    "settings.get",
+    "ui.accessibility_tree",
+    "ui.find",
+    "ui.wait_for",
+    "preview.list",
+    "preview.render",
 }
 
 MUTATING_COMMANDS = {
     "ui.highlight",
     "ui.edit",
+    "ui.visual",
     "storage.defaults_set",
     "storage.file_write",
     "storage.snapshot_create",
@@ -70,15 +101,83 @@ MUTATING_COMMANDS = {
     "macro.record_stop",
     "macro.replay",
     "push.local",
+    "nav.open_url",
+    "explorer.set",
+    "explorer.call",
+    "storage.defaults_delete",
+    "storage.file_rename",
+    "storage.file_delete",
+    "storage.cookie_delete",
+    "settings.set",
+    "ui.tap",
+    "ui.long_press",
+    "ui.swipe",
+    "ui.scroll",
+    "ui.type_text",
+    "ui.key",
+    "ui.remote",
+    "ui.drag",
+    "ui.touch",
+    "ui.button",
+    "app.launch",
+    "app.terminate",
+    "net.profile",
 }
 
 ALLOWED_COMMANDS = READ_COMMANDS | MUTATING_COMMANDS
 
 # Streamed once a second; persisting them would push command results out of the event history.
-EPHEMERAL_EVENTS = frozenset({("memory", "live")})
+EPHEMERAL_EVENTS = frozenset({
+    ("memory", "live"),
+    ("activity", "live"),
+    ("activity", "frame"),
+    ("playback", "event"),
+    ("playback", "digest"),
+    ("ui", "focus"),
+    ("ui", "remote"),
+})
 
 
 MAX_FRAMEWORKS = 400
+
+
+def crash_event_id(client_id: str, payload: dict[str, object], fallback: str = "") -> str:
+    """One id per process death, so the SDK record and the OS crash report land on the same card."""
+    try:
+        pid = int(payload.get("pid") or 0)
+    except (TypeError, ValueError):
+        pid = 0
+    return f"crash-{client_id}-{pid}" if pid > 0 else (fallback or f"crash-{uuid.uuid4()}")
+
+
+def _crash_replaces(existing: dict[str, object], incoming: dict[str, object]) -> bool:
+    """The OS report has every thread, so a later SDK record never replaces it."""
+    return not (
+        existing.get("source") == "crash-report" and incoming.get("source") != "crash-report"
+    )
+
+
+# What only the SDK knows. A crash report that replaces the SDK record keeps these.
+CRASH_CARRY_KEYS = ("context", "replay", "name", "reason")
+_REPLAY_RANK = {"pending": 0, "failed": 1, "uploading": 2, "ready": 3}
+
+
+def _replay_rank(value: object) -> int:
+    status = value.get("status") if isinstance(value, dict) else None
+    return _REPLAY_RANK.get(str(status), -1)
+
+
+def merge_crash(base: dict[str, object], other: dict[str, object]) -> dict[str, object]:
+    """`base` plus the SDK-only fields it lacks from `other`. The furthest replay status wins."""
+    out = dict(base)
+    for key in CRASH_CARRY_KEYS:
+        if key not in out and key in other:
+            out[key] = other[key]
+    mine, theirs = out.get("replay"), other.get("replay")
+    if isinstance(mine, dict) and isinstance(theirs, dict) and theirs is not mine:
+        low, high = (mine, theirs) if _replay_rank(theirs) > _replay_rank(mine) else (theirs, mine)
+        out["replay"] = {**low, **high}
+    return out
 
 
 @dataclass(slots=True)
@@ -100,11 +199,15 @@ class DebugClient:
     device_name: str = ""
     device_model: str = ""
     is_simulator: bool = False
+    device_hint: str = ""
     first_seen: float = 0.0
     superseded_by: str | None = None
     persisted_at: float = 0.0
     lifecycle: str = ""
     lifecycle_at: float = 0.0
+    debugger_attached: bool = False
+    crashed_at: float = 0.0
+    published_state: str = ""
 
     def presence(self, now: float) -> str:
         """online: talking now. background: app said it left the foreground. offline: silent."""
@@ -131,9 +234,10 @@ class DebugClient:
             "device_name": self.device_name,
             "device_model": self.device_model,
             "is_simulator": self.is_simulator,
+            "device_hint": self.device_hint,
             "superseded_by": self.superseded_by,
             "lifecycle": self.lifecycle or "foreground",
-            "source": "sdk",
+            "source": "runner" if self.capabilities.get("runner") == "available" else "sdk",
             "last_seen_at": datetime.fromtimestamp(self.last_seen, UTC).isoformat(),
         }
 
@@ -152,6 +256,7 @@ class DebugClient:
             "device_name": self.device_name,
             "device_model": self.device_model,
             "is_simulator": self.is_simulator,
+            "device_hint": self.device_hint,
         }
 
 
@@ -183,7 +288,15 @@ class DebugSessionService:
     _commands: dict[str, list[DebugCommand]] = field(default_factory=dict)
     _confirmations: dict[str, tuple[str, str, float]] = field(default_factory=dict)
     _waiters: dict[str, tuple[threading.Event, dict[str, object]]] = field(default_factory=dict)
+    _crash_cache: dict[tuple[str, str], dict[str, object]] = field(default_factory=dict)
+    # Replay updates that arrived before their crash event.
+    _replay_pending: dict[str, dict[str, object]] = field(default_factory=dict)
+    media: CrashMediaStore | None = None
+    # (client_id, crash payload) -> diagnosis. Re-run every time a crash card changes.
+    diagnose_crash: Callable[[str, dict[str, object]], dict[str, object]] | None = None
     _lock: threading.RLock = field(default_factory=threading.RLock)
+    # Called with (client_id, stored crash) so symbolication runs off the request thread.
+    on_crash: Callable[[str, dict[str, object]], None] | None = None
 
     def __post_init__(self) -> None:
         self._load_persisted()
@@ -212,7 +325,9 @@ class DebugSessionService:
             device_name=_short(payload.get("device_name"), 120),
             device_model=_short(payload.get("device_model"), 64),
             is_simulator=bool(payload.get("is_simulator")),
+            device_hint=_short(payload.get("device_hint"), 64),
             first_seen=previous.first_seen if previous else now,
+            debugger_attached=bool(payload.get("debugger_attached")),
         )
         with self._lock:
             self._clients[client_id] = client
@@ -274,7 +389,205 @@ class DebugSessionService:
         state = client.presence(now)
         row["state"] = state
         row["online"] = state == "online"
+        row["debugger_attached"] = client.debugger_attached
+        row["crashed"] = bool(client.crashed_at) and state != "online"
+        row["crashed_at"] = client.crashed_at or None
+        row["hint"] = self._hint(client, state, now)
         return row
+
+    @staticmethod
+    def _hint(client: DebugClient, state: str, now: float) -> str:
+        """Why a silent app is silent, when the app itself cannot say."""
+        if client.crashed_at and state != "online":
+            return "The app crashed. Open Debug, then Hangs for the stack."
+        if client.lifecycle == "background" or state == "background":
+            return ""
+        silent = now - client.last_seen
+        if client.debugger_attached and (state == "offline" or silent >= STALL_HINT_SECONDS):
+            return (
+                "No data while a debugger is attached. The app may be paused in Xcode "
+                "at a crash or breakpoint. Continue it to let the crash report arrive."
+            )
+        if state == "online" and silent >= STALL_HINT_SECONDS:
+            return f"No data for {int(silent)} s. The app may be frozen or may have crashed."
+        return ""
+
+    def refresh_presence(self) -> None:
+        """Called every second. Silence sends no event, so tell the dashboard an app went quiet."""
+        now = self.time_fn()
+        changed = False
+        with self._lock:
+            for client in self._clients.values():
+                key = f"{client.presence(now)}|{self._hint(client, client.presence(now), now)}"
+                if client.published_state != key:
+                    changed = changed or bool(client.published_state)
+                    client.published_state = key
+        if changed:
+            self._publish_apps_changed()
+
+    def record_crash(
+        self,
+        client_id: str,
+        payload: dict[str, object],
+        *,
+        event_id: str | None = None,
+    ) -> dict[str, object]:
+        """Persist and publish one crash. Several sources report the same crash under one id."""
+        client = self._require_client(client_id)
+        clean = _bounded_payload(payload, MAX_EVENT_BYTES)
+        key = event_id or crash_event_id(client_id, clean)
+        existing = self._crash_payload(client_id, key)
+        kept = False
+        if existing is not None and not _crash_replaces(existing, clean):
+            merged = merge_crash(existing, clean)
+            if merged == existing:
+                return {"ok": True, "id": key, "kept": True}
+            clean, kept = merged, True
+        elif existing is not None:
+            clean = merge_crash(clean, existing)
+        with self._lock:
+            pending = self._replay_pending.pop(key, None)
+        if pending:
+            clean = merge_crash(clean, {"replay": pending})
+            if not isinstance(clean.get("replay"), dict):
+                clean["replay"] = pending
+        clean = _bounded_payload(self._with_diagnosis(client_id, clean), MAX_EVENT_BYTES)
+        created = datetime.now(UTC)
+        self.store.save_debug_event(
+            event_id=key,
+            client_id=client_id,
+            module="crash",
+            kind="fatal",
+            payload=clean,
+            created_at=created,
+        )
+        with self._lock:
+            self._crash_cache[(client_id, key)] = clean
+            if len(self._crash_cache) > 64:
+                self._crash_cache.pop(next(iter(self._crash_cache)))
+            if not clean.get("previous_session"):
+                client.crashed_at = float(clean.get("timestamp") or self.time_fn())
+        event = {
+            "id": key,
+            "client_id": client_id,
+            "module": "crash",
+            "kind": "fatal",
+            "payload": clean,
+            "created_at": created.isoformat(),
+        }
+        self._publish({"type": "debug-event", "event": event})
+        self._publish({"type": "debug-crash", "client_id": client_id, "event": event})
+        self._publish_apps_changed()
+        return {"ok": True, "id": key, "kept": kept}
+
+    def _with_diagnosis(self, client_id: str, payload: dict[str, object]) -> dict[str, object]:
+        hook = self.diagnose_crash
+        if hook is None:
+            return payload
+        try:
+            return {**payload, "diagnosis": hook(client_id, payload)}
+        except Exception:
+            logger.exception("Crash diagnosis failed")
+            return payload
+
+    def crash(self, client_id: str, crash_id: str) -> dict[str, object] | None:
+        """One stored crash payload, or None."""
+        self._require_client(client_id)
+        return self._crash_payload(client_id, crash_id)
+
+    def _ingest_replay(
+        self, client_id: str, kind: str, payload: dict[str, object]
+    ) -> dict[str, object]:
+        """Chunks of the replay video recorded before a crash, sent on the next launch."""
+        key = crash_event_id(client_id, payload, fallback="-")
+        if key == "-":
+            raise ValueError("replay needs the crash pid")
+        if kind == "replay-failed":
+            error = _short(payload.get("error"), 300)
+            self._update_replay(client_id, key, {"status": "failed", "error": error})
+            return {"ok": True, "id": key}
+        if self.media is None:
+            return {"ok": True, "id": key, "stored": False}
+        index, total = _int(payload.get("index")), _int(payload.get("total"))
+        try:
+            data = base64.b64decode(str(payload.get("base64") or ""), validate=True)
+        except (binascii.Error, ValueError) as exc:
+            raise ValueError("replay chunk is not base64") from exc
+        complete = self.media.add_chunk(key, index, total, data)
+        patch: dict[str, object] = {
+            "status": "ready" if complete else "uploading",
+            "received": index + 1,
+            "total": total,
+        }
+        for name in ("frames", "duration_ms", "width", "height", "bytes", "mime"):
+            if name in payload:
+                patch[name] = payload[name]
+        if index == 0:
+            patch["timeline"] = payload.get("timeline") or []
+            self._save_poster(key, payload.get("poster"))
+        if index == 0 or complete:
+            self._update_replay(client_id, key, patch)
+        if complete:
+            self.media.prune(self.store.debug_event_ids(module="crash"))
+        return {"ok": True, "id": key, "complete": complete}
+
+    def _save_poster(self, key: str, poster: object) -> None:
+        if self.media is None or not isinstance(poster, dict):
+            return
+        try:
+            data = base64.b64decode(str(poster.get("base64") or ""), validate=True)
+            self.media.save_poster(key, data)
+        except (binascii.Error, ValueError, OSError):
+            return
+
+    def _update_replay(self, client_id: str, key: str, patch: dict[str, object]) -> None:
+        existing = self._crash_payload(client_id, key)
+        if existing is None:
+            with self._lock:
+                self._replay_pending[key] = {**self._replay_pending.get(key, {}), **patch}
+                while len(self._replay_pending) > 16:
+                    self._replay_pending.pop(next(iter(self._replay_pending)))
+            return
+        replay = existing.get("replay") if isinstance(existing.get("replay"), dict) else {}
+        if _replay_rank(replay) > _replay_rank(patch) and patch.get("status") != "failed":
+            patch = {**patch, "status": replay.get("status")}
+        updated = {**existing, "replay": {**replay, **patch}}
+        self._store_crash_update(client_id, key, updated)
+
+    def _store_crash_update(self, client_id: str, key: str, payload: dict[str, object]) -> None:
+        """Saves a changed card in place, bypassing the source rules in `record_crash`."""
+        clean = _bounded_payload(self._with_diagnosis(client_id, payload), MAX_EVENT_BYTES)
+        created = datetime.now(UTC)
+        self.store.save_debug_event(
+            event_id=key,
+            client_id=client_id,
+            module="crash",
+            kind="fatal",
+            payload=clean,
+            created_at=created,
+        )
+        with self._lock:
+            self._crash_cache[(client_id, key)] = clean
+        event = {
+            "id": key,
+            "client_id": client_id,
+            "module": "crash",
+            "kind": "fatal",
+            "payload": clean,
+            "created_at": created.isoformat(),
+        }
+        self._publish({"type": "debug-event", "event": event})
+        self._publish({"type": "debug-crash", "client_id": client_id, "event": event})
+
+    def _crash_payload(self, client_id: str, key: str) -> dict[str, object] | None:
+        with self._lock:
+            cached = self._crash_cache.get((client_id, key))
+        if cached is not None:
+            return cached
+        for row in self.store.list_debug_events(client_id=client_id, module="crash", limit=100):
+            if row.get("id") == key and isinstance(row.get("payload"), dict):
+                return row["payload"]
+        return None
 
     def client_ids_for_device(self, device_key: str) -> list[str]:
         with self._lock:
@@ -320,8 +633,12 @@ class DebugSessionService:
         with self._lock:
             clients = list(self._clients.values())
         devices: dict[str, dict[str, object]] = {}
+        hint_keys: dict[str, str] = {}
         for client in sorted(clients, key=lambda item: item.last_seen, reverse=True):
             key = client.device_key or f"client:{client.id}"
+            if client.device_hint and not client.is_simulator:
+                # Apps from different vendors on one phone have different vendor ids.
+                key = hint_keys.setdefault(client.device_hint, key)
             device = devices.setdefault(
                 key,
                 {
@@ -424,7 +741,8 @@ class DebugSessionService:
         command_id: str | None = None,
     ) -> dict[str, object]:
         self._require_client(client_id)
-        if name not in ALLOWED_COMMANDS:
+        allowed = name in ALLOWED_COMMANDS
+        if not allowed:
             raise ValueError("command is not allowlisted")
         clean = _bounded_payload(payload, MAX_COMMAND_BYTES)
         if name in MUTATING_COMMANDS:
@@ -480,7 +798,7 @@ class DebugSessionService:
             raise ValueError("command is not allowlisted")
         wait = INVOKE_DEFAULT_TIMEOUT if timeout is None else float(timeout)
         if wait <= 0 or wait > INVOKE_MAX_TIMEOUT:
-            raise ValueError("timeout must be between 0 and 25 seconds")
+            raise ValueError(f"timeout must be between 0 and {INVOKE_MAX_TIMEOUT:g} seconds")
         command_id = str(uuid.uuid4())
         done = threading.Event()
         box: dict[str, object] = {}
@@ -526,6 +844,10 @@ class DebugSessionService:
         if module == "lifecycle":
             self.record_lifecycle(client_id, kind)
             return {"ok": True}
+        if module == "crash" and kind == "fatal":
+            return self._ingest_crash(client_id, payload, clean)
+        if module == "crash" and kind in ("replay-chunk", "replay-failed"):
+            return self._ingest_replay(client_id, kind, clean)
         if module == "keychain":
             clean = _strip_keychain_values(clean)
         event_id = _identifier(payload.get("id"), fallback=str(uuid.uuid4()))
@@ -550,6 +872,19 @@ class DebugSessionService:
         self._publish({"type": "debug-event", "event": event})
         self._signal_waiter(event)
         return {"ok": True, "id": event_id}
+
+    def _ingest_crash(
+        self, client_id: str, payload: dict[str, Any], clean: dict[str, object]
+    ) -> dict[str, object]:
+        # The SDK id is only a fallback: every source reports one crash under client and pid.
+        fallback = _identifier(payload.get("id"), fallback=str(uuid.uuid4()))
+        result = self.record_crash(
+            client_id, clean, event_id=crash_event_id(client_id, clean, fallback)
+        )
+        hook = self.on_crash
+        if hook is not None and not result.get("kept"):
+            hook(client_id, {"id": result["id"], "payload": clean})
+        return result
 
     def list_events(
         self,
@@ -649,6 +984,7 @@ class DebugSessionService:
                 device_name=_short(payload.get("device_name"), 120),
                 device_model=_short(payload.get("device_model"), 64),
                 is_simulator=bool(payload.get("is_simulator")),
+                device_hint=_short(payload.get("device_hint"), 64),
                 first_seen=float(row.get("first_seen") or 0.0),
                 superseded_by=(str(row["superseded_by"]) if row.get("superseded_by") else None),
                 persisted_at=float(row.get("last_seen") or 0.0),
@@ -691,6 +1027,13 @@ def _identifier(value: object, *, fallback: str) -> str:
     if text and all(char.isalnum() or char in "._-" for char in text):
         return text
     return fallback
+
+
+def _int(value: object) -> int:
+    try:
+        return int(value)  # type: ignore[call-overload]
+    except (TypeError, ValueError):
+        return -1
 
 
 def _short(value: object, limit: int) -> str:

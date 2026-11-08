@@ -25,6 +25,8 @@ class FlowStoreProtocol(Protocol):
         status: int | None = None,
         content_type: str | None = None,
         text: str | None = None,
+        kind: str | None = None,
+        operation: str | None = None,
         client_ids: Sequence[str] | None = None,
     ) -> list[FlowRecord]: ...
 

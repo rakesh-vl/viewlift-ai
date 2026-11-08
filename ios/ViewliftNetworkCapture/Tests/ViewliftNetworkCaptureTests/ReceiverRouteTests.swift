@@ -6,13 +6,18 @@ final class ReceiverRouteTests: XCTestCase {
     func testAlternateAddressesComeFromBonjourText() {
         let record = DiscoveredReceiver.parse(
             ip: "192.168.1.10",
-            portText: "8742",
+            portText: "8743",
             fingerprint: "abc",
             debugKey: "key",
             alternates: "100.105.93.60, 192.168.1.10,127.0.0.1,169.254.1.1,"
         )
-        XCTAssertEqual(record?.alternates, ["100.105.93.60"])
-        XCTAssertEqual(record?.candidateHosts, ["192.168.1.10", "100.105.93.60"])
+        #if targetEnvironment(simulator)
+        let usable = ["100.105.93.60", "127.0.0.1"]
+        #else
+        let usable = ["100.105.93.60"]
+        #endif
+        XCTAssertEqual(record?.alternates, usable)
+        XCTAssertEqual(record?.candidateHosts, ["192.168.1.10"] + usable)
     }
 
     func testCandidatesRotateAndKeepPreferredHost() {

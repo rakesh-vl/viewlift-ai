@@ -42,14 +42,53 @@ enum UITypeName {
     }
 
     /// App type inside `UIHostingController<...>` or `_UIHostingView<...>`, skipping SwiftUI wrappers.
+    /// `PlayerControlsHostingView` with no generic falls back to `PlayerControls`.
     static func appViewName(in typeName: String) -> String? {
-        guard let argument = hostArgument(typeName) else { return nil }
-        let head = argument.split(separator: "<", maxSplits: 1).first.map(String.init) ?? argument
-        let leaf = head.split(separator: ".").last.map(String.init) ?? head
-        if isReadable(leaf) {
-            return leaf
+        if let argument = hostArgument(typeName) {
+            let head = argument.split(separator: "<", maxSplits: 1).first.map(String.init) ?? argument
+            let leaf = head.split(separator: ".").last.map(String.init) ?? head
+            if isReadable(leaf) {
+                return leaf
+            }
+            if let nested = firstReadable(in: argument) {
+                return nested
+            }
         }
-        return firstReadable(in: argument)
+        return hostStem(typeName)
+    }
+
+    /// `PlayerControlsHostingView` → `PlayerControls`. System hosts such as `UIHostingView` stay nil.
+    static func hostStem(_ typeName: String) -> String? {
+        let leaf = typeName.split(separator: ".").last.map(String.init) ?? typeName
+        let head = leaf.split(separator: "<", maxSplits: 1).first.map(String.init) ?? leaf
+        for suffix in ["HostingController", "HostingView"] where head.hasSuffix(suffix) {
+            let stem = String(head.dropLast(suffix.count))
+            if isReadable(stem) {
+                return stem
+            }
+        }
+        return nil
+    }
+
+    /// Spoken name for a control. The label wins, then the value, then the trait ("Button").
+    static func controlTitle(label: String, value: String, fallback: String) -> String {
+        let spoken = label.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !spoken.isEmpty {
+            return String(spoken.prefix(80))
+        }
+        let extra = value.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !extra.isEmpty {
+            return String(extra.prefix(80))
+        }
+        return fallback
+    }
+
+    /// Name to show in the tree. A SwiftUI host prefers the SwiftUI view over the UIKit class.
+    static func displayName(uikit: String, swiftui: String, role: String) -> String {
+        if role == "swiftui", !swiftui.isEmpty {
+            return swiftui
+        }
+        return uikit
     }
 
     private static func hostArgument(_ typeName: String) -> String? {

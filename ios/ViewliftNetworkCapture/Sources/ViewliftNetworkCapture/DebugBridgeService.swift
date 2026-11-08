@@ -1,6 +1,7 @@
 #if DEBUG || VIEWLIFT_CAPTURE_ENABLED
 import Foundation
 import OSLog
+import ViewliftCaptureObjC
 
 #if canImport(UIKit)
 import UIKit
@@ -14,7 +15,7 @@ public final class DebugBridgeService: @unchecked Sendable {
         category: "debug-bridge"
     )
 
-    private let performance = PerformanceCollector()
+    let performance = PerformanceCollector()
     private lazy var executor = DebugCommandExecutor(performance: performance)
     private let lock = NSLock()
     private var task: Task<Void, Never>?
@@ -22,7 +23,8 @@ public final class DebugBridgeService: @unchecked Sendable {
     private var configuration: CaptureConfiguration?
     private var lifecycleMonitor: ConnectionLifecycleMonitor?
     private var wakeReason: String?
-    private let clientId: String
+    private var needsRegistration = false
+    let clientId: String
 
     private init(identity: ClientIdentityProviding = UserDefaultsClientIdentity.shared) {
         clientId = identity.clientId
@@ -34,14 +36,22 @@ public final class DebugBridgeService: @unchecked Sendable {
     ) {
         guard !configuration.debugModules.isEmpty else { return }
         stop()
+        let effective = RemoteSettingsService.shared.bind(base: configuration) { [weak self] updated in
+            self?.apply(updated)
+        }
         lock.lock()
         self.transport = transport
-        self.configuration = configuration
+        self.configuration = effective
         lock.unlock()
         performance.start()
         MemoryDebugService.shared.installLifecycleTracking()
         MacroRecorder.shared.install()
         CrashHangRecorder.shared.install()
+        Self.applyCrashReplay(effective)
+        if effective.debugModules.contains(.ui) {
+            SwiftUIDebugTree.enableRecording()
+            FocusDebugMonitor.shared.install()
+        }
         task = Task { [weak self] in
             await self?.run()
         }
@@ -63,10 +73,14 @@ public final class DebugBridgeService: @unchecked Sendable {
         wakeReason = nil
         transport = nil
         configuration = nil
+        needsRegistration = false
         lock.unlock()
         active?.cancel()
         monitor?.stop()
         performance.stop()
+        CrashReplayRecorder.shared.stop()
+        CrashContextWriter.shared.stop()
+        ObjectHandleRegistry.shared.removeAll()
     }
 
     private func run() async {
@@ -81,9 +95,14 @@ public final class DebugBridgeService: @unchecked Sendable {
                 registered = false
                 resumeReason = reason
             }
+            if takeNeedsRegistration() {
+                registered = false
+            }
             do {
                 if !registered {
                     let device = await MainActor.run { DeviceIdentity.current() }
+                    // Frameworks loaded since launch get a path in the crash record's image table.
+                    VLCCrashSignalsRefreshImagePaths()
                     try await transport.register(client: registration(config, device: device))
                     registered = true
                     Self.log.info("Remote debug bridge registered")
@@ -92,25 +111,23 @@ public final class DebugBridgeService: @unchecked Sendable {
                         await announceResume(reason: reason, transport: transport)
                     }
                 }
-                if config.debugModules.contains(.performance),
-                   Date().timeIntervalSince(lastPerformance)
-                    >= config.performanceSampleInterval {
-                    try await transport.send(
-                        event: DebugEvent(
-                            module: "performance",
-                            kind: "sample",
-                            payload: performance.sample()
-                        ),
-                        clientId: clientId
-                    )
-                    lastPerformance = Date()
-                }
+                lastPerformance = try await sendPerformanceSample(
+                    config: config, transport: transport, last: lastPerformance
+                )
+                try await sendCrashEvents(transport: transport)
+                try await sendHangEvents(transport: transport)
+                try await CrashReplayUploader.shared.sendPending(transport: transport, clientId: clientId)
                 try await sendMemoryEvents(config: config, transport: transport)
+                try await sendActivityEvents(config: config, transport: transport)
+                try await sendPlaybackEvents(config: config, transport: transport)
+                try await sendFocusEvents(config: config, transport: transport)
                 let commands = try await transport.pollCommands(clientId: clientId)
                 for command in commands where command.expiresAt > Date().timeIntervalSince1970 {
                     await execute(command, transport: transport, config: config)
                 }
-                await interruptibleSleep(milliseconds: 500)
+                // A live preview has to leave the device faster than the idle command poll.
+                let pause: UInt64 = ActivityDebugService.shared.isPreviewing ? 250 : 500
+                await interruptibleSleep(milliseconds: pause)
             } catch let error as TransportError where error.isWaitingForSession {
                 // Transport is still starting or re-pairing. Check again shortly instead of backing off.
                 registered = false
@@ -122,14 +139,6 @@ public final class DebugBridgeService: @unchecked Sendable {
                 )
                 await interruptibleSleep(milliseconds: 2_000)
             }
-        }
-    }
-
-    /// Leak reports and live memory samples, pushed without waiting for a dashboard command.
-    private func sendMemoryEvents(config: CaptureConfiguration, transport: DebugTransporting) async throws {
-        guard config.debugModules.contains(.memory) else { return }
-        for event in MemoryDebugService.shared.drainEvents() {
-            try await transport.send(event: event, clientId: clientId)
         }
     }
 
@@ -189,7 +198,7 @@ public final class DebugBridgeService: @unchecked Sendable {
             bundleId: identity.bundleId,
             platform: platform,
             osVersion: ProcessInfo.processInfo.operatingSystemVersionString,
-            capabilities: capabilities(config),
+            capabilities: Self.capabilities(config),
             appVersion: identity.appVersion,
             build: identity.build,
             executable: identity.executable,
@@ -199,31 +208,7 @@ public final class DebugBridgeService: @unchecked Sendable {
         )
     }
 
-    private func capabilities(_ config: CaptureConfiguration) -> [String: DebugCapability] {
-        var out = Dictionary(
-            uniqueKeysWithValues: DebugModule.allCases.map {
-                ($0.rawValue, DebugCapability.unsupported)
-            }
-        )
-        for module in config.debugModules {
-            out[module.rawValue] = .available
-        }
-        if config.debugModules.contains(.memory) {
-            out[DebugModule.memory.rawValue] = .partial
-        }
-        if config.debugModules.contains(.swiftUI) {
-            out[DebugModule.swiftUI.rawValue] = .partial
-        }
-        if config.debugModules.contains(.macro) {
-            out[DebugModule.macro.rawValue] = .partial
-        }
-        #if os(tvOS)
-        out[DebugModule.push.rawValue] = .unsupported
-        #endif
-        return out
-    }
-
-    private func currentTransport() -> DebugTransporting? {
+    func currentTransport() -> DebugTransporting? {
         lock.lock()
         defer { lock.unlock() }
         return transport
@@ -233,6 +218,34 @@ public final class DebugBridgeService: @unchecked Sendable {
         lock.lock()
         defer { lock.unlock() }
         return configuration
+    }
+}
+
+/// Settings pushed from the dashboard.
+extension DebugBridgeService {
+    /// Uses new settings at once and re-registers so the dashboard sees the new capabilities.
+    fileprivate func apply(_ updated: CaptureConfiguration) {
+        lock.lock()
+        guard configuration != nil else {
+            lock.unlock()
+            return
+        }
+        configuration = updated
+        needsRegistration = true
+        lock.unlock()
+        CaptureRuntime.update(configuration: updated)
+        Self.applyCrashReplay(updated)
+        if updated.debugModules.contains(.ui) {
+            FocusDebugMonitor.shared.install()
+        }
+    }
+
+    fileprivate func takeNeedsRegistration() -> Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        let value = needsRegistration
+        needsRegistration = false
+        return value
     }
 }
 
@@ -261,10 +274,10 @@ extension DebugBridgeService {
         (active as? ConnectionRecovering)?.reconnect(reason: reason)
     }
 
-    /// Tells the dashboard this app is suspended, not gone. iOS gives a few seconds to send it.
+    /// Tells the dashboard this app is suspended, not gone. iOS and tvOS give a few seconds to send it.
     private func announceBackground() async {
         guard let active = currentTransport() else { return }
-        #if os(iOS)
+        #if os(iOS) || os(tvOS)
         let grace = BackgroundGrace()
         await grace.begin()
         defer { grace.end() }

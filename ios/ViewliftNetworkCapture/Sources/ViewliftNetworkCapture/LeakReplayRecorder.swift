@@ -165,8 +165,8 @@ final class LeakReplayRecorder: @unchecked Sendable {
         append(Frame(
             time: Date().timeIntervalSince1970,
             jpeg: jpeg,
-            width: Int(size.width),
-            height: Int(size.height),
+            width: Int(safe: size.width),
+            height: Int(safe: size.height),
             screen: HangScreen.current().className,
             touches: takeTouches()
         ))

@@ -16,8 +16,14 @@ let package = Package(
         )
     ],
     targets: [
+        // Swift cannot catch NSException; KVC and runtime calls from the object explorer need this guard.
+        .target(
+            name: "ViewliftCaptureObjC",
+            path: "Sources/ViewliftCaptureObjC"
+        ),
         .target(
             name: "ViewliftNetworkCapture",
+            dependencies: ["ViewliftCaptureObjC"],
             path: "Sources/ViewliftNetworkCapture",
             // Xcode custom configurations (for example "Dev") do not give package targets DEBUG.
             // Hosts still start capture only under #if DEBUG.

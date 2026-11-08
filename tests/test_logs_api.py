@@ -36,7 +36,8 @@ def test_logs_page_and_api(tmp_path: Path) -> None:
         page = client.get("/logs")
         assert page.status_code == 200
         assert b"Delete logs" in page.content
-        assert b"TestFlight" in page.content or b"private" in page.content.lower()
+        assert b"stdout" in page.content
+        assert b"os_log" in page.content
 
         store = client.app.state.store
         rid = "req-link-1"
@@ -76,9 +77,8 @@ def test_logs_page_and_api(tmp_path: Path) -> None:
         assert detail.status_code == 200
         body = detail.json()
         assert body["linked_flow_id"] == flow_id
-        assert "<private>" in body["testflight_private_note"] or "private" in body[
-            "testflight_private_note"
-        ].lower()
+        assert "stdout" in body["console_note"]
+        assert "os_log is not included" in body["console_note"]
 
         sources = client.get("/api/logs/sources")
         assert sources.status_code == 200
@@ -89,6 +89,122 @@ def test_logs_page_and_api(tmp_path: Path) -> None:
         assert removed.json()["deleted"] == 1
         assert client.get("/api/logs").json()["logs"] == []
         assert store.get_flow(flow_id) is not None
+
+
+def test_device_log_capture_ignores_vendor_device_key(tmp_path: Path) -> None:
+    class _FakeDevice:
+        def __init__(self) -> None:
+            self.started: str | None = "unset"
+            self._running = False
+
+        def list_devices(self) -> list[dict[str, object]]:
+            return [{"ok": True, "udid": "00008110-REAL", "name": "iPhone"}]
+
+        def start(self, udid: str | None, *, on_line: object, process: str | None = None) -> dict:
+            self.started = udid
+            self._running = True
+            return {"ok": True, "detail": "streaming", "udid": udid or "00008110-REAL"}
+
+        def stop(self) -> dict[str, object]:
+            self._running = False
+            return {"ok": True, "detail": "stopped"}
+
+        @property
+        def running(self) -> bool:
+            return self._running
+
+        @property
+        def active_udid(self) -> str | None:
+            return "00008110-REAL" if self._running else None
+
+    with TestClient(create_app(_config(tmp_path))) as client:
+        device = _FakeDevice()
+        client.app.state.log_tail.device = device
+        client.app.state.debug_sessions.register(
+            {
+                "client_id": "phone-1",
+                "app_name": "OneApp",
+                "bundle_id": "com.example.one",
+                "platform": "ios",
+                "executable": "OneApp",
+                "device_key": "vendor:832E7336-F5DA-491B-95CC-2CDB4E945CDD",
+                "is_simulator": False,
+            }
+        )
+        started = client.post("/api/debug/logs/start", json={"client_id": "phone-1"})
+        assert started.status_code == 200
+        assert started.json()["ok"] is True
+        assert device.started is None
+
+
+def test_debug_log_capture_requires_a_connected_app(tmp_path: Path) -> None:
+    with TestClient(create_app(_config(tmp_path))) as client:
+        missing = client.post("/api/debug/logs/start", json={})
+        assert missing.status_code == 400
+        unknown = client.post("/api/debug/logs/start", json={"client_id": "missing"})
+        assert unknown.status_code == 404
+        stopped = client.post("/api/debug/logs/stop")
+        assert stopped.status_code == 200
+        assert stopped.json()["ok"] is True
+
+
+def test_logs_page_has_no_os_log_stream_controls(tmp_path: Path) -> None:
+    with TestClient(create_app(_config(tmp_path))) as client:
+        page = client.get("/logs").content
+        assert b"btn-log-start" not in page
+        assert b'id="log-source"' not in page
+        assert b'id="log-udid"' not in page
+        # POST on these paths is rejected: 404, or 405 where the GET /api/logs/{log_id} route matches.
+        for path, body in (
+            ("/api/logs/start", {"source": "simulator"}),
+            ("/api/logs/stop", None),
+            ("/api/logs/filter", {"process": "App"}),
+        ):
+            status = client.post(path, json=body).status_code
+            assert status in (404, 405), path
+
+
+def test_ingest_keeps_stdout_and_stderr_sources(tmp_path: Path) -> None:
+    with TestClient(create_app(_config(tmp_path))) as client:
+        ingest = client.app.state.ingest
+        out = ingest.ingest_log(
+            {"level": "info", "subsystem": "com.example.app", "message": "hello", "source": "stdout"}
+        )
+        err = ingest.ingest_log(
+            {"level": "error", "subsystem": "com.example.app", "message": "boom", "source": "stderr"}
+        )
+        explicit = ingest.ingest_log({"level": "info", "message": "explicit", "source": "os_log"})
+        assert out["source"] == "stdout"
+        assert err["source"] == "stderr"
+        assert explicit["source"] == "sdk"
+        console = client.get("/api/logs", params={"source": "stdout,stderr"}).json()["logs"]
+        assert {row["message"] for row in console} == {"hello", "boom"}
+
+
+def test_multiline_console_message_stays_one_log(tmp_path: Path) -> None:
+    message = (
+        "\"Analytics – Tracking: updateCurrent\"\n"
+        "\"PlayheadTracker: Emitting ping\"\n"
+        "\"done\""
+    )
+    with TestClient(create_app(_config(tmp_path))) as client:
+        ingest = client.app.state.ingest
+        saved = ingest.ingest_log(
+            {
+                "level": "info",
+                "subsystem": "com.viewlift.spinco",
+                "message": message,
+                "source": "stdout",
+            }
+        )
+        listed = client.get("/api/logs", params={"source": "stdout,stderr"}).json()["logs"]
+        assert len(listed) == 1
+        assert listed[0]["id"] == saved["id"]
+        assert listed[0]["message"] == message
+        detail = client.get(f"/api/logs/{saved['id']}").json()
+        assert detail["message"] == message
+        assert b"log-message" in client.get("/static/js/app.js").content
+        assert b"td.log-message" in client.get("/static/css/app.css").content
 
 
 def _sample_log(log_id: str) -> LogRecord:

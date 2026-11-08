@@ -62,12 +62,33 @@ def test_disabled_by_default_and_accepts_loopback(
     assert svc.enabled is False
     assert svc.status()["receiver_url"] is None
     monkeypatch.setattr(IngestService, "start_https_server", lambda self: None)
-    status = svc.enable(host="", port=8742)
+    status = svc.enable(host="", port=8743)
     assert status["enabled"] is True
     assert status["host"] == "127.0.0.1"
-    assert status["receiver_url"] == "https://127.0.0.1:8742"
+    assert status["receiver_url"] == "https://127.0.0.1:8743"
     with pytest.raises(SetupValidationError, match="0.0.0.0"):
-        svc.enable(host="0.0.0.0", port=8742)
+        svc.enable(host="0.0.0.0", port=8743)
+    svc.disable()
+
+
+def test_loopback_receiver_refuses_the_mcp_port(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    svc = _svc(tmp_path)
+    monkeypatch.setattr(IngestService, "start_https_server", lambda self: None)
+    monkeypatch.delenv("VIEWLIFT_AI_MCP_PORT", raising=False)
+    with pytest.raises(SetupValidationError, match="MCP"):
+        svc.enable(host="", port=8742)
+    assert svc.enabled is False
+
+
+def test_receiver_port_defaults_from_environment(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("VIEWLIFT_INGEST_PORT", "9123")
+    monkeypatch.setattr(IngestService, "start_https_server", lambda self: None)
+    svc = _svc(tmp_path)
+    assert svc.enable(host="")["port"] == 9123
     svc.disable()
 
 
@@ -79,11 +100,11 @@ def test_enable_requires_listed_private_iface(
         {"iface": "en0", "ip": "192.168.1.10", "scope": "lan"},
     ]
     monkeypatch.setattr(IngestService, "start_https_server", lambda self: None)
-    status = svc.enable(host="192.168.1.10", port=8742)
+    status = svc.enable(host="192.168.1.10", port=8743)
     assert status["enabled"] is True
     assert status["host"] == "192.168.1.10"
     with pytest.raises(SetupValidationError, match="not on an active"):
-        svc.enable(host="192.168.1.99", port=8742)
+        svc.enable(host="192.168.1.99", port=8743)
     svc.disable()
 
 
@@ -108,8 +129,8 @@ def test_enable_rebinds_running_server_when_interface_changes(
     monkeypatch.setattr(IngestService, "start_https_server", start)
     monkeypatch.setattr(IngestService, "stop_https_server", stop)
 
-    svc.enable(host="192.168.1.68", port=8742)
-    svc.enable(host="192.168.0.39", port=8742)
+    svc.enable(host="192.168.1.68", port=8743)
+    svc.enable(host="192.168.0.39", port=8743)
 
     assert actions == ["start:192.168.1.68", "stop", "start:192.168.0.39"]
 
@@ -127,12 +148,12 @@ def test_follow_network_rebinds_when_wifi_address_changes(
     svc.interface_lister = lambda: rows
     monkeypatch.setattr(IngestService, "start_https_server", lambda self: None)
     monkeypatch.setattr(IngestService, "stop_https_server", lambda self: None)
-    svc.enable(host="192.168.0.39", port=8742)
+    svc.enable(host="192.168.0.39", port=8743)
     rows[1] = {"iface": "en0", "ip": "10.117.22.7", "scope": "lan"}
 
     assert svc.follow_network() == "10.117.22.7"
     host, port, fingerprint, debug_key = advertiser.published[-1]
-    assert (host, port) == ("10.117.22.7", 8742)
+    assert (host, port) == ("10.117.22.7", 8743)
     assert fingerprint
     assert debug_key
 
@@ -260,3 +281,85 @@ def test_activity_counts_requests_and_rejections(tmp_path: Path) -> None:
     assert act["flows"] == 1
     assert act["rejected"] == 1
     assert "401" in str(act["last_error"])
+
+
+def test_receiver_bind_survives_restart(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    rows = [
+        {"iface": "lo0", "ip": "127.0.0.1", "scope": "loopback"},
+        {"iface": "en0", "ip": "192.168.0.40", "scope": "lan"},
+        {"iface": "utun21", "ip": "100.105.93.60", "scope": "vpn"},
+    ]
+    monkeypatch.setattr(IngestService, "start_https_server", lambda self: None)
+    monkeypatch.setattr(IngestService, "stop_https_server", lambda self: None)
+
+    first = _svc(tmp_path)
+    first.interface_lister = lambda: rows
+    first.enable(host="", port=8743, iface="en0", include_vpn=True)
+    pref = tmp_path / "ingest" / "receiver.json"
+    assert pref.is_file()
+    assert pref.stat().st_mode & 0o777 == 0o600
+
+    second = _svc(tmp_path)
+    second.interface_lister = lambda: rows
+    assert second.restore_saved() is True
+    assert second.enabled is True
+    assert second.bind.host == "192.168.0.40"
+    assert second.bind.port == 8743
+    assert second.bind.include_vpn is True
+    assert second.bind.extra_hosts == ("100.105.93.60",)
+
+    second.disable()
+    third = _svc(tmp_path)
+    third.interface_lister = lambda: rows
+    assert third.restore_saved() is False
+    assert third.enabled is False
+
+
+def test_restore_retries_when_interface_comes_up_late(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    lan = {"iface": "en0", "ip": "192.168.0.40", "scope": "lan"}
+    lo = {"iface": "lo0", "ip": "127.0.0.1", "scope": "loopback"}
+    monkeypatch.setattr(IngestService, "start_https_server", lambda self: None)
+    monkeypatch.setattr(IngestService, "stop_https_server", lambda self: None)
+
+    first = _svc(tmp_path)
+    first.interface_lister = lambda: [lo, lan]
+    first.enable(host="", port=8743, iface="en0")
+    first.stop()
+
+    rows = [lo]
+    second = _svc(tmp_path)
+    second.interface_lister = lambda: rows
+    assert second.restore_saved() is False
+    assert '"enabled": true' in (tmp_path / "ingest" / "receiver.json").read_text("utf-8")
+
+    rows[:] = [lo, lan]
+    assert second.restore_saved() is True
+    assert second.bind.host == "192.168.0.40"
+    assert second.restore_saved() is True  # already enabled: no rebind
+
+
+def test_process_stop_keeps_saved_receiver(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Console shutdown must not look like the user turned the receiver off."""
+    rows = [
+        {"iface": "lo0", "ip": "127.0.0.1", "scope": "loopback"},
+        {"iface": "en0", "ip": "192.168.0.40", "scope": "lan"},
+    ]
+    monkeypatch.setattr(IngestService, "start_https_server", lambda self: None)
+    monkeypatch.setattr(IngestService, "stop_https_server", lambda self: None)
+
+    first = _svc(tmp_path)
+    first.interface_lister = lambda: rows
+    first.enable(host="", port=8743, iface="en0")
+    first.stop()
+    assert first.enabled is False
+    saved = (tmp_path / "ingest" / "receiver.json").read_text(encoding="utf-8")
+    assert '"enabled": true' in saved
+
+    second = _svc(tmp_path)
+    second.interface_lister = lambda: rows
+    assert second.restore_saved() is True
+    assert second.enabled is True
+    assert second.bind.host == "192.168.0.40"
+    assert second.bind.port == 8743

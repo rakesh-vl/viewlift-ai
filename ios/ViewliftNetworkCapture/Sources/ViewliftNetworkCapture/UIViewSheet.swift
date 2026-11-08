@@ -12,11 +12,12 @@ enum UIViewSheet {
         let role: String
         let controller: String
         let swiftui: String
+        let typeName: String
         let childInsideHost: Bool
     }
 
     @MainActor
-    static func marks(for view: UIView, ancestorIsHost: Bool) -> Marks {
+    static func marks(for view: UIView, ancestorIsHost: Bool, ancestorSwiftUI: String = "") -> Marks {
         let described = String(describing: type(of: view))
         let qualified = String(reflecting: type(of: view))
         let split = UITypeName.moduleAndShort(qualified: qualified, described: described)
@@ -39,28 +40,39 @@ enum UIViewSheet {
             ancestorIsHost: ancestorIsHost,
             controllerIsHost: controllerHost
         )
+        if swiftui.isEmpty, role != "uikit" {
+            swiftui = ancestorSwiftUI
+        }
+        let full = qualified.contains("<") ? qualified : described
         return Marks(
             short: split.short,
             module: split.module,
             role: role,
             controller: controller,
             swiftui: role == "uikit" ? "" : swiftui,
+            typeName: String(full.prefix(160)),
             childInsideHost: selfHost || ancestorIsHost || controllerHost
         )
     }
 
     @MainActor
     static func make(for view: UIView) -> [String: JSONValue] {
-        let info = marks(for: view, ancestorIsHost: ancestorHost(of: view))
+        let hosted = ancestorHost(of: view)
+        let info = marks(for: view, ancestorIsHost: hosted, ancestorSwiftUI: ancestorSwiftUI(of: view))
         let sections = [identity(view, info)] + UIViewDetails.sections(for: view)
         let filled = sections.filter { !$0.rows.isEmpty }
+        let title = UITypeName.displayName(uikit: info.short, swiftui: info.swiftui, role: info.role)
         return [
             "found": .bool(true),
             "id": .string(String(ObjectIdentifier(view).hashValue)),
-            "title": .string(info.short),
+            "title": .string(title),
+            "uikit": .string(info.short),
+            "swiftui": .string(info.swiftui),
+            "type": .string(info.typeName),
             "summary": .string(summary(info)),
             "role": .string(info.role),
-            "sections": .array(filled.map(\.json))
+            "sections": .array(filled.map(\.json)),
+            "explorer": .object(UILayoutExplorer.make(for: view))
         ]
     }
 
@@ -68,25 +80,26 @@ enum UIViewSheet {
         switch info.role {
         case "swiftui":
             if info.swiftui.isEmpty {
-                return "\(info.short) is the UIKit view SwiftUI created to draw this content."
+                return "\(info.short) hosts SwiftUI. The SwiftUI view name is not on this UIKit type."
             }
-            return "SwiftUI view \(info.swiftui). \(info.short) is the UIKit view that draws it."
+            return "SwiftUI \(info.swiftui), drawn by UIKit \(info.short)."
         case "uikit-in-swiftui":
-            let host = info.swiftui.isEmpty ? "a SwiftUI screen" : "SwiftUI view \(info.swiftui)"
-            return "\(info.short) is a UIKit view drawn inside \(host)."
+            let host = info.swiftui.isEmpty ? "a SwiftUI view" : "SwiftUI \(info.swiftui)"
+            return "UIKit \(info.short) inside \(host)."
         default:
             let owner = info.controller.isEmpty ? "" : " Shown by \(info.controller)."
-            return "\(info.short) is a UIKit view.\(owner)"
+            return "UIKit \(info.short).\(owner)"
         }
     }
 
     @MainActor
     private static func identity(_ view: UIView, _ info: Marks) -> ViewSheetSection {
-        var rows = [("Class", info.short), ("Kind", kindLabel(info.role))]
+        var rows = [("Kind", kindLabel(info.role)), ("UIKit class", info.short)]
+        if !info.swiftui.isEmpty { rows.append(("SwiftUI view", info.swiftui)) }
+        if info.typeName != info.short { rows.append(("Full type", info.typeName)) }
         if !info.module.isEmpty { rows.append(("Module", info.module)) }
         let inherits = superclasses(of: view)
         if !inherits.isEmpty { rows.append(("Inherits", inherits)) }
-        if !info.swiftui.isEmpty { rows.append(("SwiftUI view", info.swiftui)) }
         if !info.controller.isEmpty { rows.append(("Screen", info.controller)) }
         if view.tag != 0 { rows.append(("Tag", String(view.tag))) }
         if let name = view.restorationIdentifier, !name.isEmpty {
@@ -105,6 +118,23 @@ enum UIViewSheet {
             current = type.superclass()
         }
         return names.joined(separator: " → ")
+    }
+
+    @MainActor
+    private static func ancestorSwiftUI(of view: UIView) -> String {
+        var current = view.superview
+        while let ancestor = current {
+            let described = String(describing: type(of: ancestor))
+            let qualified = String(reflecting: type(of: ancestor))
+            let host = UITypeName.isSwiftUIHost(described) || UITypeName.isSwiftUIHost(qualified)
+            if host {
+                return UITypeName.appViewName(in: qualified)
+                    ?? UITypeName.appViewName(in: described)
+                    ?? ""
+            }
+            current = ancestor.superview
+        }
+        return ""
     }
 
     private static func ancestorHost(of view: UIView) -> Bool {
@@ -130,7 +160,7 @@ enum UIViewSheet {
 
     private static func kindLabel(_ role: String) -> String {
         switch role {
-        case "swiftui": return "SwiftUI"
+        case "swiftui": return "SwiftUI hosted in UIKit"
         case "uikit-in-swiftui": return "UIKit inside SwiftUI"
         default: return "UIKit"
         }

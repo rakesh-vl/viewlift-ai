@@ -85,27 +85,20 @@ Payload shapes are in [API reference, ingest server](api-reference.md#sdk-ingest
 ```mermaid
 sequenceDiagram
     participant UI as Logs page
-    participant Api as logs_routes
-    participant Tail as LogTailService
-    participant Col as Collector
+    participant Api as ingest and logs_routes
+    participant Sdk as SDK stdout/stderr tee
     participant LogCap as LogCaptureService
 
-    UI->>Api: POST /api/logs/start {source, udid, process, client_id}
-    Api->>Tail: start(source, target, attribution)
-    alt simulator
-        Tail->>Col: xcrun simctl spawn udid log stream
-    else device
-        Tail->>Col: pymobiledevice3 OsTraceService or SyslogService
-    end
-    loop each line
-        Col->>Tail: parsed line
-        Tail->>LogCap: persist(client_id if process matches executable)
+    loop each stdout or stderr line
+        Sdk->>Api: POST /v1/logs {source: stdout or stderr}
+        Api->>LogCap: persist(source, client_id)
     end
     LogCap-->>UI: /ws/logs event
 ```
 
-- Only one source streams at a time. Starting the same source and target again only updates the filter, so a USB session is not reopened.
-- When `client_id` is given, the route fills in the rest: a simulator app uses its `device_key` as UDID, and `process` becomes the app's executable.
+- Only SDK console lines are stored from the page's point of view. The default query is `source=stdout,stderr`, so explicit `sdk` log calls and OS logs stay out of the page.
+- `/api/logs/start`, `/api/logs/stop`, and `/api/logs/filter` are gone. The collector classes remain for the debug tools that still reference them, but nothing on the Logs page starts them.
+- The Logs page no longer starts `simctl` or device syslog streams. The page shows app stdout and stderr only (what Xcode's debug console shows). The SDK tees fd 1 and 2 in `HangConsoleBuffer`, writes each line back to Xcode, and uploads it to `/v1/logs` with `source` `stdout` or `stderr`.
 - Process and subsystem filters must match `[A-Za-z0-9 ._-]{1,64}` because they go into the `simctl` predicate.
 - A line is attributed to an app only if its process equals the attributed executable. Otherwise it is stored with `udid` and no `client_id`.
 - `request_id` is extracted from the text (`requestId`, `request_id`, `x-request-id`), and log detail links to the matching flow.

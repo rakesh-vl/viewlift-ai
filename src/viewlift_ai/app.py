@@ -16,11 +16,13 @@ from viewlift_ai import __version__
 from viewlift_ai.api.agent_routes import router as agent_router
 from viewlift_ai.api.apps_routes import router as apps_router
 from viewlift_ai.api.debug_routes import router as debug_router
+from viewlift_ai.api.host_routes import router as host_router
 from viewlift_ai.api.logs_routes import router as logs_router
 from viewlift_ai.api.routes import router as network_router
 from viewlift_ai.api.rules_routes import router as rules_router
 from viewlift_ai.api.session_routes import router as session_router
 from viewlift_ai.api.setup_routes import router as setup_router
+from viewlift_ai.api.simulator_routes import router as simulator_router
 from viewlift_ai.api.tools_routes import router as tools_router
 from viewlift_ai.api.ws import ws_router
 from viewlift_ai.config import AppConfig, load_config
@@ -33,9 +35,13 @@ from viewlift_ai.proxy.redact import RedactionService
 from viewlift_ai.proxy.runner import ProxyRunner
 from viewlift_ai.services.browser_sessions import BrowserSessions
 from viewlift_ai.services.capture import CaptureService
+from viewlift_ai.services.crash_media import CrashMediaStore
 from viewlift_ai.services.debug_session import DebugSessionService
 from viewlift_ai.services.encrypted_store import EncryptedSqliteStore
 from viewlift_ai.services.event_bus import EventBus, FlowEventBus, LogEventBus
+from viewlift_ai.services.host.crash_diagnosis import make_diagnoser
+from viewlift_ai.services.host.crash_reports import CrashPipeline, CrashReportWatcher
+from viewlift_ai.services.host.runner import ProjectRoots
 from viewlift_ai.services.ingest import IngestService
 from viewlift_ai.services.log_capture import LogCaptureService
 from viewlift_ai.services.log_tail import LogTailService
@@ -115,6 +121,7 @@ def get_debug_sessions() -> DebugSessionService:
         _debug_sessions = DebugSessionService(
             store=get_store(),
             events=get_debug_event_bus(),
+            media=CrashMediaStore(get_config().data_dir / "crash-media"),
         )
     return _debug_sessions
 
@@ -253,6 +260,7 @@ def _bind_app_state(application: FastAPI) -> None:
         pending.cancel()
     application.state.capture_wipe_task = None
     application.state.browser_sessions = BrowserSessions()
+    application.state.host_toolkit = None
     application.state.capture_wipe_delay = 2.5
 
 
@@ -301,6 +309,28 @@ def _shutdown_store() -> None:
     store.close()
 
 
+def _start_crash_watch(
+    application: FastAPI, loop: asyncio.AbstractEventLoop
+) -> asyncio.Task[None] | None:
+    """Symbolicate crashes the SDK uploads and pick up macOS crash reports within about a second."""
+    sessions = get_debug_sessions()
+    roots_file = get_config().data_dir / "host" / "project_roots.json"
+
+    def client_info(client_id: str) -> dict[str, object] | None:
+        return next((item for item in sessions.list_clients() if item.get("id") == client_id), None)
+
+    # Read the roots file each time, so roots added on Setup apply without a restart.
+    sessions.diagnose_crash = make_diagnoser(lambda: ProjectRoots(roots_file).roots(), client_info)
+    if sessions.media is not None:
+        sessions.media.prune(sessions.store.debug_event_ids(module="crash"))
+    pipeline = CrashPipeline(sessions)
+    pipeline.attach()
+    application.state.crash_pipeline = pipeline
+    if os.environ.get("VIEWLIFT_CRASH_WATCH", "1") == "0":
+        return None
+    return loop.create_task(CrashReportWatcher(sessions, pipeline).run())
+
+
 @asynccontextmanager
 async def lifespan(application: FastAPI) -> AsyncIterator[None]:
     global _proxy_runner
@@ -308,6 +338,7 @@ async def lifespan(application: FastAPI) -> AsyncIterator[None]:
     ensure_ca(cfg.mitm_confdir)
     get_setup()
     ingest = get_ingest()
+    ingest.restore_saved()
     if os.environ.get("VIEWLIFT_SDK_WATCH") == "1":
         ingest.start_network_watch()
     get_log_tail()
@@ -318,6 +349,7 @@ async def lifespan(application: FastAPI) -> AsyncIterator[None]:
     log_bus = get_log_event_bus()
     log_bus.bind_loop(loop)
     get_debug_event_bus().bind_loop(loop)
+    crash_watch = _start_crash_watch(application, loop)
     breakpoints = get_breakpoints()
     breakpoints.bind_loop(loop)
     runner: ProxyRunner | None = None
@@ -343,10 +375,12 @@ async def lifespan(application: FastAPI) -> AsyncIterator[None]:
     try:
         yield
     finally:
+        if crash_watch is not None:
+            crash_watch.cancel()
         await breakpoints.shutdown()
         get_log_tail().stop()
         get_ingest().stop_network_watch()
-        get_ingest().disable()
+        get_ingest().stop()
         get_reveal().wipe()
         active = _proxy_runner
         if active is not None:
@@ -364,6 +398,8 @@ app.include_router(logs_router)
 app.include_router(session_router)
 app.include_router(debug_router)
 app.include_router(tools_router)
+app.include_router(host_router)
+app.include_router(simulator_router)
 app.include_router(agent_router)
 app.include_router(ws_router)
 app.mount("/static", StaticFiles(directory=str(WEB_STATIC)), name="static")
@@ -406,7 +442,7 @@ def create_app(config: AppConfig | None = None) -> FastAPI:
     global _reveal, _debug_sessions, _proxy_clients
     if config is not None:
         if _ingest is not None:
-            _ingest.disable()
+            _ingest.stop()
         if _log_tail is not None:
             _log_tail.stop()
         if _reveal is not None:

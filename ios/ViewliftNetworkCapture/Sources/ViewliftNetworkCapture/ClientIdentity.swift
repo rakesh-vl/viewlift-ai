@@ -1,3 +1,4 @@
+import CryptoKit
 import Foundation
 
 #if canImport(UIKit)
@@ -35,13 +36,17 @@ public struct DeviceIdentity: Sendable, Equatable {
     public let deviceName: String
     public let deviceModel: String
     public let isSimulator: Bool
+    /// Same on every app of one physical device, whatever its vendor, until the device reboots.
+    /// Lets the console group apps whose vendor identifiers differ. Empty on simulators.
+    public var deviceHint = ""
 
     /// Simulator processes inherit `SIMULATOR_UDID`, so every app on one simulator shares a key.
     static func resolve(
         environment: [String: String],
         vendorId: String?,
         deviceName: String,
-        hardwareModel: String
+        hardwareModel: String,
+        deviceHint: String = ""
     ) -> DeviceIdentity {
         if let udid = environment["SIMULATOR_UDID"], !udid.isEmpty {
             return DeviceIdentity(
@@ -56,8 +61,28 @@ public struct DeviceIdentity: Sendable, Equatable {
             deviceKey: vendorId.map { "vendor:\($0)" } ?? "hint:\(fallback)",
             deviceName: deviceName,
             deviceModel: hardwareModel,
-            isSimulator: false
+            isSimulator: false,
+            deviceHint: deviceHint
         )
+    }
+
+    /// Hash of the hardware model, OS version, and boot time. The UI runner computes the same value.
+    static func deviceHint(hardwareModel: String, osVersion: String, bootTime: Int) -> String {
+        guard bootTime > 0 else { return "" }
+        let digest = SHA256.hash(data: Data("\(hardwareModel)|\(osVersion)|\(bootTime)".utf8))
+        return digest.prefix(8).map { String(format: "%02x", $0) }.joined()
+    }
+
+    static func osVersion() -> String {
+        let version = ProcessInfo.processInfo.operatingSystemVersion
+        return "\(version.majorVersion).\(version.minorVersion).\(version.patchVersion)"
+    }
+
+    static func bootTime() -> Int {
+        var value = timeval()
+        var size = MemoryLayout<timeval>.size
+        guard sysctlbyname("kern.boottime", &value, &size, nil, 0) == 0 else { return 0 }
+        return Int(value.tv_sec)
     }
 
     @MainActor
@@ -69,11 +94,13 @@ public struct DeviceIdentity: Sendable, Equatable {
         let vendorId: String? = nil
         let name = ProcessInfo.processInfo.hostName
         #endif
+        let model = hardwareModel()
         return resolve(
             environment: ProcessInfo.processInfo.environment,
             vendorId: vendorId,
             deviceName: name,
-            hardwareModel: hardwareModel()
+            hardwareModel: model,
+            deviceHint: deviceHint(hardwareModel: model, osVersion: osVersion(), bootTime: bootTime())
         )
     }
 

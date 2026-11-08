@@ -23,7 +23,7 @@ class LogRecord:
     message: str
     created_at: datetime
     request_id: str | None = None
-    source: str = "unknown"
+    source: str = "unknown"  # sdk | stdout | stderr | simulator | device (legacy rows)
     client_id: str | None = None
     udid: str | None = None
 

@@ -43,6 +43,15 @@ def _require_loopback(request: Request) -> None:
         raise HTTPException(status_code=403, detail="Reveal APIs are loopback-only")
 
 
+def _kind_filter(kind: str | None) -> str | None:
+    if kind is None or not kind.strip():
+        return None
+    value = kind.strip().lower()
+    if value not in {"graphql", "http"}:
+        raise HTTPException(status_code=400, detail="kind must be graphql or http")
+    return value
+
+
 def _mutating_enabled(request: Request) -> bool:
     engine = getattr(request.app.state, "rule_engine", None)
     if engine is None:
@@ -89,6 +98,8 @@ def list_flows(
     status: Annotated[int | None, Query()] = None,
     content_type: Annotated[str | None, Query(alias="content-type")] = None,
     text: Annotated[str | None, Query()] = None,
+    kind: Annotated[str | None, Query()] = None,
+    operation: Annotated[str | None, Query()] = None,
     limit: Annotated[int, Query(ge=1, le=1000)] = 200,
     client_id: Annotated[list[str] | None, Query()] = None,
     device_key: Annotated[str | None, Query()] = None,
@@ -100,6 +111,8 @@ def list_flows(
         status=status,
         content_type=content_type or None,
         text=text or None,
+        kind=_kind_filter(kind),
+        operation=operation or None,
         client_ids=resolve_client_ids(request, client_id, device_key),
     )
     return {"flows": [flow_summary(f) for f in flows], "count": len(flows)}
@@ -197,6 +210,8 @@ def export_har(
     status: Annotated[int | None, Query()] = None,
     content_type: Annotated[str | None, Query(alias="content-type")] = None,
     text: Annotated[str | None, Query()] = None,
+    kind: Annotated[str | None, Query()] = None,
+    operation: Annotated[str | None, Query()] = None,
     limit: Annotated[int, Query(ge=1, le=1000)] = 200,
     client_id: Annotated[list[str] | None, Query()] = None,
     device_key: Annotated[str | None, Query()] = None,
@@ -208,6 +223,8 @@ def export_har(
         status=status,
         content_type=content_type or None,
         text=text or None,
+        kind=_kind_filter(kind),
+        operation=operation or None,
         client_ids=resolve_client_ids(request, client_id, device_key),
     )
     payload = har_json(flows, redaction=_redaction(request))

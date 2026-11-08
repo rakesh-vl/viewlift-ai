@@ -1,23 +1,8 @@
 {% extends "base.html" %}
 {% block content %}
 <section class="filters" id="log-controls">
-  <label>Source
-    <select id="log-source" class="rules-input">
-      <option value="simulator">Simulator</option>
-      <option value="device">Device (USB/Wi-Fi)</option>
-    </select>
-  </label>
-  <label class="grow">UDID
-    <select id="log-udid" class="rules-input grow"></select>
-  </label>
-  <label title="Only stream this process (e.g. your app executable). Empty = whole device, very noisy.">Process
-    <input id="log-process" class="rules-input" type="text" placeholder="app executable" autocomplete="off">
-  </label>
-  <button type="button" id="btn-log-start" class="btn">Start</button>
-  <button type="button" id="btn-log-stop" class="btn" hidden>Stop</button>
-  <button type="button" id="btn-log-restart" class="btn ghost" hidden>Restart</button>
-  <button type="button" id="btn-log-refresh-sources" class="btn ghost">Refresh sources</button>
-  <span id="log-stream-status" class="muted">idle</span>
+  <span class="muted">App console (stdout and stderr) from the ViewliftNetworkCapture SDK. Nothing is started here.</span>
+  <span id="log-stream-status" class="muted">connecting</span>
 </section>
 
 <section class="filters" id="log-filters">
@@ -32,12 +17,11 @@
       <option value="fault">fault</option>
     </select>
   </label>
-  <label>Source
+  <label>Stream
     <select id="lf-source" class="rules-input">
-      <option value="">Any</option>
-      <option value="simulator">simulator</option>
-      <option value="device">device</option>
-      <option value="sdk">sdk</option>
+      <option value="">stdout + stderr</option>
+      <option value="stdout">stdout</option>
+      <option value="stderr">stderr</option>
     </select>
   </label>
   <label>Subsystem / bundle id
@@ -53,9 +37,9 @@
 <p class="muted setup-note">
   Delete logs removes stored log lines only. Closing the last tab also clears captured requests and debug events. Rules stay.
 </p>
-<p class="muted setup-note" id="log-private-note">
-  TestFlight <code>os_log</code> privacy fields often arrive as <code>&lt;private&gt;</code>.
-  Expected for distribution builds. Use a debug install or ViewliftNetworkCapture LogService for full messages.
+<p class="muted setup-note" id="log-console-note">
+  Same text as Xcode's debug console: <code>print</code>, <code>debugPrint</code>, and stderr from the app.
+  <code>os_log</code> and syslog are not shown. Needs a debug build with the SDK receiver enabled.
 </p>
 
 <section class="split">
@@ -75,7 +59,7 @@
           <tr>
             <th class="log-col-time" scope="col">Time</th>
             <th class="log-col-level" scope="col">Level</th>
-            <th class="log-col-source" scope="col">Source</th>
+            <th class="log-col-source" scope="col">Stream</th>
             <th class="log-col-subsystem" scope="col">Subsystem</th>
             <th scope="col">Message</th>
           </tr>

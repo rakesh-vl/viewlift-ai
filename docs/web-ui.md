@@ -6,7 +6,7 @@ The dashboard is server-rendered Jinja templates with plain JavaScript. There is
 
 Every page extends [base.html](../src/viewlift_ai/web/templates/base.html):
 
-- left rail: Network, Logs, Rules, Debug, Tools, Agent, Setup, Health, with a live indicator, theme toggle and rail collapse;
+- left rail: Network, Logs, Rules, Debug, Devices, Tools, Agent, Setup, Health, with a live indicator, theme toggle and rail collapse;
 - top bar: app scope picker and "Clear all data";
 - a warning banner while any mutating rule is enabled.
 
@@ -18,18 +18,19 @@ Design guidance lives in [DESIGN.md](../DESIGN.md).
 
 | Page | Template | Script entry | Main endpoints |
 |---|---|---|---|
-| Network `/` | `dashboard.html` | `app.js` `initDashboard` | `/api/flows`, `/api/flows/delete`, `/ws/flows`, `/api/reveal/*`, `/api/export/har`, `/api/flows/{id}/curl`, `/api/breakpoints/*` |
-| Flow detail `/flows/{id}` | `flow_detail.html` | server-rendered | `/api/flows/{id}/replay`, `/api/flows/{id}/curl` |
+| Network `/` | `dashboard.html` | `app.js` `initDashboard` | `/api/flows`, `/api/flows/delete`, `/ws/flows`, `/api/reveal/*`, `/api/export/har`, `/api/flows/{id}/curl`, `/api/flows/send`, `/api/breakpoints/*` |
+| Flow detail `/flows/{id}` | `flow_detail.html` | server-rendered | `/api/flows/{id}/replay`, `/api/flows/{id}/curl`, `/api/flows/send` |
 | Logs `/logs` | `logs.html` | `app.js` `initLogs` | `/api/logs/*`, `/ws/logs` |
 | Rules `/rules` | `rules.html` | `app.js` `initRules` | `/api/rules/*` |
-| Setup `/setup` | `setup.html` | `app.js` `initSetup` | `/api/setup/*`, `/api/apps` |
+| Setup `/setup` | `setup.html` | `app.js` `initSetup` | `/api/setup/*`, `/api/apps`, `/api/host/call` (tunnel, Apple TV pairing) |
 | Debug `/debug` | `debug_suite.html` | `debug.js` | `/api/debug/*`, `/ws/debug` |
+| Devices `/simulator` and `/devices` | `simulator.html` | `simulator.js` | `/api/host/targets`, `/api/host/call` |
 | Tools `/tools` | `tools.html` | `js/toolkit/*.js`, `tools.js` | `/api/tools/scripts`, `/api/tools/action/{name}` |
 | Agent `/agent` | `agent.html` | `agent.js` | `/api/agent/status`, `/api/debug/clients` |
 
 ### Network
 
-Filter bar (method, host, status, content type, text), HAR export, reveal bar (token, unlock, lock) and an SDK activity hint. A split view shows the live flow table and a detail pane with overview, headers, cookies, bodies (JSON tree, image or text), query, timing waterfall and WebSocket frames. Pending breakpoints appear in the table with a resume or drop editor. Delete flows removes stored requests only. Device logs, debug events, and rules stay.
+Filter bar (method, host, status, content type, kind, operation, text), HAR export, reveal bar (token, unlock, lock) and an SDK activity hint. Kind is Any, GraphQL, or HTTP. Operation matches the GraphQL operation name. GraphQL rows show that name in the path column and `graphql` in the type column. A split view shows the live flow table and a detail pane with overview, headers, cookies, bodies (JSON tree, image or text), query, timing waterfall, WebSocket frames, and an Edit tab. Edit prefills the visible request. Copy cURL on that tab builds a multiline command in the browser from the form, including edits, so it can be imported into Postman. Send posts the form to `/api/flows/send` and shows the redacted response. The header Copy cURL button still copies the stored request. Pending breakpoints appear in the table with a resume or drop editor. Delete flows removes stored requests only. Device logs, debug events, and rules stay.
 
 ### Logs
 
@@ -41,11 +42,30 @@ Allowlist, map-local root, and a form and table for each rule kind with enable t
 
 ### Setup
 
-CA status and one-use downloads (PEM and iOS profile), proxy bind (interface, port, LAN with basic auth), iPhone and Apple TV steps, simulator helpers and a test request, the SDK receiver (interface, port, pairing token, receiver URL, pinned fingerprint, app activity, Swift snippet) and the connected apps tree.
+CA status and one-use downloads (PEM and iOS profile), proxy bind (interface, port, LAN with basic auth), iPhone and Apple TV steps, the developer tunnel (administrator prompt, console stays unprivileged), Apple TV PIN pairing, simulator helpers and a test request, the SDK receiver (interface, port, pairing token, receiver URL, pinned fingerprint, app activity, Swift snippet) and the connected apps tree.
+
+### Devices
+
+`/simulator` and `/devices` list simulators and paired devices from `/api/host/targets`. Each row shows platform (iPhone, iPad, Apple TV) and connection (USB, network, or local). Buttons for boot, screenshot, launch, stop, build and run, open URL, location, recording, and the UI runner stay hidden until that target lists the capability. Project, scheme, bundle id, and development team come from session defaults. Deeplink and location forms on Debug use the same target list. A simulator `device_key` or a unique device model selects the matching row.
 
 ### Debug Suite
 
-A session bar for the selected app and tabs: OTT, Analytics, Hangs, Performance, Memory, UI, SwiftUI, Assets, Accessibility, Storage, Flags, Bug report, Macros, Runtime, Push and Network tools (profiles, deep link, location). Read commands go to `/api/debug/command`; mutating ones call `/api/debug/confirm` first. Results stream on `/ws/debug`.
+A session bar for the selected app and tabs: OTT, Analytics, Hangs, Performance, Memory, UI, SwiftUI, Assets, Accessibility, Storage, Flags, Bug report, Macros, Runtime, Explorer, Push, Network tools (profiles, deep link, location) and Device settings. Read commands go to `/api/debug/command`; mutating ones call `/api/debug/confirm` first. Results stream on `/ws/debug`.
+
+The Hangs tab also holds the crash list. A crash appears as a card the moment the console learns of it:
+
+- What happened: a plain-language headline, the crash site as `file:line` in the function, the code around that line with the crash line marked, the likely cause, and where to fix it.
+- Replay: the last ten seconds of the screen with taps drawn and a countdown to the crash, playable on the card and downloadable as MP4. Before it arrives the card says it uploads on the app's next launch.
+- Timeline: screens, taps, remote presses, requests, and console errors, in seconds before the crash. Clicking a row jumps the video to that moment.
+- Steps to reproduce, last requests, console lines, and the environment.
+- The full stack with app frames marked, system frames dimmed, and inlined frames tagged, plus other threads from the macOS report. A card without symbols names the missing dSYM.
+- Copy for AI copies the markdown brief. Download report saves it. Copy stack copies the plain stack.
+
+The bell in the scope bar opens the notification center. Show alerts turns the whole feature off: no toasts, and nothing new is collected. Group by type folds a burst into one toast (`Request failed · 3` keeps the latest line) and lists the center under a heading per type. Each type has its own checkbox: Crashes, Hangs, Memory leaks, Playback, Failed requests, Console errors. The choice is saved in this browser. Toasts sit at the bottom right, show at most 4 at a time, leave after 12 seconds, and open the matching page. Failed requests or console errors that arrive within 3 seconds of each other share one row in the center (`N times`), so a busy app cannot fill the list. The center keeps the last 40 for this tab. Clear removes them and dismisses the toasts on screen. The app switcher marks a crashed app. `/debug#hangs`, `/debug#memory`, and `/debug#ott` open that tab.
+
+Explorer opens live objects. Start from a root (application, delegate, windows, view controllers, bundle, defaults, caches), a selected view in the UI tab, a heap class in Memory, or an instance search by class name. Each object shows its class chain, Objective-C properties and ivars per class, Swift stored properties, and methods. Writable properties can be edited inline. Only zero-argument methods can be called, and `init`, `set`, `dealloc` and other destructive selectors are refused on the device. Objects are referenced by short-lived handles, never by address. Runtime adds a loaded-libraries list with the classes in each image. Storage adds defaults add and delete, file rename and delete, file type detection with plist preview, and cookies with masked values.
+
+Device settings changes what the SDK does without a rebuild: debug modules on or off (within the modules the app was built with), network capture on or off, body size limits, and the body content types to keep. The device saves these overrides and keeps them across launches. Reset returns to the app's built-in configuration.
 
 ### Tools
 
@@ -57,7 +77,7 @@ The scratchpad is the Boop shape. Paste text, pick a script, and run it. A selec
 
 ### Agent
 
-MCP status, connect snippets, a sample session, the apps on each device, tool groups from `catalog.TOOL_GROUPS`, command tables, guardrails and troubleshooting.
+MCP status, connect snippets, a sample session, the apps on each device, tool groups from `catalog.TOOL_GROUPS`, command tables, guardrails and troubleshooting. The tool catalog itself is [MCP server and tools](mcp-server.md). The Tools page above is the in-browser toolkit and is not part of MCP.
 
 ## Assets
 
@@ -70,6 +90,7 @@ MCP status, connect snippets, a sample session, the apps on each device, tool gr
 | `js/shell.js` | All pages |
 | `js/app.js` | Network, Logs, Rules, Setup |
 | `js/debug.js` | Debug Suite |
+| `js/explorer.js` | Debug Suite Explorer, Runtime libraries, cookies and Device settings |
 | `js/tools.js` | Tools |
 | `js/agent.js` | Agent |
 | `img/viewlift-logo.png` | Rail |

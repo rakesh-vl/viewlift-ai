@@ -24,7 +24,7 @@ flowchart LR
     Mcp["MCP server process"]
 
     AnyApp -->|"HTTP proxy :8080"| Mitm
-    App -->|"pinned HTTPS :8742"| Ingest
+    App -->|"pinned HTTPS :8743"| Ingest
     Mitm --> Capture
     Ingest --> Capture
     Ingest --> LogCap
@@ -117,7 +117,7 @@ In order: resume all paused breakpoints unchanged, stop log tail, stop the inges
 | `apps_routes.py` | Device and app tree, per-app and global data clearing |
 | `rules_routes.py` | Rules page, rule CRUD, pending breakpoints |
 | `setup_routes.py` | Setup page, CA, mobileconfig, proxy bind, simulator helpers, SDK receiver |
-| `logs_routes.py` | Logs page, sources, start/filter/stop, list and detail |
+| `logs_routes.py` | Logs page, list and detail, delete. Logs come from SDK stdout/stderr over ingest |
 | `session_routes.py` | Browser tab presence and last-tab wipe |
 | `debug_routes.py` | Debug Suite page, debug commands, analytics, deep link, location, replay |
 | `agent_routes.py` | Agent page and MCP status |
@@ -169,7 +169,7 @@ In order: resume all paused breakpoints unchanged, stop log tail, stop the inges
 
 ### mcp_server/
 
-`server.py` (FastMCP tool wrappers), `tools.py` (logic), `client.py` (loopback HTTP client), `runtime.py` (transport and port), `catalog.py` (tool docs for the Agent page). See [MCP server](mcp-server.md).
+`server.py` (FastMCP tool wrappers, prompts, and resources), `tools.py` (logic), `guard.py` (secret scrubbing and the call audit), `insights.py` (summaries over scrubbed rows), `client.py` (loopback HTTP client), `runtime.py` (transport and port), `catalog.py` (tool docs for the Agent page). See [MCP server and tools](mcp-server.md).
 
 ## Key files
 

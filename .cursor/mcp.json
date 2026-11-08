@@ -1,0 +1,7 @@
+{
+  "mcpServers": {
+    "viewlift-ai": {
+      "url": "http://127.0.0.1:8742/mcp"
+    }
+  }
+}

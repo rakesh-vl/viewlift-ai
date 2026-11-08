@@ -130,8 +130,8 @@ enum UIViewDetails {
             }
             items.append(contentsOf: extra.prefix(max(0, 12 - items.count)))
         }
-        var rows = items.enumerated().map { index, constraint in
-            ("\(index + 1)", ViewSheetFormat.clip(constraint.description, limit: 180))
+        var rows = items.map { constraint in
+            UILayoutSheet.readable(constraint, owner: view)
         }
         if view.constraints.count > items.count {
             rows.append(("More", "\(view.constraints.count - items.count) more on this view"))

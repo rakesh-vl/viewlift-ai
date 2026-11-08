@@ -114,7 +114,7 @@ final class ConnectionLifecycleMonitor: @unchecked Sendable {
     }
 }
 
-#if os(iOS)
+#if os(iOS) || os(tvOS)
 /// Keeps the process alive for a few seconds so the "background" report can leave the device.
 final class BackgroundGrace: @unchecked Sendable {
     private let lock = NSLock()
@@ -122,9 +122,9 @@ final class BackgroundGrace: @unchecked Sendable {
 
     func begin() async {
         let value = await MainActor.run {
-            UIApplication.shared.beginBackgroundTask(withName: "viewlift.lifecycle") { [weak self] in
+            AutomationScreen.application?.beginBackgroundTask(withName: "viewlift.lifecycle") { [weak self] in
                 self?.end()
-            }
+            } ?? .invalid
         }
         store(value)
     }
@@ -142,7 +142,7 @@ final class BackgroundGrace: @unchecked Sendable {
         lock.unlock()
         guard value != .invalid else { return }
         Task { @MainActor in
-            UIApplication.shared.endBackgroundTask(value)
+            AutomationScreen.application?.endBackgroundTask(value)
         }
     }
 }

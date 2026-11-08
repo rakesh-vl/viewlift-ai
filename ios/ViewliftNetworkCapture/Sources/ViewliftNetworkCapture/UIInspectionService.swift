@@ -3,12 +3,52 @@ import Foundation
 
 #if canImport(UIKit)
 import UIKit
+
+enum WindowSnapshot {
+    /// Copies the pixels already on screen. Call on the main thread.
+    /// Not `@MainActor` because hang and leak reports call it synchronously.
+    /// `afterScreenUpdates: true` inside this renderer waits for a pass that cannot finish,
+    /// so the bitmap stays white except for layers cached already, such as the nav bar.
+    static func image(of window: UIWindow, scale: CGFloat? = nil, prepare: Bool = true) -> UIImage? {
+        let size = window.bounds.size
+        guard size.width > 1, size.height > 1 else { return nil }
+        if prepare {
+            window.layoutIfNeeded()
+        }
+        let format = UIGraphicsImageRendererFormat()
+        format.scale = scale ?? window.windowScene?.screen.scale ?? 1
+        format.opaque = true
+        let rect = CGRect(origin: .zero, size: size)
+        return UIGraphicsImageRenderer(size: size, format: format).image { context in
+            if !window.drawHierarchy(in: rect, afterScreenUpdates: false) {
+                window.layer.render(in: context.cgContext)
+            }
+        }
+    }
+}
 #endif
+
+struct ScreenGrab: Sendable {
+    var data: Data
+    var width: Double
+    var height: Double
+    var windowId = ""
+    var sceneId = ""
+}
 
 enum UIInspectionService {
     @MainActor
     static func hierarchy() -> [String: JSONValue] {
         UIHierarchyCapture.capture()
+    }
+
+    @MainActor
+    static func layers(_ payload: [String: JSONValue]) -> [String: JSONValue] {
+        #if canImport(UIKit)
+        return UILayerSnapshot.page(payload)
+        #else
+        return ["layers": .array([]), "done": .bool(true)]
+        #endif
     }
 
     @MainActor
@@ -27,9 +67,7 @@ enum UIInspectionService {
     static func accessibilityAudit() -> [String: JSONValue] {
         #if canImport(UIKit)
         var findings: [JSONValue] = []
-        let windows = UIApplication.shared.connectedScenes
-            .compactMap { $0 as? UIWindowScene }
-            .flatMap(\.windows)
+        let windows = AutomationScreen.allWindows()
         for window in windows {
             audit(view: window, path: className(window), findings: &findings)
         }
@@ -43,20 +81,60 @@ enum UIInspectionService {
     }
 
     @MainActor
-    static func screenshot() -> Data? {
+    static func screenshot(windowId: String = "", sceneId: String = "") async -> ScreenGrab? {
         #if canImport(UIKit)
-        guard let window = UIApplication.shared.connectedScenes
-            .compactMap({ $0 as? UIWindowScene })
-            .flatMap(\.windows)
-            .first(where: \.isKeyWindow) else {
+        guard var window = AutomationScreen.window(windowId: windowId, sceneId: sceneId) else { return nil }
+        #if os(iOS)
+        if orientationMismatch(window) {
+            await Task.yield()
+            window = AutomationScreen.window(windowId: windowId, sceneId: sceneId) ?? window
+        }
+        #endif
+        let longest = max(window.bounds.width, window.bounds.height)
+        let native = window.windowScene?.screen.scale ?? 1
+        let scale = longest > 1 ? min(native, 1200 / longest) : native
+        guard let image = WindowSnapshot.image(of: window, scale: scale),
+              let data = image.pngData() else {
             return nil
         }
-        let renderer = UIGraphicsImageRenderer(bounds: window.bounds)
-        return renderer.pngData { _ in
-            window.drawHierarchy(in: window.bounds, afterScreenUpdates: false)
-        }
+        return ScreenGrab(
+            data: data,
+            width: Double(window.bounds.width),
+            height: Double(window.bounds.height),
+            windowId: AutomationScreen.windowId(window),
+            sceneId: AutomationScreen.sceneId(window.windowScene)
+        )
         #else
         return nil
+        #endif
+    }
+
+    #if canImport(UIKit)
+    #if os(iOS)
+    @MainActor
+    private static func orientationMismatch(_ window: UIWindow) -> Bool {
+        guard let orientation = window.windowScene?.interfaceOrientation,
+              orientation != .unknown else {
+            return false
+        }
+        let landscape = orientation == .landscapeLeft || orientation == .landscapeRight
+        return landscape != (window.bounds.width > window.bounds.height)
+    }
+    #endif
+    #endif
+
+    @MainActor
+    static func focus() -> [String: JSONValue] {
+        FocusDebugMonitor.shared.snapshot()
+    }
+
+    @MainActor
+    static func visual(_ payload: [String: JSONValue]) -> [String: JSONValue] {
+        #if canImport(UIKit)
+        return UILayoutDebugService.shared.apply(payload)
+        #else
+        _ = payload
+        return ["found": .bool(false)]
         #endif
     }
 
@@ -145,6 +223,7 @@ enum UIInspectionService {
     #if canImport(UIKit)
     @MainActor
     private static func audit(view: UIView, path: String, findings: inout [JSONValue]) {
+        if UILayoutDebugService.isOverlay(view) { return }
         let current = "\(path)/\(className(view))"
         if view.isAccessibilityElement {
             if (view.accessibilityLabel ?? "").trimmingCharacters(in: .whitespaces).isEmpty {
@@ -176,10 +255,8 @@ enum UIInspectionService {
     }
 
     @MainActor
-    private static func findView(id: String) -> UIView? {
-        let windows = UIApplication.shared.connectedScenes
-            .compactMap { $0 as? UIWindowScene }
-            .flatMap(\.windows)
+    static func findView(id: String) -> UIView? {
+        let windows = AutomationScreen.allWindows()
         for window in windows {
             if let match = findView(id: id, root: window) {
                 return match
