@@ -13,6 +13,30 @@ enum ReceiverAddress {
         return host != "127.0.0.1"
         #endif
     }
+
+    /// Most VPN addresses kept from earlier advertisements.
+    static let maxRememberedVPNHosts = 4
+
+    /// True for a Tailscale-range address (100.64.0.0/10). It stays the same for a given Mac.
+    static func isVPN(_ host: String) -> Bool {
+        let octets = host.split(separator: ".").compactMap { Int($0) }
+        guard octets.count == 4, octets.allSatisfy({ (0...255).contains($0) }) else { return false }
+        return octets[0] == 100 && (64...127).contains(octets[1])
+    }
+
+    /// An advertisement's own addresses, then the VPN addresses learned earlier that it did not list.
+    /// The Mac advertises its Tailscale address only while Tailscale is up. A phone that saw the Mac
+    /// once without it must still reach the Mac later from another network.
+    static func mergingVPN(into fresh: [String], remembered: [String]) -> [String] {
+        var hosts = fresh
+        var vpnCount = hosts.filter(isVPN).count
+        for host in remembered where isVPN(host) && !hosts.contains(host) {
+            guard vpnCount < maxRememberedVPNHosts else { break }
+            hosts.append(host)
+            vpnCount += 1
+        }
+        return hosts
+    }
 }
 
 struct DiscoveredReceiver: Sendable, Equatable {

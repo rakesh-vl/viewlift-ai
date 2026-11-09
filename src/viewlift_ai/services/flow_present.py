@@ -56,8 +56,8 @@ def flow_detail(
     redaction: RedactionService | None = None,
     reveal_raw: RawFlowPayload | None = None,
 ) -> dict[str, Any]:
-    """Detail view. Default redacts; reveal_raw is session-memory only (never export)."""
-    redaction = redaction or RedactionService()
+    """Detail view. The dashboard shows the stored bytes. reveal_raw is the session cache."""
+    _ = redaction
     if reveal_raw is not None:
         req_headers = dict(reveal_raw.request_headers)
         resp_headers = dict(reveal_raw.response_headers)
@@ -65,10 +65,10 @@ def flow_detail(
         resp_body = bytes(reveal_raw.response_body)
         revealed = True
     else:
-        req_headers = redaction.redact_headers(dict(flow.request_headers))
-        resp_headers = redaction.redact_headers(dict(flow.response_headers))
-        req_body = redaction.redact_body(flow.request_body)
-        resp_body = redaction.redact_body(flow.response_body)
+        req_headers = dict(flow.request_headers)
+        resp_headers = dict(flow.response_headers)
+        req_body = bytes(flow.request_body)
+        resp_body = bytes(flow.response_body)
         revealed = False
 
     content_type = flow.content_type or _header_value(resp_headers, "content-type")
@@ -102,7 +102,7 @@ def flow_detail(
         },
         "query": _query_pairs(flow.query),
         "timing": timing_dict(flow.timing),
-        "websocket_messages": [_ws_message(m, redaction) for m in flow.websocket_messages],
+        "websocket_messages": [_ws_message(m) for m in flow.websocket_messages],
     }
 
 
@@ -157,17 +157,12 @@ def body_view(body: bytes, content_type: str | None) -> dict[str, Any]:
     }
 
 
-def _ws_message(
-    message: WebSocketMessageRecord,
-    redaction: RedactionService,
-) -> dict[str, Any]:
+def _ws_message(message: WebSocketMessageRecord) -> dict[str, Any]:
     if message.is_text:
         try:
             text = message.content.decode("utf-8")
         except UnicodeDecodeError:
             text = None
-        if text is not None:
-            text = redaction.redact_text(text)
         return {
             "from_client": message.from_client,
             "is_text": True,

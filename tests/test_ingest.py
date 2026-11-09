@@ -363,3 +363,80 @@ def test_process_stop_keeps_saved_receiver(tmp_path: Path, monkeypatch: pytest.M
     assert second.enabled is True
     assert second.bind.host == "192.168.0.40"
     assert second.bind.port == 8743
+
+
+def test_tailscale_address_is_advertised_after_the_vpn_goes_down(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A phone that sees the Mac while Tailscale is down still learns the Tailscale address."""
+    lo = {"iface": "lo0", "ip": "127.0.0.1", "scope": "loopback"}
+    lan = {"iface": "en0", "ip": "192.168.0.40", "scope": "lan"}
+    vpn = {"iface": "utun21", "ip": "100.105.93.60", "scope": "vpn"}
+    rows = [lo, lan, vpn]
+    monkeypatch.setattr(IngestService, "start_https_server", lambda self: None)
+    monkeypatch.setattr(IngestService, "stop_https_server", lambda self: None)
+
+    first = _svc(tmp_path)
+    first.interface_lister = lambda: rows
+    first.enable(host="", port=8743, iface="en0", include_vpn=True)
+    assert first.advertised_alternates() == ("100.105.93.60",)
+    assert '"100.105.93.60"' in (tmp_path / "ingest" / "receiver.json").read_text("utf-8")
+
+    # Tailscale quits on the Mac, then the console restarts.
+    rows[:] = [lo, lan]
+    second = _svc(tmp_path)
+    advertiser = _Advertiser()
+    second.advertiser = advertiser
+    second.interface_lister = lambda: rows
+    assert second.restore_saved() is True
+    assert second.bind.extra_hosts == ()
+    assert advertiser.alternates[-1] == ("100.105.93.60",)
+    status = second.status()["vpn"]
+    assert status["listening"] == []
+    assert status["remembered"] == ["100.105.93.60"]
+    assert "Connect Tailscale" in status["note"]
+
+    # Tailscale returns: the receiver binds it and the advertisement keeps one entry.
+    rows[:] = [lo, lan, vpn]
+    second.follow_network()
+    assert second.bind.extra_hosts == ("100.105.93.60",)
+    assert advertiser.alternates[-1] == ("100.105.93.60",)
+    assert second.status()["vpn"]["listening"] == ["100.105.93.60"]
+
+
+def test_remembered_vpn_addresses_are_capped_and_validated(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    ingest_dir = tmp_path / "ingest"
+    ingest_dir.mkdir()
+    (ingest_dir / "receiver.json").write_text(
+        '{"enabled": false, "iface": "en0", "port": 8743, "include_vpn": true,'
+        ' "vpn_hosts": ["100.64.0.1", "not-an-ip", "8.8.8.8", "127.0.0.1", "100.64.0.2",'
+        ' "100.64.0.3", "100.64.0.4", "100.64.0.5", "100.64.0.1"]}',
+        encoding="utf-8",
+    )
+    svc = _svc(tmp_path)
+    assert svc.remembered_vpn_hosts() == (
+        "100.64.0.1",
+        "100.64.0.2",
+        "100.64.0.3",
+        "100.64.0.4",
+    )
+
+
+def test_vpn_option_off_advertises_no_remembered_address(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    rows = [
+        {"iface": "lo0", "ip": "127.0.0.1", "scope": "loopback"},
+        {"iface": "en0", "ip": "192.168.0.40", "scope": "lan"},
+        {"iface": "utun21", "ip": "100.105.93.60", "scope": "vpn"},
+    ]
+    monkeypatch.setattr(IngestService, "start_https_server", lambda self: None)
+    monkeypatch.setattr(IngestService, "stop_https_server", lambda self: None)
+    svc = _svc(tmp_path)
+    svc.interface_lister = lambda: rows
+    svc.enable(host="", port=8743, iface="en0", include_vpn=True)
+    svc.enable(host="", port=8743, iface="en0", include_vpn=False)
+    assert svc.advertised_alternates() == ()
+    assert "Tick the VPN option" in svc.status()["vpn"]["note"]

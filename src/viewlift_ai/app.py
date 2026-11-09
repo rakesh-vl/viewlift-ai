@@ -37,6 +37,7 @@ from viewlift_ai.proxy.runner import ProxyRunner
 from viewlift_ai.services.browser_sessions import BrowserSessions
 from viewlift_ai.services.capture import CaptureService
 from viewlift_ai.services.crash_media import CrashMediaStore
+from viewlift_ai.services.debug_advertise import reap_stale_registrations
 from viewlift_ai.services.debug_session import DebugSessionService
 from viewlift_ai.services.encrypted_store import EncryptedSqliteStore
 from viewlift_ai.services.event_bus import EventBus, FlowEventBus, LogEventBus
@@ -339,6 +340,10 @@ async def lifespan(application: FastAPI) -> AsyncIterator[None]:
     ensure_ca(cfg.mitm_confdir)
     get_setup()
     ingest = get_ingest()
+    if os.environ.get("VIEWLIFT_SDK_WATCH") == "1":
+        # A console that was killed leaves its Bonjour advertisement running with an old address.
+        # Only the real console does this, never an app built by a test.
+        reap_stale_registrations()
     ingest.restore_saved()
     if os.environ.get("VIEWLIFT_SDK_WATCH") == "1":
         ingest.start_network_watch()

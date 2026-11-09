@@ -213,7 +213,7 @@
             environment: textOf(config, "environment"),
             platform: snap.platform || textOf(device, "platform"),
           },
-          ...pickGroups(snap, ["flow", "user", "geo", "session", "device"]),
+          ...pickGroups(snap, ["flow", "user", "geo", "session", "device", "google_service_file"]),
         };
       case "config":
         return {
@@ -223,7 +223,7 @@
             environment: textOf(config, "environment"),
             api_base_url: textOf(config, "api_base_url"),
           },
-          ...pickGroups(snap, ["config", "site_features", "theme", "content_filter"]),
+          ...pickGroups(snap, ["config", "site_features", "theme", "content_filter", "google_service_file"]),
         };
       case "environment":
         return {
@@ -234,7 +234,7 @@
             domain: textOf(config, "domain_name"),
             bundle_id: textOf(device, "bundle_id") || textOf(snap.bundle, "bundle_id"),
           },
-          ...pickGroups(snap, ["config", "device", "bundle"]),
+          ...pickGroups(snap, ["config", "device", "bundle", "google_service_file"]),
           frameworks: snap.frameworks || [],
         };
       case "pages":
@@ -663,13 +663,77 @@
     return [...keys].filter((key) => left[key] !== right[key]).length;
   }
 
+  const GOOGLE_SECTION_PAGES = new Set(["overview", "config", "environment"]);
+  const googleCache = { clientId: "", at: 0, value: null };
+
+  async function fetchGoogleService(force = false) {
+    const now = Date.now();
+    if (!force && googleCache.clientId === state.clientId && googleCache.value && now - googleCache.at < 30000) {
+      return googleCache.value;
+    }
+    const params = new URLSearchParams();
+    if (state.clientId) params.set("client_id", state.clientId);
+    let value;
+    try {
+      const data = await (await fetch(`/api/debug/packages?${params}`)).json();
+      value = data.google_service_file || {
+        present: false,
+        file: "GoogleService-Info.plist",
+        note: data.error || "GoogleService-Info.plist was not found in the built app.",
+      };
+    } catch (error) {
+      value = {
+        present: false,
+        file: "GoogleService-Info.plist",
+        note: String(error.message || error),
+      };
+    }
+    googleCache.clientId = state.clientId;
+    googleCache.at = Date.now();
+    googleCache.value = value;
+    return value;
+  }
+
+  function withGoogleService(data, info) {
+    if (!GOOGLE_SECTION_PAGES.has(SECTION)) return data;
+    const fromDevice = data.google_service_file;
+    const chosen = info && info.present ? info : (fromDevice || info);
+    if (!chosen) return data;
+    const next = { ...data, google_service_file: chosen };
+    if (next.summary && typeof next.summary === "object" && !Array.isArray(next.summary)) {
+      const summary = { ...next.summary };
+      summary.google_service = chosen.present ? (chosen.project_id || "present") : "missing";
+      if (chosen.bundle_id_mismatch) summary.google_bundle_mismatch = true;
+      next.summary = summary;
+    }
+    return next;
+  }
+
+  function googleFinding(info) {
+    if (!info || info.bundle_id_mismatch !== true) return null;
+    return {
+      id: "config.google_service_bundle",
+      severity: "warning",
+      title: "GoogleService-Info.plist bundle id does not match the app",
+      evidence: {
+        plist_bundle_id: info.bundle_id || "",
+        app_bundle_id: info.app_bundle_id || "",
+      },
+      hint: "Firebase stays off until BUNDLE_ID matches the app. Download a plist for this bundle id from the Firebase console.",
+      files: ["GoogleService-Info.plist"],
+    };
+  }
+
   async function loadSectionPage(extraArgs) {
     if (!SECTION) return;
     if (extraArgs !== undefined) state.sectionArgs = extraArgs;
     const payload = { name: SECTION };
     if (state.sectionArgs) payload.args = state.sectionArgs;
-    const result = await read("ott.section", payload);
-    const data = result.data || {};
+    const [result, google] = await Promise.all([
+      read("ott.section", payload),
+      GOOGLE_SECTION_PAGES.has(SECTION) ? fetchGoogleService() : Promise.resolve(null),
+    ]);
+    const data = withGoogleService(result.data || {}, google);
     if (!isNewView(data)) {
       stamp(result.captured_at);
       return;
@@ -689,8 +753,10 @@
   }
 
   async function loadDiagnostics() {
-    const result = await read("ott.diagnostics");
-    const findings = Array.isArray(result.findings) ? result.findings : [];
+    const [result, google] = await Promise.all([read("ott.diagnostics"), fetchGoogleService()]);
+    const findings = Array.isArray(result.findings) ? result.findings.slice() : [];
+    const extra = googleFinding(google);
+    if (extra && !findings.some((item) => item.id === extra.id)) findings.push(extra);
     updateBadge(findings);
     live.badgeAt = Date.now();
     const box = $("appcms-findings");
@@ -945,6 +1011,7 @@
     tasks.push(read("ott.diagnostics").then((value) => { bundle.diagnostics = value.findings; }).catch((error) => { bundle.diagnostics = { error: String(error.message || error) }; }));
     tasks.push(fetch(`/api/debug/app?client_id=${encodeURIComponent(state.clientId)}`).then((response) => response.json()).then((value) => { bundle.app = value.client; }).catch(() => {}));
     tasks.push(fetch(`/api/flows?client_id=${encodeURIComponent(state.clientId)}&limit=50`).then((response) => response.json()).then((value) => { bundle.network = value.flows; }).catch(() => {}));
+    tasks.push(fetchGoogleService(true).then((value) => { bundle.google_service_file = value; }).catch(() => {}));
     await Promise.all(tasks);
     const blob = new Blob([JSON.stringify(bundle, null, 2)], { type: "application/json" });
     const link = document.createElement("a");
@@ -1012,6 +1079,9 @@
   function resetView() {
     live.renderedKey = "";
     live.failures = 0;
+    googleCache.at = 0;
+    googleCache.value = null;
+    googleCache.clientId = "";
     live.badgeAt = 0;
     state.data = null;
     state.sectionArgs = null;
@@ -1108,24 +1178,20 @@
   }
 
   function connectSocket() {
-    const proto = location.protocol === "https:" ? "wss" : "ws";
-    const socket = new WebSocket(`${proto}://${location.host}/ws/debug`);
-    socket.addEventListener("message", (event) => {
-      let data;
-      try { data = JSON.parse(event.data); } catch (_) { return; }
-      const item = data.event;
-      if (data.type !== "debug-event" || !item || item.client_id !== state.clientId) return;
-      if (item.module === "ott" && item.kind === "changed") scheduleRefresh(item.payload?.sections);
-    });
-    socket.addEventListener("close", () => {
-      const wait = limitSeconds("live_refresh_seconds") * 1000 || LIMITS_RETRY_MS;
-      window.setTimeout(connectSocket, wait);
+    window.VLLive.connect("/ws/debug", {
+      onResync: load,
+      onMessage: (data) => {
+        const item = data.event;
+        if (data.type !== "debug-event" || !item || item.client_id !== state.clientId) return;
+        if (item.module === "ott" && item.kind === "changed") scheduleRefresh(item.payload?.sections);
+      },
     });
   }
 
   function bind() {
     $("appcms-refresh")?.addEventListener("click", () => {
       live.renderedKey = "";
+      googleCache.at = 0;
       load();
     });
     $("appcms-search")?.addEventListener("input", applyFilter);

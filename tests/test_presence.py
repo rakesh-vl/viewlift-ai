@@ -239,6 +239,8 @@ def test_bonjour_txt_carries_alternates(monkeypatch: pytest.MonkeyPatch) -> None
         return _Process()
 
     monkeypatch.setattr("viewlift_ai.services.debug_advertise.subprocess.Popen", fake_popen)
+    # Never list or stop the real advertisements of a console running on this Mac.
+    monkeypatch.setattr("viewlift_ai.services.debug_advertise._list_processes", lambda: "")
     advertiser = DebugAdvertiser()
     advertiser.publish("192.168.1.10", 8742, fingerprint="ab", debug_key="k", alt=("100.1.2.3",))
     assert "alt=100.1.2.3" in captured[-1]

@@ -16,7 +16,6 @@ from viewlift_ai.app import create_app, get_event_bus
 from viewlift_ai.config import AppConfig, SecretKeyState
 from viewlift_ai.models.flow import FlowRecord, FlowSource, FlowTiming, RetentionPolicy
 from viewlift_ai.models.log import LogLevel, LogRecord
-from viewlift_ai.proxy.redact import REDACTED
 from viewlift_ai.services.flow_export import build_curl, har_json
 from viewlift_ai.services.flow_graphql import graphql_meta
 from viewlift_ai.services.flow_present import flow_summary
@@ -200,7 +199,8 @@ def test_flow_detail_sections(tmp_path: Path) -> None:
         assert body["overview"]["method"] == "POST"
         assert body["query"][0]["name"] == "x"
         assert body["request"]["headers"]["Authorization"] == "Bearer secret-token"
-        assert body["request"]["cookies"][0]["value"] == REDACTED
+        assert body["request"]["cookies"][0]["name"] == "session"
+        assert body["request"]["cookies"][0]["value"] == "abc"
         assert body["response"]["body"]["kind"] == "json"
         assert "tok123" in (body["response"]["body"]["pretty"] or "")
         assert body["timing"]["ttfb_ms"] == 10.0
@@ -209,34 +209,31 @@ def test_flow_detail_sections(tmp_path: Path) -> None:
         assert b"Copy cURL" in page.content
 
 
-def test_har_secret_redaction(tmp_path: Path) -> None:
+def test_har_keeps_stored_values(tmp_path: Path) -> None:
     with _client(tmp_path) as client:
-        # Intentionally store unredacted secrets; export must still redact.
         client.app.state.store.save_flow(_sample_flow())
         res = client.get("/api/flows/f1/har")
         assert res.status_code == 200
         assert res.headers.get("cache-control") == "no-store"
         payload = res.text
         assert "secret-token" in payload
-        assert "hunter2" not in payload
+        assert "hunter2" in payload
         assert "tok123" in payload
-        assert "session=abc" not in payload
-        assert REDACTED in payload
+        assert "session=abc" in payload
         har = json.loads(payload)
         assert har["log"]["entries"][0]["request"]["method"] == "POST"
 
         multi = client.get("/api/export/har")
         assert multi.status_code == 200
         assert "secret-token" in multi.text
-        assert "hunter2" not in multi.text
+        assert "hunter2" in multi.text
 
 
-def test_curl_quoting_and_redaction(tmp_path: Path) -> None:
+def test_curl_quoting(tmp_path: Path) -> None:
     flow = _sample_flow(path="/path with space", query='q=a&b="x"')
     command = build_curl(flow)
     assert "secret-token" in command
-    assert "hunter2" not in command
-    assert REDACTED in command
+    assert "hunter2" in command
     assert "curl -X POST" in command
     # shlex quoting for spaces / quotes
     assert "path with space" in command
@@ -247,15 +244,13 @@ def test_curl_quoting_and_redaction(tmp_path: Path) -> None:
         res = client.get("/api/flows/f1/curl")
         assert res.status_code == 200
         assert res.headers.get("cache-control") == "no-store"
-        assert "hunter2" not in res.text
-        assert REDACTED in res.text
+        assert "hunter2" in res.text
 
 
-def test_har_builder_redacts_without_http(tmp_path: Path) -> None:
+def test_har_builder_keeps_stored_values(tmp_path: Path) -> None:
     _ = tmp_path
     raw = har_json([_sample_flow()])
-    assert "hunter2" not in raw
-    assert REDACTED in raw
+    assert "hunter2" in raw
 
 
 @pytest.mark.asyncio
@@ -455,7 +450,7 @@ def test_graphql_filters(tmp_path: Path) -> None:
         assert b"--data-raw" in script.content
 
 
-def test_send_flow_redacts_response(tmp_path: Path) -> None:
+def test_send_flow_returns_the_response(tmp_path: Path) -> None:
     class Handler(BaseHTTPRequestHandler):
         def do_POST(self) -> None:
             length = int(self.headers.get("Content-Length") or 0)
@@ -498,9 +493,8 @@ def test_send_flow_redacts_response(tmp_path: Path) -> None:
             cookie = next(
                 value for key, value in data["headers"].items() if key.lower() == "set-cookie"
             )
-            assert cookie == REDACTED
-            assert "session=abc" not in sent.text
-            assert "hide-me" not in data["body"]
+            assert cookie == "session=abc"
+            assert "hide-me" in data["body"]
             assert client.get("/api/flows").json()["count"] == 0
     finally:
         server.shutdown()

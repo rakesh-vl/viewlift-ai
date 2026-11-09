@@ -145,6 +145,66 @@ def test_reports_missing_pairing_and_build(tmp_path: Path) -> None:
     assert "com.example.none" in missing["error"]
 
 
+def test_reads_google_service_file(tmp_path: Path) -> None:
+    derived = _make_build(
+        tmp_path,
+        "Demo-abc",
+        bundle_id="com.example.demo",
+        executable="Demo",
+        workspace=tmp_path / "Demo.xcworkspace",
+        mtime=1_700_000_000,
+    )
+    secret = "AIzaSyTESTKEY_not_real"
+    app = derived / "Build" / "Products" / "Debug-iphonesimulator" / "Demo.app"
+    with (app / "GoogleService-Info.plist").open("wb") as handle:
+        plistlib.dump(
+            {
+                "API_KEY": secret,
+                "BUNDLE_ID": "com.other.app",
+                "PROJECT_ID": "vl-demo",
+                "GOOGLE_APP_ID": "1:1:ios:abc",
+                "GCM_SENDER_ID": "123",
+                "STORAGE_BUCKET": "vl-demo.appspot.com",
+                "IS_ANALYTICS_ENABLED": False,
+                "IS_GCM_ENABLED": True,
+                "CLIENT_ID": "123-abc.apps.googleusercontent.com",
+            },
+            handle,
+        )
+
+    result = detect_packages(AppIdentity(bundle_id="com.example.demo"), root=tmp_path)
+    info = result["google_service_file"]
+
+    assert info["present"] is True
+    assert info["api_key"] == secret
+    assert info["project_id"] == "vl-demo"
+    assert info["bundle_id"] == "com.other.app"
+    assert info["app_bundle_id"] == "com.example.demo"
+    assert info["bundle_id_mismatch"] is True
+    assert info["analytics_enabled"] is False
+    assert info["gcm_enabled"] is True
+    assert info["client_id"] == "123-abc.apps.googleusercontent.com"
+    assert "Firebase stays off" in info["note"]
+
+
+def test_reports_missing_google_service_file(tmp_path: Path) -> None:
+    _make_build(
+        tmp_path,
+        "Demo-abc",
+        bundle_id="com.example.demo",
+        executable="Demo",
+        workspace=tmp_path / "Demo.xcworkspace",
+        mtime=1_700_000_000,
+    )
+
+    result = detect_packages(AppIdentity(bundle_id="com.example.demo"), root=tmp_path)
+
+    assert result["google_service_file"]["present"] is False
+    assert "GoogleService-Info.plist" in result["google_service_file"]["note"]
+    missing = detect_packages(AppIdentity(bundle_id="com.example.none"), root=tmp_path)
+    assert missing["google_service_file"]["present"] is False
+
+
 def test_derived_data_root_order(monkeypatch, tmp_path: Path) -> None:
     monkeypatch.setenv("VIEWLIFT_DERIVED_DATA", str(tmp_path))
     assert derived_data_root(lambda: "/elsewhere") == tmp_path

@@ -157,6 +157,13 @@ A `401` on any request clears the token so the pair loop runs again. Two consecu
 
 The Bonjour TXT record can carry `alt=<ip>,<ip>` next to `ip`. `ReceiverCandidates` keeps the primary address first and the alternates after it. The last accepted dashboard (hosts, port, fingerprint, debug key) is stored in `UserDefaults` under `com.viewlift.networkcapture.receiver`. On launch, when no key was configured, the transport reuses it before Bonjour answers, so a phone away from the Mac's Wi-Fi can reach the Tailscale address. Bonjour results still take precedence when they arrive. The stored debug key is a local debug credential, protected by the certificate pin like the rest of the exchange.
 
+A Tailscale address (100.64.0.0/10) stays the same for a Mac, so both sides keep it:
+
+- **Mac.** The console saves the VPN addresses it has bound in `receiver.json` (`vpn_hosts`, at most 4) and keeps advertising them in `alt=` while Tailscale is down. The Setup page shows the state under "Off the Wi-Fi (VPN)". `follow_network` rebinds the receiver within seconds when Tailscale comes up.
+- **Phone.** `ReceiverAddress.mergingVPN` adds the VPN addresses already remembered to each new record, so an advertisement without `alt=` never erases them. After two connection failures on the Wi-Fi address the route rotates to the Tailscale address.
+- **First run.** The phone must see this Mac's advertisement once, on any network where Bonjour works, while the console has Tailscale up. After that it reaches the Mac from any network. Without that, set `VIEWLIFT_CAPTURE_HOST`, `VIEWLIFT_CAPTURE_PORT`, `VIEWLIFT_CAPTURE_FINGERPRINT` and `VIEWLIFT_CAPTURE_DEBUG_KEY` in the Xcode scheme.
+- **Stale advertisements.** A killed console can leave its `dns-sd` process running with an old address. The console and `scripts/viewlift-ai.sh stop` stop those processes. `ensure_ca` no longer aborts startup when it cannot chmod an existing CA key that is already private.
+
 Capabilities: enabled modules report `available`; `memory`, `swiftui` and `macro` report `partial`; disabled ones `unsupported`; `push` is `partial` on tvOS (badge only). `network_shaping` is `available` when network capture is on. An extra `ui_automation` key reports `partial` when the `ui` module is on, because long presses and raw touches need the UI runner or the simulator path. `BackgroundGrace` covers iOS and tvOS.
 
 ## Commands

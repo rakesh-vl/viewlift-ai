@@ -68,7 +68,7 @@ def test_reveal_unlock_and_detail(tmp_path: Path) -> None:
         redacted = client.get("/api/flows/flow-reveal")
         assert redacted.status_code == 200
         assert redacted.json()["request"]["headers"]["Authorization"] == "Bearer secret"
-        assert redacted.json()["request"]["headers"]["Cookie"] == "[REDACTED]"
+        assert redacted.json()["request"]["headers"]["Cookie"] == "sid=1"
 
         revealed = client.get("/api/flows/flow-reveal?reveal=true")
         assert revealed.status_code == 200
@@ -78,8 +78,8 @@ def test_reveal_unlock_and_detail(tmp_path: Path) -> None:
 
         curl = client.get("/api/flows/flow-reveal/curl")
         assert "Bearer secret" in curl.text
-        assert "pw" not in curl.text
+        assert "pw" in curl.text
 
         har = client.get("/api/flows/flow-reveal/har")
         assert b"Bearer secret" in har.content
-        assert b"pw" not in har.content
+        assert b"pw" in har.content

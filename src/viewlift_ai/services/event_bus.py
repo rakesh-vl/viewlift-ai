@@ -15,7 +15,7 @@ T = TypeVar("T")
 class EventBus[T]:
     """Thread-aware async bus. No FastAPI imports — WS layer only subscribes."""
 
-    def __init__(self, *, maxsize: int = 256) -> None:
+    def __init__(self, *, maxsize: int = 1024) -> None:
         self._maxsize = maxsize
         self._subscribers: list[asyncio.Queue[T]] = []
         self._lock = asyncio.Lock()

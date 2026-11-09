@@ -65,6 +65,15 @@ def interface_scope(iface: str, ip: str) -> str:
     return "public"
 
 
+def is_vpn_address(value: str) -> bool:
+    """True for a Tailscale-range (100.64.0.0/10) IPv4 address, which stays stable per device."""
+    try:
+        addr = ipaddress.ip_address((value or "").strip())
+    except ValueError:
+        return False
+    return isinstance(addr, ipaddress.IPv4Address) and addr in _CGNAT
+
+
 def validate_receiver_bind_ip(
     host: str,
     *,

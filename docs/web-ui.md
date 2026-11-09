@@ -30,7 +30,7 @@ Design guidance lives in [DESIGN.md](../DESIGN.md).
 
 ### Network
 
-Filter bar (method, host, status, content type, kind, operation, text), HAR export, reveal bar (token, unlock, lock) and an SDK activity hint. Kind is Any, GraphQL, or HTTP. Operation matches the GraphQL operation name. GraphQL rows show that name in the path column and `graphql` in the type column. A split view shows the live flow table and a detail pane with overview, headers, cookies, bodies (JSON tree, image or text), query, timing waterfall, WebSocket frames, and an Edit tab. Edit prefills the visible request. Copy cURL on that tab builds a multiline command in the browser from the form, including edits, so it can be imported into Postman. Send posts the form to `/api/flows/send` and shows the redacted response. The header Copy cURL button still copies the stored request. Pending breakpoints appear in the table with a resume or drop editor. Delete flows removes stored requests only. Device logs, debug events, and rules stay.
+Filter bar (method, host, status, content type, kind, operation, text), HAR export, reveal bar (token, unlock, lock) and an SDK activity hint. Kind is Any, GraphQL, or HTTP. Operation matches the GraphQL operation name. GraphQL rows show that name in the path column and `graphql` in the type column. A split view shows the live flow table and a detail pane with overview, headers, cookies, bodies (JSON tree, image or text), query, timing waterfall, WebSocket frames, and an Edit tab. Edit prefills the visible request. Copy cURL on that tab builds a multiline command in the browser from the form, including edits, so it can be imported into Postman. Send posts the form to `/api/flows/send` and shows the response as received. The header Copy cURL button still copies the stored request. Pending breakpoints appear in the table with a resume or drop editor. Delete flows removes stored requests only. Device logs, debug events, and rules stay.
 
 ### Logs
 
@@ -70,6 +70,8 @@ Explorer opens live objects. Start from a root (application, delegate, windows, 
 Device settings changes what the SDK does without a rebuild: debug modules on or off (within the modules the app was built with), network capture on or off, body size limits, and the body content types to keep. The device saves these overrides and keeps them across launches. Reset returns to the app's built-in configuration.
 
 ### AppCMS and host pages
+
+Overview, App config, and Environment also show `GoogleService-Info.plist` from the paired app's newest Xcode build: project id, bundle id, sender id, storage bucket, API key, and the Firebase flags. A bundle id that does not match the app is a Diagnostics warning, because Firebase stays off until they match. The file is re-read at most every 30 seconds, and on Refresh. MCP tool results still mask the API key.
 
 `/appcms/*` and `/host/*` refresh themselves while the tab is visible. The interval, the retry cap and the slow refresh for the diagnostics badge come from `/api/config/limits` (`live_refresh_seconds`, `live_backoff_max_seconds`, `live_diagnostics_seconds`; see [configuration](configuration.md)). The page keeps one refresh in flight, skips redraws when nothing changed, and keeps expanded rows open. A change event from the app, a return to the tab, a reconnected network, or the app coming back online refreshes at once.
 

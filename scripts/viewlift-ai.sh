@@ -98,10 +98,17 @@ cmd_status() {
   [[ -n "$apps" ]]
 }
 
+# A killed console leaves its Bonjour advertisement (a dns-sd child) running with an old
+# address. Phones can pick that record, so remove it whenever the console stops.
+reap_advertisements() {
+  pkill -u "$(id -u)" -f 'dns-sd -R Viewlift AI _viewliftdebug._tcp' 2>/dev/null || true
+}
+
 cmd_stop() {
   local pids
   pids="$( { pids_of app; pids_of mcp; } | sort -u )"
   if [[ -z "$pids" ]]; then
+    reap_advertisements
     echo "viewlift-ai: not running"
     return 0
   fi
@@ -127,6 +134,7 @@ cmd_stop() {
     cmd_status || true
     return 1
   fi
+  reap_advertisements
   echo "viewlift-ai: stopped"
 }
 

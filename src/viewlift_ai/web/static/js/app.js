@@ -548,7 +548,7 @@
         if (el) {
           el.textContent = this.revealUnlocked
             ? "unlocked · raw headers/bodies in UI only"
-            : "locked · HAR/cURL stay redacted";
+            : "locked · replay still needs unlock";
         }
       } catch {
         /* ignore */
@@ -715,38 +715,27 @@
       const text = await res.text();
       try {
         await navigator.clipboard.writeText(text);
-        toast("cURL copied (redacted)");
+        toast("cURL copied");
       } catch {
         toast(text.slice(0, 120) + "…");
       }
     },
 
     connectWs() {
-      const proto = location.protocol === "https:" ? "wss" : "ws";
-      const url = `${proto}://${location.host}/ws/flows`;
-      let ws;
-      try {
-        ws = new WebSocket(url);
-      } catch {
-        setTimeout(() => this.connectWs(), 1500);
-        return;
-      }
-      this.ws = ws;
-      ws.onclose = () => {
-        setTimeout(() => this.connectWs(), 1500);
-      };
-      ws.onmessage = (ev) => {
-        let msg;
-        try { msg = JSON.parse(ev.data); } catch { return; }
-        if (!msg) return;
-        if (msg.type === "flow" && msg.flow) {
-          this.upsertFlow(msg.flow);
-          return;
-        }
-        if (msg.type === "breakpoint") {
-          this.onBreakpointEvent(msg);
-        }
-      };
+      if (this.ws) return;
+      this.ws = window.VLLive.connect("/ws/flows", {
+        onResync: () => {
+          this.reloadFlows();
+          this.reloadPending();
+        },
+        onMessage: (msg) => {
+          if (msg.type === "flow" && msg.flow) {
+            this.upsertFlow(msg.flow);
+            return;
+          }
+          if (msg.type === "breakpoint") this.onBreakpointEvent(msg);
+        },
+      });
     },
 
     onBreakpointEvent(msg) {
@@ -860,9 +849,7 @@
     const model = editModel(detail);
     const method = String(detail.method || "GET").toUpperCase();
     const methods = EDIT_METHODS.includes(method) ? EDIT_METHODS : EDIT_METHODS.concat(method);
-    const note = detail.revealed
-      ? ""
-      : `<p class="muted">Cookies and secret fields stay redacted until reveal is unlocked and this flow is reopened.</p>`;
+    const note = "";
     const binary = model.binary
       ? `<p class="muted">Body is not text. Type a replacement or leave it empty.</p>`
       : "";
@@ -1614,6 +1601,19 @@
     return describeSdkActivity(sdk);
   }
 
+  function describeSdkVpn(sdk) {
+    const vpn = sdk.vpn;
+    if (!sdk.enabled || !vpn) return "Not enabled";
+    const parts = [];
+    if (vpn.listening.length) parts.push(`listening on ${vpn.listening.join(", ")}`);
+    if (vpn.advertised.length) parts.push(`advertised to phones: ${vpn.advertised.join(", ")}`);
+    if (!vpn.listening.length && vpn.remembered.length) {
+      parts.push(`remembered: ${vpn.remembered.join(", ")}`);
+    }
+    parts.push(vpn.note);
+    return parts.join(" · ");
+  }
+
   function describeSdkActivity(sdk) {
     if (!sdk.enabled) return "SDK receiver off (enable on Setup)";
     const act = sdk.activity || {};
@@ -1985,24 +1985,16 @@
   };
 
   ViewliftNetwork.connectLogWs = function connectLogWs() {
-    if (this.logWs) {
-      try { this.logWs.close(); } catch (_) {}
-    }
-    const proto = location.protocol === "https:" ? "wss" : "ws";
-    const ws = new WebSocket(`${proto}://${location.host}/ws/logs`);
-    this.logWs = ws;
+    if (this.logWs) this.logWs.close();
     const status = document.getElementById("log-stream-status");
-    ws.addEventListener("open", () => {
-      if (status) status.textContent = "live";
-    });
-    ws.addEventListener("close", () => {
-      if (status) status.textContent = "reconnecting";
-      setTimeout(() => this.connectLogWs(), 1500);
-    });
-    ws.addEventListener("message", (ev) => {
-      let msg;
-      try { msg = JSON.parse(ev.data); } catch (_) { return; }
-      if (msg.type === "log" && msg.log) this.queueLiveLog(msg.log);
+    this.logWs = window.VLLive.connect("/ws/logs", {
+      onState: (value) => {
+        if (status) status.textContent = value;
+      },
+      onResync: () => this.reloadLogs(),
+      onMessage: (msg) => {
+        if (msg.type === "log" && msg.log) this.queueLiveLog(msg.log);
+      },
     });
   };
 
@@ -2087,6 +2079,8 @@
     document.getElementById("sdk-token").textContent = sdk.pairing_token || "Not enabled";
     document.getElementById("sdk-fp").textContent = sdk.pinned_fingerprint || "Not enabled";
     document.getElementById("sdk-note").textContent = sdk.note || "";
+    const vpnStatus = document.getElementById("sdk-vpn-status");
+    if (vpnStatus) vpnStatus.textContent = describeSdkVpn(sdk);
     const activity = document.getElementById("sdk-activity");
     if (activity) activity.textContent = describeSdkActivity(sdk);
     renderAppsTree(data.apps || { devices: [] });

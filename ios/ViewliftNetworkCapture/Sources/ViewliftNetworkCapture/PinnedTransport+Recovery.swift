@@ -44,10 +44,10 @@ extension PinnedHTTPSTransport {
         return parts.url
     }
 
-    func remember(_ record: DiscoveredReceiver, fingerprint: String) {
+    func remember(_ record: DiscoveredReceiver, hosts: [String], fingerprint: String) {
         memory.save(
             RememberedReceiver(
-                hosts: record.candidateHosts,
+                hosts: hosts,
                 port: record.port,
                 fingerprint: fingerprint,
                 debugKey: record.debugKey

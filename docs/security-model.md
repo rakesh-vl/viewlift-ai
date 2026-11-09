@@ -36,18 +36,13 @@ Other files: `rules.json` `0600` (atomic write), CA private key `0600` and never
 
 ## Redaction
 
-`RedactionService` ([proxy/redact.py](../src/viewlift_ai/proxy/redact.py)) replaces values with `[REDACTED]`, case-insensitive:
+The dashboard shows captured headers, bodies, cookies, analytics parameters, HAR, cURL, replay responses, and `GoogleService-Info.plist` values, including API keys. Those bytes are encrypted at rest.
 
-- headers: `cookie`, `set-cookie`;
-- JSON keys at any depth: `password`, `secret`.
-
-Bodies are redacted only when they parse as JSON. Form, multipart, protobuf and plain text bodies are left as they are. SDK uploads can add keys with `extra_redaction_keys` (applied to headers and JSON).
-
-Redaction is applied before storage (`CaptureService`, ingest), again for display (`flow_detail`), for HAR and cURL export, for analytics parameters and for replay responses.
+Agents do not see them. Every MCP tool result passes through `guard.scrub_agent` ([mcp_server/guard.py](../src/viewlift_ai/mcp_server/guard.py)), which replaces credentials, cookies, API keys, signed URL parameters, and account identifiers with `[REDACTED]`. `RedactionService` remains in the tree and is not applied on the dashboard path.
 
 ## Reveal (raw data)
 
-`RevealSession` ([services/reveal.py](../src/viewlift_ai/services/reveal.py)) keeps raw headers and bodies in process memory only. Viewing raw data or replaying a flow requires unlocking with a per-process token (constant-time compare). The token rotates and the cache is wiped on shutdown, on last-tab close and on "Clear all data". Raw data is never written to disk and never used for HAR or the server cURL export. The Edit tab builds cURL in the browser from the form already on screen, so a revealed form can copy revealed values. `POST /api/flows/send` is loopback-only. It sends that same form and redacts the response the same way as replay. The MCP server never unlocks reveal and strips the token from responses.
+`RevealSession` ([services/reveal.py](../src/viewlift_ai/services/reveal.py)) keeps a second copy of headers and bodies in process memory. The dashboard already shows the stored copy. Replaying a flow still requires unlocking with a per-process token (constant-time compare). The token rotates and the cache is wiped on shutdown, on last-tab close and on "Clear all data". HAR and cURL from the dashboard use the stored bytes. `POST /api/flows/send` is loopback-only and returns the response as received. The MCP server never unlocks reveal and strips the token from responses.
 
 ## SDK pairing
 
@@ -87,7 +82,7 @@ These were found while reading the code for this documentation. They are current
 2. **No Origin or CSRF check.** Several POST endpoints parse JSON regardless of content type, and there is no `Origin` or `Host` validation. A web page open in the same browser could probably send simple cross-site requests to endpoints such as `/api/debug/invoke`, `/api/setup/proxy` or `/api/logs/start`. DNS rebinding is a similar risk.
 3. **Breakpoint payloads are raw.** Paused flows are sent unredacted on `/ws/flows` (not scoped by app) and `/api/breakpoints/pending`.
 4. **Logs are not redacted.** Simulator, device and SDK log messages are encrypted but not redacted.
-5. **`Authorization` is not redacted by default**, on either side. Add it with `extra_redaction_keys` in the SDK if needed.
+5. **The dashboard shows `Authorization`.** MCP masks it. `extra_redaction_keys` is no longer applied before storage.
 6. **The unlock token is readable** from `/api/setup/status`, which is not loopback-guarded. Reveal gates by intent, not by secrecy.
 7. **Retention edges.** `24h` cleanup only runs at startup. The last-tab wipe runs regardless of retention mode. The reveal cache has no size cap.
 8. **SDK side.** Bodies over the cap are truncated before redaction, so truncated JSON is uploaded unredacted. Bonjour discovery can replace a configured receiver and pin, and the debug key is advertised in the TXT record. See [iOS SDK internals](ios-sdk-internals.md#known-issues).

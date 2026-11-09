@@ -83,6 +83,46 @@ final class ReceiverRouteTests: XCTestCase {
         XCTAssertEqual(UserDefaultsReceiverMemory(defaults: defaults).load(), saved)
     }
 
+    func testTailscaleRangeIsRecognised() {
+        XCTAssertTrue(ReceiverAddress.isVPN("100.105.93.60"))
+        XCTAssertTrue(ReceiverAddress.isVPN("100.64.0.1"))
+        XCTAssertTrue(ReceiverAddress.isVPN("100.127.255.254"))
+        XCTAssertFalse(ReceiverAddress.isVPN("100.63.0.1"))
+        XCTAssertFalse(ReceiverAddress.isVPN("100.128.0.1"))
+        XCTAssertFalse(ReceiverAddress.isVPN("192.168.0.40"))
+        XCTAssertFalse(ReceiverAddress.isVPN("100.105.93"))
+        XCTAssertFalse(ReceiverAddress.isVPN("not-an-ip"))
+    }
+
+    func testVPNAddressSurvivesAnAdvertisementWithoutIt() {
+        // The Mac advertised without Tailscale (it was down). The phone keeps the address it learned.
+        let merged = ReceiverAddress.mergingVPN(
+            into: ["192.168.0.40"],
+            remembered: ["192.168.0.40", "100.105.93.60", "10.0.0.5"]
+        )
+        XCTAssertEqual(merged, ["192.168.0.40", "100.105.93.60"])
+    }
+
+    func testFreshVPNAddressesAreNotDuplicatedAndTheTotalIsCapped() {
+        let same = ReceiverAddress.mergingVPN(
+            into: ["192.168.0.40", "100.105.93.60"],
+            remembered: ["100.105.93.60"]
+        )
+        XCTAssertEqual(same, ["192.168.0.40", "100.105.93.60"])
+        let remembered = (1...9).map { "100.64.0.\($0)" }
+        let capped = ReceiverAddress.mergingVPN(into: ["192.168.0.40"], remembered: remembered)
+        XCTAssertEqual(capped.count, 1 + ReceiverAddress.maxRememberedVPNHosts)
+        XCTAssertEqual(capped.first, "192.168.0.40")
+    }
+
+    func testMergedHostsRotateToTheTailscaleAddressOffTheWifi() {
+        var route = ReceiverRoute()
+        let hosts = ReceiverAddress.mergingVPN(into: ["192.168.0.40"], remembered: ["100.105.93.60"])
+        route.candidates.replace(with: hosts, preferring: "192.168.0.40")
+        XCTAssertNil(route.recordFailure("wifi address timed out"))
+        XCTAssertEqual(route.recordFailure("wifi address timed out"), "100.105.93.60")
+    }
+
     func testWaitingForSessionIsNotAConnectionFailure() {
         XCTAssertTrue(TransportError.notStarted.isWaitingForSession)
         XCTAssertTrue(TransportError.notPaired.isWaitingForSession)

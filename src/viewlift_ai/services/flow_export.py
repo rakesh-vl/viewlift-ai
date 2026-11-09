@@ -1,4 +1,4 @@
-"""Redacted HAR and copy-as-cURL builders (server-side redaction only)."""
+"""HAR and copy-as-cURL builders. The dashboard exports the stored bytes."""
 
 from __future__ import annotations
 
@@ -18,9 +18,9 @@ def build_har(
     *,
     redaction: RedactionService | None = None,
 ) -> dict[str, Any]:
-    """HAR 1.2 document. Always re-redacts before serialization."""
-    redaction = redaction or RedactionService()
-    entries = [_har_entry(flow, redaction) for flow in flows]
+    """HAR 1.2 document from the stored flow."""
+    _ = redaction
+    entries = [_har_entry(flow) for flow in flows]
     return {
         "log": {
             "version": "1.2",
@@ -43,10 +43,10 @@ def build_curl(
     *,
     redaction: RedactionService | None = None,
 ) -> str:
-    """POSIX-shell-safe curl command with secrets redacted."""
-    redaction = redaction or RedactionService()
-    headers = redaction.redact_headers(dict(flow.request_headers))
-    body = redaction.redact_body(flow.request_body)
+    """POSIX-shell-safe curl command from the stored request."""
+    _ = redaction
+    headers = dict(flow.request_headers)
+    body = bytes(flow.request_body)
     url = _absolute_url(flow)
 
     parts = ["curl", "-X", shlex.quote(flow.method or "GET"), shlex.quote(url)]
@@ -65,11 +65,11 @@ def build_curl(
     return " ".join(parts)
 
 
-def _har_entry(flow: FlowRecord, redaction: RedactionService) -> dict[str, Any]:
-    req_headers = redaction.redact_headers(dict(flow.request_headers))
-    resp_headers = redaction.redact_headers(dict(flow.response_headers))
-    req_body = redaction.redact_body(flow.request_body)
-    resp_body = redaction.redact_body(flow.response_body)
+def _har_entry(flow: FlowRecord) -> dict[str, Any]:
+    req_headers = dict(flow.request_headers)
+    resp_headers = dict(flow.response_headers)
+    req_body = bytes(flow.request_body)
+    resp_body = bytes(flow.response_body)
     started = flow.created_at
     if started.tzinfo is None:
         started = started.replace(tzinfo=UTC)

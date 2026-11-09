@@ -58,6 +58,7 @@
     analyticsFollow: false,
     analyticsFollowSig: "",
     analyticsFlowWs: null,
+    debugWs: null,
     analyticsFrame: 0,
     storagePath: "",
     storageDbPath: "",
@@ -695,17 +696,19 @@
     },
 
     connectWebSocket() {
-      const proto = location.protocol === "https:" ? "wss" : "ws";
-      const socket = new WebSocket(`${proto}://${location.host}/ws/debug`);
-      socket.addEventListener("message", (event) => {
-        let data;
-        try { data = JSON.parse(event.data); } catch (_) { return; }
-        if (data.type === "debug-client" && data.client?.id === state.clientId) this.loadClients();
-        if (data.type === "debug-event" && data.event?.client_id === state.clientId) {
-          this.handleEvent(data.event, true);
-        }
+      if (state.debugWs) return;
+      state.debugWs = window.VLLive.connect("/ws/debug", {
+        onResync: async () => {
+          await this.loadClients();
+          if (state.clientId) await this.loadEvents();
+        },
+        onMessage: (data) => {
+          if (data.type === "debug-client" && data.client?.id === state.clientId) this.loadClients();
+          if (data.type === "debug-event" && data.event?.client_id === state.clientId) {
+            this.handleEvent(data.event, true);
+          }
+        },
       });
-      socket.addEventListener("close", () => setTimeout(() => this.connectWebSocket(), 1500));
     },
 
     async loadEvents() {
@@ -1154,20 +1157,12 @@
     },
 
     ensureAnalyticsFlowSocket() {
-      const current = state.analyticsFlowWs;
-      if (current && (current.readyState === 0 || current.readyState === 1)) return;
-      const proto = location.protocol === "https:" ? "wss" : "ws";
-      const socket = new WebSocket(`${proto}://${location.host}/ws/flows`);
-      state.analyticsFlowWs = socket;
-      socket.addEventListener("message", (event) => {
-        let msg;
-        try { msg = JSON.parse(event.data); } catch (_) { return; }
-        if (msg.type === "flow" && msg.flow) this.ingestAnalyticsFlow(msg.flow);
-      });
-      socket.addEventListener("close", () => {
-        if (state.analyticsFlowWs !== socket) return;
-        state.analyticsFlowWs = null;
-        setTimeout(() => this.ensureAnalyticsFlowSocket(), 1500);
+      if (state.analyticsFlowWs) return;
+      state.analyticsFlowWs = window.VLLive.connect("/ws/flows", {
+        onResync: () => this.loadAnalyticsTraffic(),
+        onMessage: (msg) => {
+          if (msg.type === "flow" && msg.flow) this.ingestAnalyticsFlow(msg.flow);
+        },
       });
     },
 

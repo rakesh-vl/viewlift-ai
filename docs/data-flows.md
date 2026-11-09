@@ -76,7 +76,7 @@ Session rules:
 - 600 requests per minute per session, otherwise `429`.
 - The first `client_id` a session presents binds it. A different id later gets `403`.
 - Request JSON is capped at 1 MiB; each body at 262,144 bytes. Bodies are base64.
-- Redaction runs in ingest (with the SDK's `extra_redaction_keys`) and again in `CaptureService`.
+- The dashboard stores the captured bytes. MCP `scrub_agent` is what masks them for an agent.
 
 Payload shapes are in [API reference, ingest server](api-reference.md#sdk-ingest-server).
 

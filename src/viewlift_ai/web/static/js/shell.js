@@ -519,31 +519,14 @@
     },
 
     watch(onState) {
-      const report = typeof onState === "function" ? onState : () => {};
-      const proto = location.protocol === "https:" ? "wss" : "ws";
-      let socket;
-      try {
-        socket = new WebSocket(`${proto}://${location.host}/ws/debug?client_id=__apps__`);
-      } catch {
-        report("offline");
-        setTimeout(() => this.watch(onState), 3000);
-        return;
-      }
-      socket.addEventListener("open", () => report("live"));
-      socket.addEventListener("message", (event) => {
-        let msg;
-        try {
-          msg = JSON.parse(event.data);
-        } catch {
-          return;
-        }
-        if (msg && msg.type === "apps-changed") this.refresh();
-        if (msg && msg.type === "debug-crash") this.announceCrash(msg);
-        if (msg && msg.type === "debug-event") this.announceIssue(msg);
-      });
-      socket.addEventListener("close", () => {
-        report("reconnecting");
-        setTimeout(() => this.watch(onState), 3000);
+      window.VLLive.connect("/ws/debug?client_id=__apps__", {
+        onState,
+        onResync: () => this.refresh(),
+        onMessage: (msg) => {
+          if (msg.type === "apps-changed") this.refresh();
+          if (msg.type === "debug-crash") this.announceCrash(msg);
+          if (msg.type === "debug-event") this.announceIssue(msg);
+        },
       });
     },
   };
@@ -896,26 +879,7 @@
   }
 
   function watchFeed(path, onMessage) {
-    const proto = location.protocol === "https:" ? "wss" : "ws";
-    let socket;
-    try {
-      socket = new WebSocket(`${proto}://${location.host}${path}`);
-    } catch {
-      window.setTimeout(() => watchFeed(path, onMessage), 3000);
-      return;
-    }
-    socket.addEventListener("message", (event) => {
-      let msg;
-      try {
-        msg = JSON.parse(event.data);
-      } catch {
-        return;
-      }
-      onMessage(msg);
-    });
-    socket.addEventListener("close", () => {
-      window.setTimeout(() => watchFeed(path, onMessage), 3000);
-    });
+    window.VLLive.connect(path, { onMessage });
   }
 
   document.addEventListener("DOMContentLoaded", () => {

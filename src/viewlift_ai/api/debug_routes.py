@@ -56,10 +56,6 @@ def _reveal(request: Request):
     return session
 
 
-def _redaction(request: Request):
-    return request.app.state.redaction
-
-
 def _sessions(request: Request):
     service = getattr(request.app.state, "debug_sessions", None)
     if service is None:
@@ -123,16 +119,11 @@ def debug_analytics_traffic(
         limit=max(1, min(limit, 1000)),
         client_ids=resolve_client_ids(request, client_id, device_key),
     )
-    redaction = _redaction(request)
-
-    def _redact_params(params: dict) -> dict:
-        return redaction.redact_json_value(params)
-
     return list_analytics_traffic(
         flows,
         user_beacon_url=user_beacon_url,
         player_beacon_url=player_beacon_url,
-        redact_params=_redact_params,
+        redact_params=lambda params: params,
     )
 
 
@@ -668,12 +659,11 @@ def replay_flow(request: Request, flow_id: str) -> dict[str, object]:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     except Exception as exc:
         raise HTTPException(status_code=502, detail=str(exc)) from exc
-    redaction = _redaction(request)
-    body = redaction.redact_body(sent["body"])
+    body = bytes(sent["body"])
     return {
         "ok": True,
         "status": sent["status"],
-        "headers": redaction.redact_headers(sent["headers"]),
+        "headers": dict(sent["headers"]),
         "body": body.decode("utf-8", errors="replace")[:8000],
     }
 
@@ -705,12 +695,11 @@ async def send_flow(request: Request) -> dict[str, object]:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     except Exception as exc:
         raise HTTPException(status_code=502, detail=str(exc)) from exc
-    redaction = _redaction(request)
-    response_body = redaction.redact_body(sent["body"])
+    response_body = bytes(sent["body"])
     return {
         "ok": True,
         "status": sent["status"],
-        "headers": redaction.redact_headers(sent["headers"]),
+        "headers": dict(sent["headers"]),
         "body": response_body.decode("utf-8", errors="replace")[:8000],
     }
 

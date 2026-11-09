@@ -1,4 +1,4 @@
-"""Secure SDK ingest receiver: pairing, session tokens, rate limits, redaction."""
+"""Secure SDK ingest receiver: pairing, session tokens, and rate limits."""
 
 from __future__ import annotations
 
@@ -31,12 +31,16 @@ from viewlift_ai.services.bind_policy import (
     SetupValidationError,
     interface_scope,
     is_loopback_ip,
+    is_vpn_address,
     preferred_lan_host,
     validate_port,
     validate_receiver_bind_ip,
 )
 from viewlift_ai.services.capture import CaptureService, HttpCaptureSnapshot
-from viewlift_ai.services.debug_advertise import DebugAdvertiser, DebugPublishing
+from viewlift_ai.services.debug_advertise import (
+    DebugAdvertiser,
+    DebugPublishing,
+)
 from viewlift_ai.services.debug_session import DebugSessionService
 from viewlift_ai.services.log_capture import LogCaptureService
 from viewlift_ai.services.sdk_integration import sdk_integration
@@ -51,6 +55,9 @@ SESSION_TTL_SECONDS = 3600.0
 DEFAULT_MAX_BODY_BYTES = defaults.MAX_BODY_BYTES
 DEFAULT_RATE_LIMIT = 600  # requests per minute per session
 DEFAULT_MAX_JSON_BYTES = 1_048_576
+# Tailscale addresses seen on this Mac. They stay stable, so they keep being advertised while the
+# VPN is down. A phone that sees any advertisement then learns the address for use off the Wi-Fi.
+MAX_REMEMBERED_VPN_HOSTS = 4
 # `stdout`/`stderr` come from the SDK console tee. `sdk` is explicit LogService calls.
 SDK_LOG_SOURCES = frozenset({"sdk", "stdout", "stderr"})
 
@@ -179,6 +186,8 @@ class IngestService:
     _extra_servers: list[tuple[Any, threading.Thread]] = field(
         default_factory=list, init=False, repr=False
     )
+    _known_vpn: tuple[str, ...] = field(default=(), init=False)
+    _known_vpn_loaded: bool = field(default=False, init=False)
     _manual_disable: bool = field(default=False, init=False)
     _watch_stop: threading.Event = field(default_factory=threading.Event, init=False, repr=False)
     _watch_thread: threading.Thread | None = field(default=None, init=False, repr=False)
@@ -211,6 +220,7 @@ class IngestService:
             "receiver_urls": self.receiver_urls(),
             "include_vpn": self._bind.include_vpn,
             "extra_hosts": list(self._bind.extra_hosts),
+            "vpn": self.vpn_status(),
             "pairing_token": pairing,
             "pinned_fingerprint": self._fingerprint,
             "debug_key": self.debug_key() if self._bind.enabled else None,
@@ -295,6 +305,65 @@ class IngestService:
             return []
         hosts = [self._bind.host, *self._bind.extra_hosts]
         return [f"https://{host}:{self._bind.port}" for host in hosts]
+
+    def remembered_vpn_hosts(self) -> tuple[str, ...]:
+        """Tailscale addresses this Mac had before. Loaded once from receiver.json."""
+        if not self._known_vpn_loaded:
+            pref = self._load_receiver_pref() or {}
+            raw = pref.get("vpn_hosts")
+            found: list[str] = []
+            if isinstance(raw, list):
+                for item in raw:
+                    host = str(item).strip()
+                    if is_vpn_address(host) and host not in found:
+                        found.append(host)
+            self._known_vpn = tuple(found[:MAX_REMEMBERED_VPN_HOSTS])
+            self._known_vpn_loaded = True
+        return self._known_vpn
+
+    def _remember_vpn_hosts(self, live: tuple[str, ...]) -> None:
+        """Keep live Tailscale addresses first, then older ones, newest first."""
+        current = [host for host in live if is_vpn_address(host)]
+        older = [host for host in self.remembered_vpn_hosts() if host not in current]
+        self._known_vpn = tuple([*current, *older][:MAX_REMEMBERED_VPN_HOSTS])
+
+    def advertised_alternates(self) -> tuple[str, ...]:
+        """Addresses a phone can fall back to: live VPN hosts, then remembered ones not up now."""
+        if not self._bind.include_vpn:
+            return self._bind.extra_hosts
+        extras = list(self._bind.extra_hosts)
+        for host in self.remembered_vpn_hosts():
+            if host not in extras and host != self._bind.host:
+                extras.append(host)
+        return tuple(extras)
+
+    def vpn_status(self) -> dict[str, object]:
+        """What the Setup page shows about reaching this Mac off the Wi-Fi."""
+        listening = [
+            host for host in (self._bind.host, *self._bind.extra_hosts) if is_vpn_address(host)
+        ]
+        remembered = list(self.remembered_vpn_hosts())
+        if not self._bind.enabled:
+            note = "Receiver is off."
+        elif listening:
+            note = (
+                "Reachable over the VPN. A phone learns this address the first time it "
+                "sees this Mac, on any network, and keeps it."
+            )
+        elif self._bind.include_vpn:
+            note = (
+                "No Tailscale or VPN address is up on this Mac. Connect Tailscale. "
+                "The receiver binds it within seconds."
+            )
+        else:
+            note = "Tick the VPN option so a phone off the Wi-Fi can reach this Mac."
+        return {
+            "include": self._bind.include_vpn,
+            "listening": listening,
+            "advertised": list(self.advertised_alternates()) if self._bind.enabled else [],
+            "remembered": remembered,
+            "note": note,
+        }
 
     def vpn_hosts(self, rows: list[dict[str, str]], *, primary: str) -> tuple[str, ...]:
         """VPN interface addresses other than the primary bind. Each must pass bind policy."""
@@ -398,6 +467,7 @@ class IngestService:
         validated_port = validate_port(defaults.ingest_port() if port is None else port)
         refuse_mcp_clash(ip, validated_port)
         extras = self.vpn_hosts(rows, primary=ip) if include_vpn else ()
+        self._remember_vpn_hosts((ip, *extras))
         self._ensure_tls_material()
         with self._lock:
             requires_rebind = self._server is not None and (
@@ -498,6 +568,7 @@ class IngestService:
             "iface": self._bind.iface if iface is None else iface,
             "port": self._bind.port if port is None else port,
             "include_vpn": self._bind.include_vpn if include_vpn is None else include_vpn,
+            "vpn_hosts": list(self.remembered_vpn_hosts()),
         }
         text = json.dumps(payload, indent=2, sort_keys=True) + "\n"
         path = self._pref_path()
@@ -538,7 +609,7 @@ class IngestService:
             self._bind.port,
             fingerprint=self._fingerprint,
             debug_key=self.debug_key(),
-            alt=self._bind.extra_hosts,
+            alt=self.advertised_alternates(),
         )
 
     def debug_key(self) -> str:
@@ -660,9 +731,6 @@ class IngestService:
         resp_headers = _as_str_map(payload.get("response_headers"))
         req_body = _decode_body(payload.get("request_body"), self.max_body_bytes)
         resp_body = _decode_body(payload.get("response_body"), self.max_body_bytes)
-        # Extra redaction keys from SDK config
-        extra_keys = payload.get("extra_redaction_keys") or []
-        redaction = self._redaction_with_extras(extra_keys)
         snapshot = HttpCaptureSnapshot(
             id=flow_id,
             method=method,
@@ -671,10 +739,10 @@ class IngestService:
             status=_as_optional_int(payload.get("status")),
             duration_ms=_as_optional_float(payload.get("duration_ms")),
             protocol=str(payload.get("protocol") or "HTTPS"),
-            request_headers=redaction.redact_headers(req_headers),
-            request_body=redaction.redact_body(req_body),
-            response_headers=redaction.redact_headers(resp_headers),
-            response_body=redaction.redact_body(resp_body),
+            request_headers=req_headers,
+            request_body=req_body,
+            response_headers=resp_headers,
+            response_body=resp_body,
             error=str(payload["error"]) if payload.get("error") else None,
             request_id=str(payload["request_id"]) if payload.get("request_id") else None,
             content_type=str(payload["content_type"]) if payload.get("content_type") else None,
@@ -970,19 +1038,6 @@ class IngestService:
             return False
         window.append(now)
         return True
-
-    def _redaction_with_extras(self, extra_keys: Any) -> RedactionService:
-        if not extra_keys:
-            return self._redaction
-        keys = {str(k).lower() for k in extra_keys if str(k).strip()}
-        if not keys:
-            return self._redaction
-        base_headers = set(self._redaction._headers)  # noqa: SLF001
-        base_json = set(self._redaction._json_keys)  # noqa: SLF001
-        return RedactionService(
-            sensitive_headers=frozenset(base_headers | keys),
-            sensitive_json_keys=frozenset(base_json | keys),
-        )
 
 
 def _serve_forever(server: Any) -> None:

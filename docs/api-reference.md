@@ -61,10 +61,10 @@ Source: [api/routes.py](../src/viewlift_ai/api/routes.py)
 |---|---|---|
 | `GET /api/flows` | no | List flows. Query: `method`, `host`, `status`, `content-type`, `text`, `kind` (`graphql` or `http`), `operation` (operation-name substring), `limit` (1 to 1000, default 200), `client_id` (repeatable), `device_key`. Returns `{flows, count}`. Each flow includes `graphql`, `operation`, and `operation_type`. |
 | `POST /api/flows/delete` | no | Delete every stored flow. Logs, debug events, and rules stay. Clears the in-memory reveal cache. Returns `{deleted}`. |
-| `GET /api/flows/{id}` | for `reveal=true` | Redacted detail. `?reveal=true` returns raw data when the reveal session is unlocked and raw is cached. |
+| `GET /api/flows/{id}` | for `reveal=true` | Stored detail, including cookies and JSON secrets. `?reveal=true` uses the in-memory copy when the reveal session is unlocked. |
 | `GET /api/flows/{id}/summary` | no | Summary JSON |
-| `GET /api/flows/{id}/har` | no | Single-flow HAR (redacted) |
-| `GET /api/flows/{id}/curl` | no | cURL command as text (redacted) |
+| `GET /api/flows/{id}/har` | no | Single-flow HAR from the stored bytes |
+| `GET /api/flows/{id}/curl` | no | cURL command as text from the stored request |
 | `GET /api/export/har` | no | HAR for the filtered list. Same query as `/api/flows`. |
 | `GET /api/reveal/status` | yes | `{unlocked, unlock_token, cached_flows, note}` |
 | `POST /api/reveal/unlock {token}` | yes | Unlock raw viewing |
@@ -162,7 +162,7 @@ Source: [api/debug_routes.py](../src/viewlift_ai/api/debug_routes.py)
 | `GET /api/host/targets` | yes | Simulators and paired devices, each with capabilities |
 | `POST /api/host/call {tool, args, confirm?}` | yes | One host tool. Mutating tools require `confirm: true` |
 | `POST /api/flows/{id}/replay` | yes | Resend a captured request from the Mac. Needs an unlocked reveal session. |
-| `POST /api/flows/send` | yes | Send an edited request from the Mac. JSON: `method`, `url`, `headers`, `body` (string). Reveal is not required. The response is redacted. The call is not stored as a flow. |
+| `POST /api/flows/send` | yes | Send an edited request from the Mac. JSON: `method`, `url`, `headers`, `body` (string). Reveal is not required. The response is returned as received. The call is not stored as a flow. |
 
 ## Agent
 

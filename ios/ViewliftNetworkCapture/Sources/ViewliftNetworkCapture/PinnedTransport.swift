@@ -302,6 +302,10 @@ extension PinnedHTTPSTransport {
             .replacingOccurrences(of: ":", with: "")
             .replacingOccurrences(of: " ", with: "")
             .lowercased()
+        let hosts = ReceiverAddress.mergingVPN(
+            into: record.candidateHosts,
+            remembered: memory.load()?.hosts ?? []
+        )
         lock.lock()
         guard var updated = configuration else {
             lock.unlock()
@@ -311,14 +315,14 @@ extension PinnedHTTPSTransport {
             lock.unlock()
             return
         }
-        route.candidates.replace(with: record.candidateHosts, preferring: record.host)
+        route.candidates.replace(with: hosts, preferring: record.host)
         let unchanged = updated.receiverURL.host == record.host
             && updated.receiverURL.port == record.port
             && updated.pinnedCertificateSHA256 == fingerprint
             && updated.debugKey == record.debugKey
         if unchanged {
             lock.unlock()
-            remember(record, fingerprint: fingerprint)
+            remember(record, hosts: hosts, fingerprint: fingerprint)
             return
         }
         guard let url = Self.receiverURL(host: record.host, port: record.port) else {
@@ -331,7 +335,7 @@ extension PinnedHTTPSTransport {
         configuration = updated
         sessionToken = nil
         lock.unlock()
-        remember(record, fingerprint: fingerprint)
+        remember(record, hosts: hosts, fingerprint: fingerprint)
         requestWake()
         let host = record.host
         let port = record.port

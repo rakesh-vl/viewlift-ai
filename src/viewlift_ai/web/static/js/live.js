@@ -366,35 +366,35 @@
 
     connectLogSocket(id, gen) {
       this.closeLogSocket();
-      const proto = location.protocol === "https:" ? "wss" : "ws";
-      const socket = new WebSocket(`${proto}://${location.host}/ws/logs?client_id=${encodeURIComponent(id)}`);
-      state.socket = socket;
-      socket.addEventListener("message", (event) => {
-        if (gen !== state.logGen) return;
-        let data;
-        try { data = JSON.parse(event.data); } catch (_) { return; }
-        if (data.type !== "log" || !data.log) return;
-        if (data.log.client_id && data.log.client_id !== id) return;
-        state.logs.push(data.log);
-        if (state.logs.length > 80) state.logs.shift();
-        this.renderLogs();
-      });
-      socket.addEventListener("close", () => {
-        if (socket.ignoreClose) return;
-        if (state.socket === socket) state.socket = null;
-        if (gen !== state.logGen || !state.logsOpen) return;
-        window.setTimeout(() => {
-          if (gen === state.logGen && state.logsOpen) this.connectLogSocket(id, gen);
-        }, 1500);
+      state.socket = window.VLLive.connect(`/ws/logs?client_id=${encodeURIComponent(id)}`, {
+        onResync: () => this.reloadLogTail(id, gen),
+        onMessage: (data) => {
+          if (gen !== state.logGen) return;
+          if (data.type !== "log" || !data.log) return;
+          if (data.log.client_id && data.log.client_id !== id) return;
+          state.logs.push(data.log);
+          if (state.logs.length > 80) state.logs.shift();
+          this.renderLogs();
+        },
       });
     },
 
+    async reloadLogTail(id, gen) {
+      try {
+        const response = await fetch(`/api/logs?client_id=${encodeURIComponent(id)}&limit=80`);
+        const data = await response.json();
+        if (gen !== state.logGen) return;
+        state.logs = (data.logs || []).slice().reverse();
+        this.renderLogs();
+      } catch (_) {
+        /* The next reconnect tries again. */
+      }
+    },
+
     closeLogSocket() {
-      const socket = state.socket;
+      const feed = state.socket;
       state.socket = null;
-      if (!socket) return;
-      socket.ignoreClose = true;
-      try { socket.close(); } catch (_) {}
+      if (feed) feed.close();
     },
 
     async refreshCapture() {

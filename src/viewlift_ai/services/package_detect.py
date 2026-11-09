@@ -20,6 +20,7 @@ from typing import Any
 DERIVED_DATA_ENV = "VIEWLIFT_DERIVED_DATA"
 _SKIP_SUFFIX = ".noindex"
 _MAX_PRODUCTS_PER_DIR = 40
+_GOOGLE_SERVICE_FILE = "GoogleService-Info.plist"
 
 DefaultsReader = Callable[[], str | None]
 
@@ -97,6 +98,7 @@ def detect_packages(
         },
         "count": len(packages),
         "packages": packages,
+        "google_service_file": read_google_service_file(match.product, match.bundle_id),
     }
 
 
@@ -269,6 +271,88 @@ def _sorted(rows: list[dict[str, str]]) -> list[dict[str, str]]:
     return sorted((row for row in rows if row["identity"]), key=lambda row: row["identity"].lower())
 
 
+def read_google_service_file(product: Path, app_bundle_id: str = "") -> dict[str, Any]:
+    """GoogleService-Info.plist from a built .app. The dashboard shows every value."""
+    path = product / _GOOGLE_SERVICE_FILE
+    if not path.is_file():
+        return {
+            "present": False,
+            "file": _GOOGLE_SERVICE_FILE,
+            "looked_in": str(product),
+            "note": f"{_GOOGLE_SERVICE_FILE} is not in the built app.",
+        }
+    raw = _read_plist(path)
+    if not raw:
+        return {
+            "present": False,
+            "file": _GOOGLE_SERVICE_FILE,
+            "path": str(path),
+            "note": f"{_GOOGLE_SERVICE_FILE} could not be read.",
+        }
+    plist_bundle = str(raw.get("BUNDLE_ID") or "")
+    app_bundle = app_bundle_id or ""
+    mismatch = bool(plist_bundle and app_bundle and plist_bundle != app_bundle)
+    row: dict[str, Any] = {
+        "present": True,
+        "file": _GOOGLE_SERVICE_FILE,
+        "bundle_id": plist_bundle,
+        "app_bundle_id": app_bundle,
+        "bundle_id_mismatch": mismatch,
+    }
+    used = {"BUNDLE_ID"}
+    for source, name in (
+        ("PROJECT_ID", "project_id"),
+        ("GOOGLE_APP_ID", "google_app_id"),
+        ("GCM_SENDER_ID", "gcm_sender_id"),
+        ("STORAGE_BUCKET", "storage_bucket"),
+        ("DATABASE_URL", "database_url"),
+        ("TRACKING_ID", "tracking_id"),
+        ("CLIENT_ID", "client_id"),
+        ("REVERSED_CLIENT_ID", "reversed_client_id"),
+        ("PLIST_VERSION", "plist_version"),
+    ):
+        used.add(source)
+        value = _plist_scalar(raw.get(source))
+        if value not in (None, ""):
+            row[name] = value
+    for source, name in (
+        ("IS_ADS_ENABLED", "ads_enabled"),
+        ("IS_ANALYTICS_ENABLED", "analytics_enabled"),
+        ("IS_APPINVITE_ENABLED", "app_invite_enabled"),
+        ("IS_GCM_ENABLED", "gcm_enabled"),
+        ("IS_SIGNIN_ENABLED", "signin_enabled"),
+    ):
+        used.add(source)
+        if source in raw:
+            row[name] = bool(raw.get(source))
+    for key, value in raw.items():
+        if key in used:
+            continue
+        name = str(key).strip().lower()
+        if not name:
+            continue
+        scalar = _plist_scalar(value)
+        if scalar not in (None, ""):
+            row[name] = scalar
+    if mismatch:
+        row["note"] = (
+            "BUNDLE_ID in GoogleService-Info.plist does not match the app. "
+            "Firebase stays off until they match."
+        )
+    row["path"] = str(path)
+    return row
+
+
+def _plist_scalar(value: object) -> object | None:
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, int | float):
+        return value
+    if isinstance(value, str):
+        return value
+    return None
+
+
 def _miss(base: Path, error: str) -> dict[str, Any]:
     return {
         "ok": False,
@@ -276,6 +360,11 @@ def _miss(base: Path, error: str) -> dict[str, Any]:
         "derived_data_root": str(base),
         "count": 0,
         "packages": [],
+        "google_service_file": {
+            "present": False,
+            "file": _GOOGLE_SERVICE_FILE,
+            "note": error,
+        },
     }
 
 

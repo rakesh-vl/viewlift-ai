@@ -175,15 +175,15 @@ public class CaptureURLProtocol: URLProtocol, @unchecked Sendable {
         ttfbMs: Double?
     ) {
         let config = CaptureRuntime.configuration
-        let redactor = CaptureRuntime.redactor
         let headers = request.allHTTPHeaderFields ?? [:]
         let respHeaders = Self.stringHeaders(from: response)
         let reqType = headers["Content-Type"] ?? headers["content-type"]
         let respType = respHeaders["Content-Type"] ?? respHeaders["content-type"]
         let reqCap = config?.keepsBody(contentType: reqType) == false ? 0 : config?.maxRequestBodyBytes ?? 262_144
         let respCap = config?.keepsBody(contentType: respType) == false ? 0 : config?.maxResponseBodyBytes ?? 262_144
-        let reqBody = redactor.redact(jsonData: BodyCap.truncate(capturedRequestBody, maxBytes: reqCap))
-        let respBody = redactor.redact(jsonData: BodyCap.truncate(responseData, maxBytes: respCap))
+        // The dashboard shows these bytes. MCP masks them later.
+        let reqBody = BodyCap.truncate(capturedRequestBody, maxBytes: reqCap)
+        let respBody = BodyCap.truncate(responseData, maxBytes: respCap)
         let url = request.url
         CaptureRuntime.publish(
             CapturedHTTPExchange(
@@ -194,9 +194,9 @@ public class CaptureURLProtocol: URLProtocol, @unchecked Sendable {
                 status: (response as? HTTPURLResponse)?.statusCode,
                 durationMs: (CFAbsoluteTimeGetCurrent() - startedAt) * 1000.0,
                 protocolName: (url?.scheme?.uppercased() == "HTTPS") ? "HTTPS" : "HTTP",
-                requestHeaders: redactor.redact(headers: headers),
+                requestHeaders: headers,
                 requestBodyBase64: BodyCap.base64Capped(reqBody, maxBytes: reqCap),
-                responseHeaders: redactor.redact(headers: respHeaders),
+                responseHeaders: respHeaders,
                 responseBodyBase64: BodyCap.base64Capped(respBody, maxBytes: respCap),
                 error: error.map { $0.localizedDescription },
                 requestId: headers["X-Request-Id"] ?? headers["x-request-id"] ?? headers["Request-Id"],

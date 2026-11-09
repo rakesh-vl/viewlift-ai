@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 import os
 from dataclasses import dataclass
 from pathlib import Path
@@ -10,6 +11,7 @@ from cryptography import x509
 from cryptography.hazmat.primitives.serialization import Encoding
 from mitmproxy.certs import CertStore
 
+LOG = logging.getLogger(__name__)
 CA_BASENAME = "mitmproxy"
 PRIVATE_KEY_FILES = (f"{CA_BASENAME}-ca.pem", f"{CA_BASENAME}-ca.p12")
 PUBLIC_CERT_PEM = f"{CA_BASENAME}-ca-cert.pem"
@@ -40,11 +42,26 @@ def ensure_ca(confdir: Path, *, key_size: int = 2048) -> CaPaths:
     for name in PRIVATE_KEY_FILES:
         path = paths.confdir / name
         if path.is_file():
-            os.chmod(path, 0o600)
+            _lock_private_key(path)
     if not paths.public_pem.is_file():
         msg = f"mitmproxy public CA missing at {paths.public_pem}"
         raise FileNotFoundError(msg)
     return paths
+
+
+def _lock_private_key(path: Path) -> None:
+    """Set mode 0600. A key that is already 0600 never stops the console from starting.
+
+    chmod fails when the file belongs to another user or the process is restricted. Refusing to
+    start then would take every connected app offline, so only a key left readable is an error.
+    """
+    try:
+        os.chmod(path, 0o600)
+    except OSError:
+        mode = path.stat().st_mode & 0o777
+        if mode & 0o077:
+            raise
+        LOG.warning("Could not chmod %s; it is already mode %o.", path.name, mode)
 
 
 def public_ca_pem(confdir: Path) -> bytes:

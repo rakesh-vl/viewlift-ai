@@ -3,10 +3,15 @@
 from __future__ import annotations
 
 import asyncio
+import functools
 import logging
+import time
+from collections.abc import Awaitable, Callable
 
+import anyio
 from fastapi import APIRouter, Request, WebSocket, WebSocketDisconnect
 
+from viewlift_ai import defaults
 from viewlift_ai.api.scope import app_tag
 from viewlift_ai.models.breakpoints import pending_to_dict
 from viewlift_ai.services.flow_present import flow_summary
@@ -17,43 +22,103 @@ logger = logging.getLogger(__name__)
 ws_router = APIRouter()
 
 
+class _Outlet:
+    """Serialized sends to one socket, with the time of the last frame for heartbeats."""
+
+    def __init__(self, websocket: WebSocket) -> None:
+        self._websocket = websocket
+        self._lock = asyncio.Lock()
+        self.last_sent = time.monotonic()
+
+    async def send(self, payload: dict[str, object]) -> None:
+        async with self._lock:
+            await self._websocket.send_json(payload)
+            self.last_sent = time.monotonic()
+
+
+Pump = Callable[[_Outlet], Awaitable[None]]
+
+
+async def _serve(websocket: WebSocket, name: str, *pumps: Pump) -> None:
+    """Run every pump until the client leaves.
+
+    A heartbeat goes out when the socket is idle, so the browser can tell a quiet feed from a
+    dead connection. A reader task notices a closed tab at once instead of on the next event.
+    """
+    outlet = _Outlet(websocket)
+    async with anyio.create_task_group() as group:
+
+        async def run(work: Callable[[], Awaitable[None]]) -> None:
+            try:
+                await work()
+            except (WebSocketDisconnect, OSError):
+                pass
+            except Exception:
+                logger.exception("WebSocket %s stream failed", name)
+            finally:
+                group.cancel_scope.cancel()
+
+        for pump in pumps:
+            group.start_soon(run, functools.partial(pump, outlet))
+        group.start_soon(run, functools.partial(_heartbeat, outlet))
+        group.start_soon(run, functools.partial(_drain_client, websocket))
+    try:
+        await websocket.close()
+    except Exception:
+        pass
+
+
+async def _heartbeat(outlet: _Outlet) -> None:
+    while True:
+        interval = defaults.LIVE_HEARTBEAT_SECONDS
+        idle = time.monotonic() - outlet.last_sent
+        if idle >= interval:
+            await outlet.send({"type": "heartbeat", "interval": interval, "at": time.time()})
+            idle = 0.0
+        await asyncio.sleep(max(0.5, interval - idle))
+
+
+async def _drain_client(websocket: WebSocket) -> None:
+    """Return when the client disconnects. Client frames carry no commands."""
+    while True:
+        message = await websocket.receive()
+        if message.get("type") == "websocket.disconnect":
+            return
+
+
 @ws_router.websocket("/ws/flows")
 async def flows_ws(websocket: WebSocket) -> None:
     await websocket.accept()
+    scope = _scope(websocket)
     bus = websocket.app.state.event_bus
     breakpoints = getattr(websocket.app.state, "breakpoints", None)
-    flow_task = asyncio.create_task(_pump_flows(websocket, bus))
-    bp_task: asyncio.Task | None = None
+
+    async def flows(outlet: _Outlet) -> None:
+        async for flow in bus.subscribe():
+            if scope is not None and flow.client_id not in scope:
+                continue
+            await outlet.send(
+                {
+                    "type": "flow",
+                    "flow": flow_summary(flow),
+                    "app": app_tag(websocket.app, flow.client_id),
+                }
+            )
+
+    async def paused(outlet: _Outlet) -> None:
+        async for event in breakpoints.subscribe():
+            await outlet.send(
+                {
+                    "type": "breakpoint",
+                    "kind": str(event.kind),
+                    "pending": pending_to_dict(event.pending) if event.pending else None,
+                }
+            )
+
+    pumps: list[Pump] = [flows]
     if breakpoints is not None:
-        bp_task = asyncio.create_task(_pump_breakpoints(websocket, breakpoints))
-    try:
-        tasks = {flow_task}
-        if bp_task is not None:
-            tasks.add(bp_task)
-        done, pending = await asyncio.wait(tasks, return_when=asyncio.FIRST_EXCEPTION)
-        for task in pending:
-            task.cancel()
-        for task in done:
-            exc = task.exception()
-            if exc is not None and not isinstance(exc, WebSocketDisconnect):
-                raise exc
-    except WebSocketDisconnect:
-        return
-    except asyncio.CancelledError:
-        raise
-    except Exception:
-        logger.exception("WebSocket flow stream failed")
-        try:
-            await websocket.close()
-        except Exception:
-            return
-    finally:
-        flow_task.cancel()
-        if bp_task is not None:
-            bp_task.cancel()
-            await asyncio.gather(flow_task, bp_task, return_exceptions=True)
-        else:
-            await asyncio.gather(flow_task, return_exceptions=True)
+        pumps.append(paused)
+    await _serve(websocket, "flow", *pumps)
 
 
 @ws_router.websocket("/ws/logs")
@@ -64,27 +129,20 @@ async def logs_ws(websocket: WebSocket) -> None:
         await websocket.close(code=1011)
         return
     scope = _scope(websocket)
-    try:
+
+    async def logs(outlet: _Outlet) -> None:
         async for log in bus.subscribe():
             if scope is not None and log.client_id not in scope:
                 continue
-            await websocket.send_json(
+            await outlet.send(
                 {
                     "type": "log",
                     "log": log_summary(log),
                     "app": app_tag(websocket.app, log.client_id),
                 }
             )
-    except WebSocketDisconnect:
-        return
-    except asyncio.CancelledError:
-        raise
-    except Exception:
-        logger.exception("WebSocket log stream failed")
-        try:
-            await websocket.close()
-        except Exception:
-            return
+
+    await _serve(websocket, "log", logs)
 
 
 @ws_router.websocket("/ws/debug")
@@ -95,35 +153,14 @@ async def debug_ws(websocket: WebSocket) -> None:
         await websocket.close(code=1011)
         return
     scope = _scope(websocket)
-    try:
+
+    async def events(outlet: _Outlet) -> None:
         async for event in bus.subscribe():
             if scope is not None and not _debug_event_in_scope(event, scope):
                 continue
-            await websocket.send_json(event)
-    except WebSocketDisconnect:
-        return
-    except asyncio.CancelledError:
-        raise
-    except Exception:
-        logger.exception("WebSocket debug stream failed")
-        try:
-            await websocket.close()
-        except Exception:
-            return
+            await outlet.send(event)
 
-
-async def _pump_flows(websocket: WebSocket, bus) -> None:
-    scope = _scope(websocket)
-    async for flow in bus.subscribe():
-        if scope is not None and flow.client_id not in scope:
-            continue
-        await websocket.send_json(
-            {
-                "type": "flow",
-                "flow": flow_summary(flow),
-                "app": app_tag(websocket.app, flow.client_id),
-            }
-        )
+    await _serve(websocket, "debug", events)
 
 
 def _scope(websocket: WebSocket) -> set[str] | None:
@@ -162,16 +199,6 @@ def _is_page_alert(event: dict) -> bool:
     if play in {"item_failed", "item_error_log"}:
         return True
     return play == "drm" and payload.get("phase") == "failed"
-
-
-async def _pump_breakpoints(websocket: WebSocket, registry) -> None:
-    async for event in registry.subscribe():
-        payload = {
-            "type": "breakpoint",
-            "kind": str(event.kind),
-            "pending": pending_to_dict(event.pending) if event.pending else None,
-        }
-        await websocket.send_json(payload)
 
 
 @ws_router.get("/api/ws/ping")

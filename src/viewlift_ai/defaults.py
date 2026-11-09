@@ -28,6 +28,9 @@ COMMAND_READ_RETRIES = 1
 LIVE_REFRESH_SECONDS = 2.0
 LIVE_BACKOFF_MAX_SECONDS = 15.0
 LIVE_DIAGNOSTICS_SECONDS = 10.0
+# Idle dashboard sockets get a heartbeat this often.
+# The browser replaces a socket after three missed beats.
+LIVE_HEARTBEAT_SECONDS = 10.0
 
 
 def env_port(name: str, default: int, environ: Mapping[str, str] | None = None) -> int:

@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
-from dataclasses import dataclass, field, replace
+from dataclasses import dataclass, field
 from datetime import UTC, datetime
 
 from viewlift_ai.models.flow import (
@@ -48,7 +48,7 @@ class HttpCaptureSnapshot:
 
 
 class CaptureService:
-    """Redact → store → event bus. Independent of FastAPI and mitmproxy."""
+    """Store → event bus. The dashboard keeps the captured bytes. MCP masks its own copies."""
 
     def __init__(
         self,
@@ -59,6 +59,7 @@ class CaptureService:
     ) -> None:
         self._store = store
         self._bus = event_bus
+        # Kept so callers can still pass a redactor. The dashboard does not apply it.
         self._redaction = redaction or RedactionService()
         self._reveal = reveal
 
@@ -101,18 +102,16 @@ class CaptureService:
         return self.persist_http(snapshot)
 
     def map_snapshot(self, snapshot: HttpCaptureSnapshot) -> FlowRecord:
-        req_headers = self._redaction.redact_headers(dict(snapshot.request_headers))
-        resp_headers = self._redaction.redact_headers(dict(snapshot.response_headers))
+        req_headers = dict(snapshot.request_headers)
+        resp_headers = dict(snapshot.response_headers)
         if snapshot.record_bodies:
-            req_body = self._redaction.redact_body(snapshot.request_body)
-            resp_body = self._redaction.redact_body(snapshot.response_body)
+            req_body = bytes(snapshot.request_body)
+            resp_body = bytes(snapshot.response_body)
         else:
             req_body = b""
             resp_body = b""
 
-        ws_messages = tuple(
-            self._redact_ws_message(msg) for msg in snapshot.websocket_messages
-        )
+        ws_messages = tuple(snapshot.websocket_messages)
         if snapshot.record_bodies:
             size_bytes: int | None = len(resp_body)
         else:
@@ -146,18 +145,6 @@ class CaptureService:
             timing=snapshot.timing,
             client_id=snapshot.client_id,
         )
-
-    def _redact_ws_message(self, message: WebSocketMessageRecord) -> WebSocketMessageRecord:
-        if not message.is_text:
-            return message
-        try:
-            text = message.content.decode("utf-8")
-        except UnicodeDecodeError:
-            return message
-        redacted = self._redaction.redact_text(text)
-        if redacted == text:
-            return message
-        return replace(message, content=redacted.encode("utf-8"))
 
 
 def _header_ci(headers: Mapping[str, str], name: str) -> str | None:
