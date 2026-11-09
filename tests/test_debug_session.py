@@ -11,7 +11,12 @@ from nacl.secret import SecretBox
 
 from viewlift_ai.crypto import SecretBoxCipher
 from viewlift_ai.models.flow import RetentionPolicy
-from viewlift_ai.services.debug_session import CLIENT_TTL_SECONDS, DebugSessionService
+from viewlift_ai.services.debug_session import (
+    CLIENT_TTL_SECONDS,
+    DebugCommandInterrupted,
+    DebugCommandTimeout,
+    DebugSessionService,
+)
 from viewlift_ai.services.encrypted_store import EncryptedSqliteStore
 from viewlift_ai.services.event_bus import EventBus
 
@@ -457,4 +462,96 @@ def test_invoke_rejects_missing_and_offline_clients(tmp_path: Path) -> None:
     service.time_fn = lambda: base + CLIENT_TTL_SECONDS + 5
     with pytest.raises(LookupError, match="offline"):
         service.invoke(client_id=client, name="performance.snapshot", payload={})
+    assert service.poll(client) == []
+
+
+def _poll_one(service: DebugSessionService, client_id: str) -> dict[str, object]:
+    for _ in range(200):
+        polled = service.poll(client_id)
+        if polled:
+            return polled[0]
+        time.sleep(0.01)
+    raise AssertionError("no command was queued")
+
+
+def _register_again(service: DebugSessionService) -> None:
+    service.register(
+        {
+            "client_id": "phone-1",
+            "app_name": "App",
+            "bundle_id": "com.example.app",
+            "platform": "iOS",
+            "os_version": "26",
+            "capabilities": {"performance": "available"},
+        }
+    )
+
+
+def test_timeout_before_delivery_names_queued_phase_and_drops_command(tmp_path: Path) -> None:
+    service, _store = _service(tmp_path)
+    client = _register(service)
+    with pytest.raises(DebugCommandTimeout) as caught:
+        service.invoke(client_id=client, name="performance.snapshot", payload={}, timeout=0.3)
+    assert caught.value.phase == "queued"
+    assert caught.value.retryable is True
+    assert "timed out" in str(caught.value)
+    assert service.poll(client) == []
+
+
+def test_timeout_after_delivery_names_the_delivered_phase(tmp_path: Path) -> None:
+    service, _store = _service(tmp_path)
+    client = _register(service)
+    threading.Thread(target=_poll_one, args=(service, client), daemon=True).start()
+    with pytest.raises(DebugCommandTimeout) as caught:
+        service.invoke(client_id=client, name="performance.snapshot", payload={}, timeout=0.5)
+    assert caught.value.phase == "delivered"
+
+
+def test_read_is_sent_again_when_the_app_registers_mid_command(tmp_path: Path) -> None:
+    service, _store = _service(tmp_path)
+    client = _register(service)
+
+    def flaky_device() -> None:
+        _poll_one(service, client)
+        _register_again(service)
+        again = _poll_one(service, client)
+        service.ingest_event(
+            client,
+            {
+                "module": "performance",
+                "kind": "command-result",
+                "payload": {
+                    "command_id": again["id"],
+                    "name": again["name"],
+                    "ok": True,
+                    "result": {"cpu": 2},
+                },
+            },
+        )
+
+    threading.Thread(target=flaky_device, daemon=True).start()
+    result = service.invoke(client_id=client, name="performance.snapshot", payload={}, timeout=3)
+    event = result["event"]
+    assert isinstance(event, dict)
+    assert event["payload"]["result"] == {"cpu": 2}
+
+
+def test_mutating_command_is_not_repeated_on_mid_command_register(tmp_path: Path) -> None:
+    service, _store = _service(tmp_path)
+    client = _register(service)
+
+    def flaky_device() -> None:
+        _poll_one(service, client)
+        _register_again(service)
+
+    threading.Thread(target=flaky_device, daemon=True).start()
+    with pytest.raises(DebugCommandInterrupted) as caught:
+        service.invoke(
+            client_id=client,
+            name="feature_flags.set",
+            payload={"key": "a", "enabled": True},
+            mutate=True,
+            timeout=3,
+        )
+    assert caught.value.retryable is True
     assert service.poll(client) == []

@@ -1902,6 +1902,21 @@
     if (row) row.scrollIntoView({ block: "nearest", inline: "nearest" });
   };
 
+  function formatLocalDateTime(value, withFraction) {
+    if (!value) return "";
+    const date = new Date(value);
+    if (Number.isNaN(date.getTime())) return String(value);
+    const pad = (n, width = 2) => String(n).padStart(width, "0");
+    const datePart = `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}`;
+    const timePart = `${pad(date.getHours())}:${pad(date.getMinutes())}:${pad(date.getSeconds())}`;
+    if (!withFraction) return `${datePart} ${timePart}`;
+    const offsetMin = -date.getTimezoneOffset();
+    const sign = offsetMin >= 0 ? "+" : "-";
+    const abs = Math.abs(offsetMin);
+    const offset = `${sign}${pad(Math.floor(abs / 60))}:${pad(abs % 60)}`;
+    return `${datePart} ${timePart}.${pad(date.getMilliseconds(), 3)} ${offset}`;
+  }
+
   ViewliftNetwork.paintLogDetail = function paintLogDetail(d) {
     const title = document.getElementById("log-detail-title");
     const body = document.getElementById("log-detail-body");
@@ -1912,7 +1927,7 @@
       : (d.request_id ? `<span class="muted">No matching flow for requestId</span>` : `<span class="muted">—</span>`);
     body.innerHTML = `
       <table class="kv">
-        <tr><th>Time</th><td>${escapeHtml(d.created_at || "")}</td></tr>
+        <tr><th>Time</th><td>${escapeHtml(formatLocalDateTime(d.created_at, true))}</td></tr>
         <tr><th>Level</th><td>${escapeHtml(d.level || "")}</td></tr>
         <tr><th>Source</th><td>${escapeHtml(d.source || "")}${d.udid ? ` <span class="muted">${escapeHtml(d.udid)}</span>` : ""}</td></tr>
         <tr><th>App</th><td>${appBadge(d.client_id)}${escapeHtml(appLabel(d.client_id))}</td></tr>
@@ -1932,7 +1947,7 @@
     document.getElementById("log-count").textContent = String(visible.length);
     const html = visible.map((log) => `
       <tr data-id="${escapeAttr(log.id)}"${log.id === this.selectedLogId ? ' class="active"' : ""}>
-        <td class="col-time">${escapeHtml((log.created_at || "").replace("T", " ").slice(0, 19))}</td>
+        <td class="col-time" title="${escapeAttr(formatLocalDateTime(log.created_at, true))}">${escapeHtml(formatLocalDateTime(log.created_at))}</td>
         <td>${escapeHtml(log.level || "")}</td>
         <td>${appBadge(log.client_id)}${escapeHtml(log.source || "")}</td>
         <td title="${escapeAttr(log.subsystem || "")}">${escapeHtml(log.subsystem || "")}</td>

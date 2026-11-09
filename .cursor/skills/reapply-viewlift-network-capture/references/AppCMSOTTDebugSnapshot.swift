@@ -16,7 +16,7 @@ import VLPlayerLib
 ///
 /// ViewliftOne defines `typealias JSONValue = JSON` (SwiftyJSON). Always use
 /// `CaptureJSON` (= `ViewliftNetworkCapture.JSONValue`) in this file.
-final class AppCMSOTTDebugSnapshot: OTTDebugSnapshotProviding {
+final class AppCMSOTTDebugSnapshot: OTTDebugSnapshotProviding, OTTDebugCommandHandling {
     private typealias CaptureJSON = ViewliftNetworkCapture.JSONValue
 
     static let shared = AppCMSOTTDebugSnapshot()
@@ -1053,5 +1053,414 @@ final class AppCMSOTTDebugSnapshot: OTTDebugSnapshotProviding {
         return "\(prefix)***@\(parts[1])"
     }
 
+}
+
+// MARK: - Dashboard sections (`ott.sections` / `ott.section` / `ott.diagnostics`)
+
+extension AppCMSOTTDebugSnapshot {
+    var ottDebugProviderName: String { "AppCMS" }
+
+    func ottDebugSections() -> [String] {
+        [
+            "overview", "config", "environment", "pages", "session",
+            "subscription", "entitlements", "tve", "devices", "analytics", "player"
+        ]
+    }
+
+    func ottDebugActions() -> [String] { [] }
+
+    func ottDebugSection(
+        _ name: String,
+        arguments: [String: ViewliftNetworkCapture.JSONValue]
+    ) async -> [String: ViewliftNetworkCapture.JSONValue]? {
+        switch name {
+        case "overview": return overviewPage()
+        case "config": return configPage()
+        case "environment": return environmentPage()
+        case "pages": return pagesPage()
+        case "session": return sessionPage()
+        case "subscription": return subscriptionPage()
+        case "entitlements": return entitlementsPage(arguments)
+        case "tve": return tvePage()
+        case "devices": return devicesPage()
+        case "analytics": return analyticsPage()
+        case "player": return playerPage()
+        default: return nil
+        }
+    }
+
+    func ottDebugDiagnostics() async -> [ViewliftNetworkCapture.JSONValue] {
+        let config = configSection()
+        let session = sessionSection()
+        let user = userSection()
+        let flow = flowSection()
+        let subscription = subscriptionSection()
+        let entitlements = entitlementsV2Section()
+        let tve = tveSection()
+        let player = playerSection()
+        var findings: [CaptureJSON] = []
+
+        if text(config, "site_id").isEmpty {
+            findings.append(finding(
+                id: "config.site_id",
+                severity: "error",
+                title: "Bootstrap config has no site id",
+                evidence: ["site_name": config["site_name"] ?? .string("")],
+                hint: "Open AppConfiguration siteId. Bootstrap may not have finished.",
+                files: ["AppConfiguration"]
+            ))
+        }
+        if text(config, "api_base_url").isEmpty {
+            findings.append(finding(
+                id: "config.api_base_url",
+                severity: "error",
+                title: "API base URL is empty",
+                evidence: ["environment": config["environment"] ?? .string("")],
+                hint: "Check AppConfiguration.apiBaseUrl after bootstrap.",
+                files: ["AppConfiguration"]
+            ))
+        }
+        let loggedIn = flag(user, "logged_in") || flag(flow, "is_logged_in")
+        if loggedIn && !flag(session, "auth_token_present") {
+            findings.append(finding(
+                id: "session.token_missing",
+                severity: "error",
+                title: "User is logged in but the auth token is absent",
+                evidence: [
+                    "logged_in": .bool(true),
+                    "auth_token_present": .bool(false)
+                ],
+                hint: "SessionAuthInterceptor and the stored auth token.",
+                files: ["SessionAuthInterceptor.swift"]
+            ))
+        }
+        if flag(user, "logged_in") != flag(flow, "is_logged_in") {
+            findings.append(finding(
+                id: "session.login_mismatch",
+                severity: "warning",
+                title: "Login flags disagree",
+                evidence: [
+                    "user_logged_in": .bool(flag(user, "logged_in")),
+                    "flow_logged_in": .bool(flag(flow, "is_logged_in"))
+                ],
+                hint: "ParentalControlHelper user versus the flow section.",
+                files: ["ParentalControlHelper"]
+            ))
+        }
+        if subscription["ud_is_subscribed"] != nil,
+           flag(subscription, "is_subscribed") != flag(subscription, "ud_is_subscribed") {
+            findings.append(finding(
+                id: "subscription.flag_drift",
+                severity: "warning",
+                title: "Subscription flag and UserDefaults disagree",
+                evidence: [
+                    "is_subscribed": .bool(flag(subscription, "is_subscribed")),
+                    "ud_is_subscribed": .bool(flag(subscription, "ud_is_subscribed"))
+                ],
+                hint: "User isSubscribed versus UserDefaults isSubscribed.",
+                files: ["ParentalControlHelper"]
+            ))
+        }
+        if flag(subscription, "is_user_subscribed_effective") != flag(entitlements, "is_subscribed") {
+            findings.append(finding(
+                id: "entitlements.drift",
+                severity: "warning",
+                title: "Plan subscription and session entitlements disagree",
+                evidence: [
+                    "effective": .bool(flag(subscription, "is_user_subscribed_effective")),
+                    "entitlements": .bool(flag(entitlements, "is_subscribed"))
+                ],
+                hint: "Compare the user plan with UserSessionStore entitlements.",
+                files: ["UserSessionStoreObservable"]
+            ))
+        }
+        if flag(tve, "signed_in_via_tve") && text(tve, "mvpd_provider").isEmpty {
+            findings.append(finding(
+                id: "tve.provider_missing",
+                severity: "warning",
+                title: "TVE session has no MVPD provider",
+                evidence: [
+                    "selected_provider_title": tve["selected_provider_title"] ?? .string("")
+                ],
+                hint: "AdobePrimeTime selected provider versus the user mvpdProvider.",
+                files: ["AdobePrimeTimeServiceV2"]
+            ))
+        }
+        if flag(player, "visible"),
+           let entitlementValue = player["entitlement"],
+           case let .object(entitlement) = entitlementValue,
+           flag(entitlement, "present"),
+           !flag(entitlement, "playable") {
+            findings.append(finding(
+                id: "player.not_playable",
+                severity: "warning",
+                title: "Visible player entitlement is not playable",
+                evidence: [
+                    "content_id": player["content_id"] ?? .string(""),
+                    "error_code": entitlement["error_code"] ?? .string(""),
+                    "vl_error_code": entitlement["vl_error_code"] ?? .string("")
+                ],
+                hint: "Entitlement error on the current VLPlayerMFEController.",
+                files: ["VLPlayerMFEController"]
+            ))
+        }
+        return findings
+    }
+
+    func ottDebugPerform(
+        _ action: String,
+        payload: [String: ViewliftNetworkCapture.JSONValue]
+    ) async throws -> [String: ViewliftNetworkCapture.JSONValue] {
+        _ = payload
+        throw OTTDebugError.unknownAction(action)
+    }
+
+    private func overviewPage() -> [String: CaptureJSON] {
+        let flow = flowSection()
+        let user = userSection()
+        let subscription = subscriptionSection()
+        let config = configSection()
+        return [
+            "summary": .object([
+                "flow": flow["name"] ?? .string(""),
+                "logged_in": user["logged_in"] ?? .bool(false),
+                "subscribed": subscription["is_user_subscribed_effective"] ?? .bool(false),
+                "site": config["site_name"] ?? .string(""),
+                "environment": config["environment"] ?? .string(""),
+                "platform": .string(platformLabel())
+            ]),
+            "flow": .object(flow),
+            "user": .object(user),
+            "geo": .object(geoSection()),
+            "session": .object(sessionSection()),
+            "device": .object(deviceSection())
+        ]
+    }
+
+    private func configPage() -> [String: CaptureJSON] {
+        let config = configSection()
+        return [
+            "summary": .object([
+                "site": config["site_name"] ?? .string(""),
+                "site_id": config["site_id"] ?? .string(""),
+                "environment": config["environment"] ?? .string(""),
+                "api_base_url": config["api_base_url"] ?? .string("")
+            ]),
+            "config": .object(config),
+            "site_features": .object(siteFeaturesSection()),
+            "theme": .object(themeSection()),
+            "content_filter": .object(contentFilterSection())
+        ]
+    }
+
+    private func environmentPage() -> [String: CaptureJSON] {
+        let config = configSection()
+        let device = deviceSection()
+        return [
+            "summary": .object([
+                "environment": config["environment"] ?? .string(""),
+                "api_base_url": config["api_base_url"] ?? .string(""),
+                "site_id": config["site_id"] ?? .string(""),
+                "domain": config["domain_name"] ?? .string(""),
+                "bundle_id": device["bundle_id"] ?? .string("")
+            ]),
+            "config": .object(config),
+            "device": .object(device),
+            "site_features": .object(siteFeaturesSection())
+        ]
+    }
+
+    private func pagesPage() -> [String: CaptureJSON] {
+        let navigation = navigationSection()
+        return [
+            "summary": .object([
+                "top_vc": navigation["top_vc"] ?? .string(""),
+                "page_path": navigation["ud_page_path"] ?? .string(""),
+                "page_id": navigation["ud_page_id"] ?? .string("")
+            ]),
+            "navigation": .object(navigation),
+            "navigation_catalog": .object(navigationCatalogSection()),
+            "page": .object(pageSection())
+        ]
+    }
+
+    private func sessionPage() -> [String: CaptureJSON] {
+        let user = userSection()
+        let session = sessionSection()
+        return [
+            "summary": .object([
+                "logged_in": user["logged_in"] ?? .bool(false),
+                "user_id": user["user_id"] ?? .string(""),
+                "auth_token_present": session["auth_token_present"] ?? .bool(false),
+                "login_provider": user["login_provider"] ?? .string("")
+            ]),
+            "session": .object(session),
+            "user": .object(user),
+            "profiles": .object(profilesSection()),
+            "parental": .object(parentalSection()),
+            "personalization": .object(personalizationSection()),
+            "sso": .object(ssoSection())
+        ]
+    }
+
+    private func subscriptionPage() -> [String: CaptureJSON] {
+        let subscription = subscriptionSection()
+        return [
+            "summary": .object([
+                "subscribed": subscription["is_user_subscribed_effective"] ?? .bool(false),
+                "plan_id": subscription["plan_id"] ?? .string(""),
+                "status": subscription["subscription_status"] ?? .string(""),
+                "processor": subscription["payment_processor"] ?? .string("")
+            ]),
+            "subscription": .object(subscription),
+            "plan_features": .object(planFeaturesSection()),
+            "user_lists": .object(userListsSection())
+        ]
+    }
+
+    private func entitlementsPage(_ arguments: [String: CaptureJSON]) -> [String: CaptureJSON] {
+        let entitlements = entitlementsV2Section()
+        var body: [String: CaptureJSON] = [
+            "summary": .object([
+                "subscribed": entitlements["is_subscribed"] ?? .bool(false),
+                "svod_plan_id": entitlements["svod_plan_id"] ?? .string(""),
+                "has_svod": entitlements["has_svod"] ?? .bool(false),
+                "purchased": entitlements["purchased_content_count"] ?? .number(0)
+            ]),
+            "entitlements_v2": .object(entitlements),
+            "entitlement_cache": .object(entitlementCacheSection())
+        ]
+        let contentId = argumentText(arguments, "content_id").trimmingCharacters(in: .whitespacesAndNewlines)
+        if !contentId.isEmpty {
+            body["paywall"] = .object(paywallLookup(contentId))
+        }
+        return body
+    }
+
+    private func tvePage() -> [String: CaptureJSON] {
+        let tve = tveSection()
+        let provider = text(tve, "mvpd_provider").isEmpty
+            ? (tve["selected_provider_title"] ?? .string(""))
+            : (tve["mvpd_provider"] ?? .string(""))
+        return [
+            "summary": .object([
+                "signed_in": tve["signed_in_via_tve"] ?? .bool(false),
+                "provider": provider,
+                "only_tve_flow": tve["only_tve_flow"] ?? .bool(false)
+            ]),
+            "tve": .object(tve)
+        ]
+    }
+
+    private func devicesPage() -> [String: CaptureJSON] {
+        let devices = devicesSection()
+        let device = deviceSection()
+        return [
+            "summary": .object([
+                "registered": devices["count"] ?? .number(0),
+                "model": device["model"] ?? .string(""),
+                "platform": device["platform"] ?? .string("")
+            ]),
+            "devices": .object(devices),
+            "device": .object(device)
+        ]
+    }
+
+    private func analyticsPage() -> [String: CaptureJSON] {
+        let analytics = analyticsSection()
+        let clientCount: CaptureJSON
+        if case let .array(clients) = analytics["registered_clients"] {
+            clientCount = .number(Double(clients.count))
+        } else {
+            clientCount = .number(0)
+        }
+        return [
+            "summary": .object([
+                "configured": analytics["configured"] ?? .bool(false),
+                "clients": clientCount
+            ]),
+            "analytics": .object(analytics)
+        ]
+    }
+
+    private func playerPage() -> [String: CaptureJSON] {
+        let player = playerSection()
+        return [
+            "summary": .object([
+                "visible": player["visible"] ?? .bool(false),
+                "title": player["title"] ?? .string(""),
+                "content_id": player["content_id"] ?? .string(""),
+                "is_live": player["is_live"] ?? .bool(false)
+            ]),
+            "player": .object(player),
+            "player_prefs": .object(playerPrefsSection()),
+            "drm": .object(drmSection())
+        ]
+    }
+
+    private func paywallLookup(_ contentId: String) -> [String: CaptureJSON] {
+        let row = VLQuadPlayerEntitilement.shared.entitlementData?[contentId]
+        guard let row else {
+            return [
+                "content_id": .string(contentId),
+                "cached": .bool(false),
+                "note": .string("No row in VLQuadPlayerEntitilement cache")
+            ]
+        }
+        let success = row.isSuccess ?? false
+        return [
+            "content_id": .string(contentId),
+            "cached": .bool(true),
+            "is_success": .bool(success),
+            "playable": .bool(row.error?.isPlayable ?? success),
+            "error_code": .string(row.error?.errorCode ?? ""),
+            "vl_error_code": .string(row.error?.vl_errorCode ?? ""),
+            "error_message": .string(row.error?.errorMessage ?? "")
+        ]
+    }
+
+    private func platformLabel() -> String {
+        #if os(tvOS)
+        return "tvOS"
+        #else
+        return "iOS"
+        #endif
+    }
+
+    private func flag(_ object: [String: CaptureJSON], _ key: String) -> Bool {
+        if case let .bool(value) = object[key] {
+            return value
+        }
+        return false
+    }
+
+    private func text(_ object: [String: CaptureJSON], _ key: String) -> String {
+        if case let .string(value) = object[key] {
+            return value
+        }
+        return ""
+    }
+
+    private func argumentText(_ arguments: [String: CaptureJSON], _ key: String) -> String {
+        text(arguments, key)
+    }
+
+    private func finding(
+        id: String,
+        severity: String,
+        title: String,
+        evidence: [String: CaptureJSON],
+        hint: String,
+        files: [String]
+    ) -> CaptureJSON {
+        .object([
+            "id": .string(id),
+            "severity": .string(severity),
+            "title": .string(title),
+            "evidence": .object(evidence),
+            "hint": .string(hint),
+            "files": .array(files.map(CaptureJSON.string))
+        ])
+    }
 }
 #endif

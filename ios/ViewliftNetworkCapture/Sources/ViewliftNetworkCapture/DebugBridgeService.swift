@@ -22,9 +22,21 @@ public final class DebugBridgeService: @unchecked Sendable {
     private var transport: DebugTransporting?
     private var configuration: CaptureConfiguration?
     private var lifecycleMonitor: ConnectionLifecycleMonitor?
+    private var commandTask: Task<Void, Never>?
     private var wakeReason: String?
     private var needsRegistration = false
+    private var commandsReady = false
     let clientId: String
+
+    /// Loop pacing in milliseconds. A live preview polls faster than an idle app.
+    private static let idlePollMilliseconds: UInt64 = 500
+    private static let previewPollMilliseconds: UInt64 = 250
+    private static let waitingMilliseconds: UInt64 = 250
+    private static let failureBackoffMilliseconds: UInt64 = 2_000
+
+    private static var pollMilliseconds: UInt64 {
+        ActivityDebugService.shared.isPreviewing ? previewPollMilliseconds : idlePollMilliseconds
+    }
 
     private init(identity: ClientIdentityProviding = UserDefaultsClientIdentity.shared) {
         clientId = identity.clientId
@@ -55,6 +67,11 @@ public final class DebugBridgeService: @unchecked Sendable {
         task = Task { [weak self] in
             await self?.run()
         }
+        lock.lock()
+        commandTask = Task { [weak self] in
+            await self?.runCommands()
+        }
+        lock.unlock()
         let monitor = ConnectionLifecycleMonitor { [weak self] event in
             self?.handle(event)
         }
@@ -67,15 +84,19 @@ public final class DebugBridgeService: @unchecked Sendable {
     public func stop() {
         lock.lock()
         let active = task
+        let commands = commandTask
         let monitor = lifecycleMonitor
         task = nil
+        commandTask = nil
         lifecycleMonitor = nil
         wakeReason = nil
         transport = nil
         configuration = nil
         needsRegistration = false
+        commandsReady = false
         lock.unlock()
         active?.cancel()
+        commands?.cancel()
         monitor?.stop()
         performance.stop()
         CrashReplayRecorder.shared.stop()
@@ -83,6 +104,7 @@ public final class DebugBridgeService: @unchecked Sendable {
         ObjectHandleRegistry.shared.removeAll()
     }
 
+    /// Registration and telemetry. Commands run on their own loop so a slow upload never delays one.
     private func run() async {
         var registered = false
         var resumeReason: String?
@@ -98,6 +120,9 @@ public final class DebugBridgeService: @unchecked Sendable {
             if takeNeedsRegistration() {
                 registered = false
             }
+            if !registered {
+                setCommandsReady(false)
+            }
             do {
                 if !registered {
                     let device = await MainActor.run { DeviceIdentity.current() }
@@ -105,42 +130,97 @@ public final class DebugBridgeService: @unchecked Sendable {
                     VLCCrashSignalsRefreshImagePaths()
                     try await transport.register(client: registration(config, device: device))
                     registered = true
+                    setCommandsReady(true)
                     Self.log.info("Remote debug bridge registered")
                     if let reason = resumeReason {
                         resumeReason = nil
                         await announceResume(reason: reason, transport: transport)
                     }
                 }
-                lastPerformance = try await sendPerformanceSample(
-                    config: config, transport: transport, last: lastPerformance
-                )
-                try await sendCrashEvents(transport: transport)
-                try await sendHangEvents(transport: transport)
-                try await CrashReplayUploader.shared.sendPending(transport: transport, clientId: clientId)
-                try await sendMemoryEvents(config: config, transport: transport)
-                try await sendActivityEvents(config: config, transport: transport)
-                try await sendPlaybackEvents(config: config, transport: transport)
-                try await sendFocusEvents(config: config, transport: transport)
-                try await sendOTTChangeEvents(config: config, transport: transport)
-                let commands = try await transport.pollCommands(clientId: clientId)
-                for command in commands where command.expiresAt > Date().timeIntervalSince1970 {
-                    await execute(command, transport: transport, config: config)
+                lastPerformance = try await tolerating("performance", fallback: lastPerformance) {
+                    try await sendPerformanceSample(config: config, transport: transport, last: lastPerformance)
                 }
-                // A live preview has to leave the device faster than the idle command poll.
-                let pause: UInt64 = ActivityDebugService.shared.isPreviewing ? 250 : 500
-                await interruptibleSleep(milliseconds: pause)
+                try await tolerating("crash") { try await sendCrashEvents(transport: transport) }
+                try await tolerating("hang") { try await sendHangEvents(transport: transport) }
+                try await tolerating("replay") {
+                    try await CrashReplayUploader.shared.sendPending(transport: transport, clientId: clientId)
+                }
+                try await tolerating("memory") { try await sendMemoryEvents(config: config, transport: transport) }
+                try await tolerating("activity") { try await sendActivityEvents(config: config, transport: transport) }
+                try await tolerating("playback") { try await sendPlaybackEvents(config: config, transport: transport) }
+                try await tolerating("focus") { try await sendFocusEvents(config: config, transport: transport) }
+                try await tolerating("ott") { try await sendOTTChangeEvents(config: config, transport: transport) }
+                await interruptibleSleep(milliseconds: Self.pollMilliseconds)
             } catch let error as TransportError where error.isWaitingForSession {
                 // Transport is still starting or re-pairing. Check again shortly instead of backing off.
                 registered = false
-                await interruptibleSleep(milliseconds: 250)
+                setCommandsReady(false)
+                await interruptibleSleep(milliseconds: Self.waitingMilliseconds)
             } catch {
                 registered = false
+                setCommandsReady(false)
                 Self.log.error(
                     "Debug bridge connection failed: \(String(describing: error), privacy: .public)"
                 )
-                await interruptibleSleep(milliseconds: 2_000)
+                await interruptibleSleep(milliseconds: Self.failureBackoffMilliseconds)
             }
         }
+    }
+
+    /// Polls for dashboard commands and runs each batch off the loop, in order within the batch.
+    private func runCommands() async {
+        while !Task.isCancelled {
+            guard let transport = currentTransport(), let config = currentConfiguration() else {
+                return
+            }
+            guard commandsAreReady() else {
+                await pausePolling(milliseconds: Self.waitingMilliseconds)
+                continue
+            }
+            do {
+                let commands = try await transport.pollCommands(clientId: clientId)
+                let now = Date().timeIntervalSince1970
+                let live = commands.filter { $0.expiresAt > now }
+                if !live.isEmpty {
+                    Task { [weak self] in
+                        for command in live {
+                            await self?.execute(command, transport: transport, config: config)
+                        }
+                    }
+                }
+                await pausePolling(milliseconds: Self.pollMilliseconds)
+            } catch let error as TransportError where error.isWaitingForSession {
+                await pausePolling(milliseconds: Self.waitingMilliseconds)
+            } catch {
+                // The receiver forgot this app (restart, expired session). Register again, then resume.
+                requestRegistration()
+                Self.log.error(
+                    "Debug command poll failed: \(String(describing: error), privacy: .public)"
+                )
+                await pausePolling(milliseconds: Self.failureBackoffMilliseconds)
+            }
+        }
+    }
+
+    /// Runs one optional upload step. A payload the receiver refuses is dropped and logged,
+    /// so it can neither reset the connection nor repeat on every pass.
+    private func tolerating<Value>(
+        _ step: String,
+        fallback: Value,
+        _ body: () async throws -> Value
+    ) async throws -> Value {
+        do {
+            return try await body()
+        } catch let error as TransportError where error.isPayloadRejection {
+            Self.log.error(
+                "Debug bridge dropped a rejected \(step, privacy: .public) upload: \(String(describing: error), privacy: .public)"
+            )
+            return fallback
+        }
+    }
+
+    private func tolerating(_ step: String, _ body: () async throws -> Void) async throws {
+        try await tolerating(step, fallback: (), body)
     }
 
     private func execute(
@@ -239,6 +319,31 @@ extension DebugBridgeService {
         if updated.debugModules.contains(.ui) {
             FocusDebugMonitor.shared.install()
         }
+    }
+
+    fileprivate func setCommandsReady(_ ready: Bool) {
+        lock.lock()
+        commandsReady = ready
+        lock.unlock()
+    }
+
+    fileprivate func commandsAreReady() -> Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        return commandsReady
+    }
+
+    /// Asks the main loop to register again and holds commands until it has.
+    fileprivate func requestRegistration() {
+        lock.lock()
+        needsRegistration = true
+        commandsReady = false
+        lock.unlock()
+    }
+
+    /// Sleeps without ending early for a wake event, which only the main loop consumes.
+    fileprivate func pausePolling(milliseconds: UInt64) async {
+        try? await Task.sleep(nanoseconds: milliseconds * 1_000_000)
     }
 
     fileprivate func takeNeedsRegistration() -> Bool {

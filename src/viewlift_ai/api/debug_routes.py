@@ -395,7 +395,15 @@ async def debug_invoke(request: Request) -> dict[str, object]:
     except PermissionError as exc:
         raise HTTPException(status_code=403, detail=str(exc)) from exc
     except TimeoutError as exc:
-        raise HTTPException(status_code=504, detail=str(exc)) from exc
+        raise HTTPException(
+            status_code=504,
+            detail={
+                "message": str(exc),
+                "code": "command_timeout",
+                "phase": getattr(exc, "phase", ""),
+                "retryable": bool(getattr(exc, "retryable", False)),
+            },
+        ) from exc
     except (OverflowError, ValueError, TypeError) as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 

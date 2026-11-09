@@ -18,6 +18,9 @@ The console reads a small set of environment variables at startup. Everything el
 | `VIEWLIFT_CRASH_WATCH` | `1` | `0` stops the watcher that reads `.ips` files from `~/Library/Logs/DiagnosticReports`. SDK crash records still arrive. |
 | `VIEWLIFT_HOST` | `127.0.0.1` | Dashboard bind. Must be loopback. |
 | `VIEWLIFT_PORT` | `8741` | Dashboard port. |
+| `VIEWLIFT_LIVE_REFRESH_SECONDS` | `2` | How often AppCMS and host dashboard pages refresh while the tab is visible. Minimum `0.5`. Served to the page through `/api/config/limits`. |
+| `VIEWLIFT_LIVE_BACKOFF_MAX_SECONDS` | `15` | Longest wait between retries while the app is unreachable. The wait doubles from the refresh interval up to this cap. Minimum `1`. |
+| `VIEWLIFT_LIVE_DIAGNOSTICS_SECONDS` | `10` | How often the diagnostics badge and the section manifest are re-read. Minimum `1`. |
 | `VIEWLIFT_DATA_DIR` | platform data dir | Where the database, rules, secret key, and `crash-media/` (crash replay videos and posters) live. |
 | `VIEWLIFT_INGEST_PORT` | `8743` | Default SDK receiver port. The receiver refuses the MCP port. |
 | `VIEWLIFT_TUNNELD_ADDRESS` | pymobiledevice3 default | `host:port` of the developer tunnel, loopback only. |

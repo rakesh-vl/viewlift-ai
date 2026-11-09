@@ -58,10 +58,14 @@ extension DebugBridgeService {
     /// Crashes from the last run and any that could not be sent in time. Removed from disk once the dashboard has them.
     func sendCrashEvents(transport: DebugTransporting) async throws {
         for entry in FatalCrashCoordinator.shared.pendingDelivery() {
-            try await transport.send(
-                event: DebugEvent(id: entry.id, module: "crash", kind: "fatal", payload: entry.event),
-                clientId: clientId
-            )
+            do {
+                try await transport.send(
+                    event: DebugEvent(id: entry.id, module: "crash", kind: "fatal", payload: entry.event),
+                    clientId: clientId
+                )
+            } catch let error as TransportError where error.isPayloadRejection {
+                // The receiver will never accept this record. Keeping it would repeat the upload forever.
+            }
             FatalCrashCoordinator.shared.markDelivered(id: entry.id)
         }
     }

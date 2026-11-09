@@ -2,7 +2,7 @@
 
 The MCP server is how a coding agent debugs a connected iOS or tvOS app. It is a separate process. It talks to the console on this Mac over loopback HTTP, then the console talks to the app. An agent has no more access than the dashboard, and less access to secrets: credentials are masked even when the console reveal session is unlocked.
 
-There are 149 tools in 17 groups, 7 prompts, and 2 resources. A new chat lists the 29 debug tools (find the app, analyze, read captured data, `app_inspect`, and the state changes, plus `manage_workflows`). Build, simulator, UI, and the other groups stay out of the prompt until that chat turns them on; see [Build, run, and drive apps](#build-run-and-drive-apps). The Agent page (`/agent`) still lists every tool. `describe_command` and the `viewlift://commands` resource return the live command list, which is the one to trust if this page and the server ever disagree.
+There are 157 tools in 17 groups, 7 prompts, and 2 resources. A new chat lists the 37 debug tools (find the app, analyze, read captured data, `app_inspect`, and the state changes, plus `manage_workflows`). Build, simulator, UI, and the other groups stay out of the prompt until that chat turns them on; see [Build, run, and drive apps](#build-run-and-drive-apps). The Agent page (`/agent`) still lists every tool. `describe_command` and the `viewlift://commands` resource return the live command list, which is the one to trust if this page and the server ever disagree.
 
 The dashboard **Tools** page (encoders, formatters, the scratchpad) is unrelated. Those run in the browser. Nothing in that page is an MCP tool.
 
@@ -148,7 +148,7 @@ Routes, all loopback only and taking `client_id`:
 | `GET /api/debug/crashes/{id}/report.md` | Markdown brief for a person or an agent. `download=1` for a file |
 | `GET /api/debug/crashes/{id}/detail` | Crash, brief, and poster as JSON, for `crash_detail` |
 
-Crashes stream on `/ws/debug` as `debug-event` and `debug-crash`. Set `VIEWLIFT_CRASH_WATCH=0` to turn the `.ips` watcher off.
+Crashes stream on `/ws/debug` as `debug-event` and `debug-crash`. The dashboard toasts a live crash on every page and opens Debug, then Hangs. The same socket also toasts a hang (`hang` / `detected`), a memory leak, and a failed playback event. Set `VIEWLIFT_CRASH_WATCH=0` to turn the `.ips` watcher off. See [Web UI](web-ui.md#debug-suite).
 
 ### Fix a crash with an agent
 

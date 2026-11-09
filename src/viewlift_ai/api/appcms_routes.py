@@ -59,6 +59,7 @@ def _page(request: Request, slug: str) -> HTMLResponse:
             "active_nav": "appcms",
             "active_page": slug,
             "pages": APPCMS_PAGES,
+            "section_names": [section for _slug, _label, section in APPCMS_PAGES if section],
             "mutating_enabled": _mutating(request),
         },
     )
@@ -107,16 +108,31 @@ async def host_page(request: Request, slug: str) -> HTMLResponse:
     return _host_page(request, slug)
 
 
+def _command_failure(exc: Exception, code: str) -> dict[str, object]:
+    """Error body the dashboard can act on: a message, a code, and whether a retry may succeed."""
+    return {
+        "message": str(exc),
+        "code": code,
+        "phase": getattr(exc, "phase", ""),
+        "retryable": bool(getattr(exc, "retryable", False)),
+    }
+
+
 async def _invoke(request: Request, **kwargs: Any) -> dict[str, object]:
     sessions = _sessions(request)
     try:
         return await asyncio.to_thread(lambda: sessions.invoke(**kwargs))
     except LookupError as exc:
-        raise HTTPException(status_code=409, detail=str(exc)) from exc
+        # A restarting or suspended app comes back by itself, so the page should retry.
+        failure = _command_failure(exc, "app_unavailable")
+        failure["retryable"] = True
+        raise HTTPException(status_code=409, detail=failure) from exc
     except PermissionError as exc:
         raise HTTPException(status_code=403, detail=str(exc)) from exc
     except TimeoutError as exc:
-        raise HTTPException(status_code=504, detail=str(exc)) from exc
+        raise HTTPException(
+            status_code=504, detail=_command_failure(exc, "command_timeout")
+        ) from exc
     except (OverflowError, ValueError, TypeError) as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 

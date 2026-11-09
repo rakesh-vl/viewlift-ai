@@ -46,7 +46,11 @@ final class CrashReplayUploader: @unchecked Sendable {
                 continue
             }
             let job = Job(id: id, folder: folder, crash: crash, video: video)
-            try await upload(job, transport: transport, clientId: clientId)
+            do {
+                try await upload(job, transport: transport, clientId: clientId)
+            } catch let error as TransportError where error.isPayloadRejection {
+                // The receiver refused this replay. Keeping it would repeat the upload on every pass.
+            }
             coordinator.removeReplay(id: id)
         }
     }

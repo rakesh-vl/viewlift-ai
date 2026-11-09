@@ -11,7 +11,8 @@
   const SECTION = root.dataset.appcmsSection;
   const PAGE_BASE = HOST_MODE ? "/host" : "/appcms";
   const HISTORY_LIMIT = 10;
-  const REFRESH_THROTTLE_MS = 1500;
+  /* Used only while the console cannot serve /api/config/limits. Every normal interval comes from the server. */
+  const LIMITS_RETRY_MS = 3000;
 
   /* Inputs for actions that take arguments. Anything else runs with an empty payload. */
   const ACTION_FORMS = {
@@ -42,16 +43,32 @@
     reset_simulations: "Drop the simulated country and other simulations.",
   };
 
+  /* Section names come from the server page list, so a new page needs no change here. */
+  const SNAPSHOT_SECTIONS = (root.dataset.appcmsSections || "").split(",").filter(Boolean);
+
   const state = {
     clientId: "",
     sections: [],
     actions: [],
     provider: "",
     manifest: {},
+    manifestAt: 0,
     data: null,
-    lastLoad: 0,
-    refreshTimer: null,
+    sectionArgs: null,
   };
+
+  /* Live refresh bookkeeping. */
+  const live = {
+    timer: 0,
+    failures: 0,
+    running: null,
+    queued: false,
+    renderedKey: "",
+    badgeAt: 0,
+    retryNote: "",
+  };
+
+  const snapshotCache = new Map();
 
   const $ = (id) => document.getElementById(id);
   const escapeHtml = (value) => String(value ?? "")
@@ -83,26 +100,352 @@
     return online.length === 1 ? online[0].id : "";
   }
 
+  /* A failed command. `retryable` tells the live loop to keep going; otherwise it waits for the user. */
+  class CommandError extends Error {
+    constructor(message, { status = 0, code = "", phase = "", retryable = false } = {}) {
+      super(message);
+      this.name = "CommandError";
+      this.status = status;
+      this.code = code;
+      this.phase = phase;
+      this.retryable = retryable;
+    }
+  }
+
+  const limitSeconds = (key) => {
+    const value = Number(window.ViewliftLimits?.get?.(key));
+    return Number.isFinite(value) && value > 0 ? value : 0;
+  };
+
+  function hasLiveLimits() {
+    return Boolean(limitSeconds("live_refresh_seconds") && limitSeconds("live_backoff_max_seconds"));
+  }
+
+  /* Waits for the first limits response, then continues. A missing key must not freeze the page. */
+  async function limitsReady() {
+    await window.ViewliftLimits?.ready;
+  }
+
   async function post(path, body) {
-    const response = await fetch(path, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(body),
-    });
+    let response;
+    try {
+      response = await fetch(path, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body),
+      });
+    } catch (_) {
+      throw new CommandError("The console is not reachable.", { code: "console_unreachable", retryable: true });
+    }
     const data = await response.json().catch(() => ({}));
     if (!response.ok) {
-      const detail = typeof data.detail === "string" ? data.detail : data.detail?.message;
-      throw new Error(detail || `Request failed (${response.status})`);
+      const detail = data.detail && typeof data.detail === "object" ? data.detail : { message: data.detail };
+      throw new CommandError(detail.message || `Request failed (${response.status})`, {
+        status: response.status,
+        code: detail.code || "",
+        phase: detail.phase || "",
+        retryable: typeof detail.retryable === "boolean" ? detail.retryable : response.status >= 500,
+      });
     }
     return data;
   }
 
-  async function read(name, payload = {}, clientId = state.clientId) {
+  async function readRemote(name, payload = {}, clientId = state.clientId) {
     const data = await post("/api/appcms/read", { client_id: clientId, name, payload });
-    if (!data.ok) throw new Error(data.error || "The app reported an error");
+    if (!data.ok) throw new CommandError(data.error || "The app reported an error", { retryable: true });
     const result = data.result || {};
-    if (result.error) throw new Error(`${result.error}: ${result.detail || ""}`.trim());
+    if (result.error) throw new CommandError(`${result.error}: ${result.detail || ""}`.trim(), { code: result.error });
     return result;
+  }
+
+  function providerOk(provider) {
+    return HOST_MODE ? Boolean(provider) && provider !== "none" : provider === "AppCMS";
+  }
+
+  async function freshSnapshot(clientId) {
+    const hit = snapshotCache.get(clientId);
+    if (hit) return hit.data;
+    const data = await readRemote("ott.snapshot", {}, clientId);
+    snapshotCache.set(clientId, { data });
+    return data;
+  }
+
+  function pickGroups(snap, names) {
+    const out = {};
+    names.forEach((name) => {
+      if (snap[name] !== undefined) out[name] = snap[name];
+    });
+    return out;
+  }
+
+  function textOf(object, key) {
+    const value = object?.[key];
+    return value === undefined || value === null ? "" : value;
+  }
+
+  function paywallFromCache(snap, contentId) {
+    const sample = snap.entitlement_cache?.sample;
+    const row = Array.isArray(sample) ? sample.find((item) => item && item.content_id === contentId) : null;
+    if (!row) return { content_id: contentId, cached: false, note: "No row in the entitlement cache sample" };
+    return { content_id: contentId, cached: true, ...row };
+  }
+
+  function sectionFromSnapshot(snap, name, args) {
+    const config = snap.config || {};
+    const user = snap.user || {};
+    const flow = snap.flow || {};
+    const subscription = snap.subscription || {};
+    const device = snap.device || {};
+    const entitlements = snap.entitlements_v2 || {};
+    const session = snap.session || {};
+    const tve = snap.tve || {};
+    const navigation = snap.navigation || {};
+    const analytics = snap.analytics || {};
+    const player = snap.player || {};
+    switch (name) {
+      case "overview":
+        return {
+          summary: {
+            flow: textOf(flow, "name"),
+            logged_in: user.logged_in === true,
+            subscribed: subscription.is_user_subscribed_effective === true,
+            site: textOf(config, "site_name"),
+            environment: textOf(config, "environment"),
+            platform: snap.platform || textOf(device, "platform"),
+          },
+          ...pickGroups(snap, ["flow", "user", "geo", "session", "device"]),
+        };
+      case "config":
+        return {
+          summary: {
+            site: textOf(config, "site_name"),
+            site_id: textOf(config, "site_id"),
+            environment: textOf(config, "environment"),
+            api_base_url: textOf(config, "api_base_url"),
+          },
+          ...pickGroups(snap, ["config", "site_features", "theme", "content_filter"]),
+        };
+      case "environment":
+        return {
+          summary: {
+            environment: textOf(config, "environment"),
+            api_base_url: textOf(config, "api_base_url"),
+            site_id: textOf(config, "site_id"),
+            domain: textOf(config, "domain_name"),
+            bundle_id: textOf(device, "bundle_id") || textOf(snap.bundle, "bundle_id"),
+          },
+          ...pickGroups(snap, ["config", "device", "bundle"]),
+          frameworks: snap.frameworks || [],
+        };
+      case "pages":
+        return {
+          summary: {
+            top_vc: textOf(navigation, "top_vc"),
+            page_path: textOf(navigation, "ud_page_path"),
+            page_id: textOf(navigation, "ud_page_id"),
+          },
+          ...pickGroups(snap, ["navigation", "navigation_catalog", "page"]),
+        };
+      case "session":
+        return {
+          summary: {
+            logged_in: user.logged_in === true,
+            user_id: textOf(user, "user_id"),
+            auth_token_present: session.auth_token_present === true,
+            login_provider: textOf(user, "login_provider"),
+          },
+          ...pickGroups(snap, ["session", "user", "profiles", "parental", "personalization", "sso"]),
+        };
+      case "subscription":
+        return {
+          summary: {
+            subscribed: subscription.is_user_subscribed_effective === true,
+            plan_id: textOf(subscription, "plan_id"),
+            status: textOf(subscription, "subscription_status"),
+            processor: textOf(subscription, "payment_processor"),
+          },
+          ...pickGroups(snap, ["subscription", "plan_features", "user_lists"]),
+        };
+      case "entitlements": {
+        const body = {
+          summary: {
+            subscribed: entitlements.is_subscribed === true,
+            svod_plan_id: textOf(entitlements, "svod_plan_id"),
+            has_svod: entitlements.has_svod === true,
+            purchased: entitlements.purchased_content_count ?? 0,
+          },
+          ...pickGroups(snap, ["entitlements_v2", "entitlement_cache"]),
+        };
+        const contentId = String(args?.content_id || "").trim();
+        if (contentId) body.paywall = paywallFromCache(snap, contentId);
+        return body;
+      }
+      case "tve":
+        return {
+          summary: {
+            signed_in: tve.signed_in_via_tve === true,
+            provider: textOf(tve, "mvpd_provider") || textOf(tve, "selected_provider_title"),
+            only_tve_flow: tve.only_tve_flow === true,
+          },
+          tve,
+        };
+      case "devices":
+        return {
+          summary: {
+            registered: snap.devices?.count ?? 0,
+            model: textOf(device, "model"),
+            platform: textOf(device, "platform"),
+          },
+          ...pickGroups(snap, ["devices", "device"]),
+        };
+      case "analytics":
+        return {
+          summary: {
+            configured: analytics.configured === true,
+            clients: Array.isArray(analytics.registered_clients) ? analytics.registered_clients.length : 0,
+          },
+          analytics,
+        };
+      case "player":
+        return {
+          summary: {
+            visible: player.visible === true,
+            title: textOf(player, "title"),
+            content_id: textOf(player, "content_id"),
+            is_live: player.is_live === true,
+          },
+          ...pickGroups(snap, ["player", "player_prefs", "drm"]),
+        };
+      default:
+        return snap[name] && typeof snap[name] === "object" ? snap[name] : {};
+    }
+  }
+
+  function findingsFromSnapshot(snap) {
+    const findings = [];
+    const config = snap.config || {};
+    const user = snap.user || {};
+    const flow = snap.flow || {};
+    const session = snap.session || {};
+    const subscription = snap.subscription || {};
+    const entitlements = snap.entitlements_v2 || {};
+    const tve = snap.tve || {};
+    const player = snap.player || {};
+    const entitlement = player.entitlement || {};
+    if (!config.site_id) {
+      findings.push({
+        id: "config.site_id",
+        severity: "error",
+        title: "Bootstrap config has no site id",
+        evidence: { site_name: config.site_name || "" },
+        hint: "Open AppConfiguration siteId. Bootstrap may not have finished.",
+        files: ["AppConfiguration"],
+      });
+    }
+    if (!config.api_base_url) {
+      findings.push({
+        id: "config.api_base_url",
+        severity: "error",
+        title: "API base URL is empty",
+        evidence: { environment: config.environment || "" },
+        hint: "Check AppConfiguration.apiBaseUrl after bootstrap.",
+        files: ["AppConfiguration"],
+      });
+    }
+    const loggedIn = user.logged_in === true || flow.is_logged_in === true;
+    if (loggedIn && session.auth_token_present !== true) {
+      findings.push({
+        id: "session.token_missing",
+        severity: "error",
+        title: "User is logged in but the auth token is absent",
+        evidence: { logged_in: true, auth_token_present: false },
+        hint: "SessionAuthInterceptor and the stored auth token.",
+        files: ["SessionAuthInterceptor.swift"],
+      });
+    }
+    if (typeof user.logged_in === "boolean" && typeof flow.is_logged_in === "boolean" && user.logged_in !== flow.is_logged_in) {
+      findings.push({
+        id: "session.login_mismatch",
+        severity: "warning",
+        title: "Login flags disagree",
+        evidence: { user_logged_in: user.logged_in, flow_logged_in: flow.is_logged_in },
+        hint: "ParentalControlHelper user versus the flow section.",
+        files: ["ParentalControlHelper"],
+      });
+    }
+    if (typeof subscription.ud_is_subscribed === "boolean" && subscription.is_subscribed !== subscription.ud_is_subscribed) {
+      findings.push({
+        id: "subscription.flag_drift",
+        severity: "warning",
+        title: "Subscription flag and UserDefaults disagree",
+        evidence: { is_subscribed: subscription.is_subscribed, ud_is_subscribed: subscription.ud_is_subscribed },
+        hint: "User isSubscribed versus UserDefaults isSubscribed.",
+        files: ["ParentalControlHelper"],
+      });
+    }
+    if (typeof subscription.is_user_subscribed_effective === "boolean" && typeof entitlements.is_subscribed === "boolean" && subscription.is_user_subscribed_effective !== entitlements.is_subscribed) {
+      findings.push({
+        id: "entitlements.drift",
+        severity: "warning",
+        title: "Plan subscription and session entitlements disagree",
+        evidence: { effective: subscription.is_user_subscribed_effective, entitlements: entitlements.is_subscribed },
+        hint: "Compare the user plan with UserSessionStore entitlements.",
+        files: ["UserSessionStoreObservable"],
+      });
+    }
+    if (tve.signed_in_via_tve === true && !tve.mvpd_provider) {
+      findings.push({
+        id: "tve.provider_missing",
+        severity: "warning",
+        title: "TVE session has no MVPD provider",
+        evidence: { selected_provider_title: tve.selected_provider_title || "" },
+        hint: "AdobePrimeTime selected provider versus the user mvpdProvider.",
+        files: ["AdobePrimeTimeServiceV2"],
+      });
+    }
+    if (player.visible === true && entitlement.present === true && entitlement.playable === false) {
+      findings.push({
+        id: "player.not_playable",
+        severity: "warning",
+        title: "Visible player entitlement is not playable",
+        evidence: {
+          content_id: player.content_id || "",
+          error_code: entitlement.error_code || "",
+          vl_error_code: entitlement.vl_error_code || "",
+        },
+        hint: "Entitlement error on the current VLPlayerMFEController.",
+        files: ["VLPlayerMFEController"],
+      });
+    }
+    return findings;
+  }
+
+  async function read(name, payload = {}, clientId = state.clientId) {
+    try {
+      const result = await readRemote(name, payload, clientId);
+      if (name === "ott.sections" && !providerOk(result.provider)) {
+        const snap = await freshSnapshot(clientId);
+        if (providerOk(snap.provider)) {
+          return {
+            provider: snap.provider,
+            sections: SNAPSHOT_SECTIONS,
+            actions: Array.isArray(result.actions) ? result.actions : [],
+          };
+        }
+      }
+      return result;
+    } catch (error) {
+      const missingHandler = /no_handler/.test(String(error.message || error));
+      if (!missingHandler || (name !== "ott.section" && name !== "ott.diagnostics")) throw error;
+      const snap = await freshSnapshot(clientId);
+      if (!providerOk(snap.provider)) throw error;
+      if (name === "ott.diagnostics") return { findings: findingsFromSnapshot(snap), captured_at: snap.captured_at };
+      return {
+        section: payload.name,
+        data: sectionFromSnapshot(snap, payload.name, payload.args),
+        captured_at: snap.captured_at,
+      };
+    }
   }
 
   /* ---------- rendering ---------- */
@@ -183,11 +526,34 @@
       .map(([key, value]) => `<div class="metric"><span class="muted">${escapeHtml(humanize(key))}</span><strong class="metric-text ${valueClass(key, value)}">${escapeHtml(String(value))}</strong></div>`)
       .join("");
     const groups = Object.entries(data || {}).filter(([key, value]) => key !== "summary" && !isScalar(value));
+    const open = rememberOpen(sections);
     sections.innerHTML = groups.length
       ? groups.map(([key, value]) => card(humanize(key), value, key)).join("")
       : `<p class="muted">The app returned no groups for this section.</p>`;
+    restoreOpen(sections, open);
     applyFilter();
     renderHistoryDiff();
+  }
+
+  /* Live re-renders keep expanded rows open, so reading is never interrupted. */
+  function detailKey(node, container) {
+    const parts = [];
+    for (let el = node; el && el !== container; el = el.parentElement) {
+      if (el.tagName === "DETAILS") parts.unshift(el.querySelector(":scope > summary")?.textContent.trim() || "");
+      else if (el.dataset?.card) parts.unshift(`card:${el.dataset.card}`);
+    }
+    return parts.join(" > ");
+  }
+
+  function rememberOpen(container) {
+    return new Set([...container.querySelectorAll("details[open]")].map((node) => detailKey(node, container)));
+  }
+
+  function restoreOpen(container, keys) {
+    if (!keys.size) return;
+    container.querySelectorAll("details").forEach((node) => {
+      if (keys.has(detailKey(node, container))) node.open = true;
+    });
   }
 
   function applyFilter() {
@@ -281,36 +647,66 @@
 
   /* ---------- pages ---------- */
 
-  async function loadSectionPage(extraArgs) {
-    if (!SECTION) return;
-    const payload = { name: SECTION };
-    if (extraArgs) payload.args = extraArgs;
-    const result = await read("ott.section", payload);
-    state.data = result.data || {};
-    pushHistory(state.data);
-    renderSection(state.data);
-    stamp(result.captured_at);
+  /* True when the payload differs from what is on screen. Identical live polls then touch no DOM. */
+  function isNewView(payload) {
+    const key = JSON.stringify(payload);
+    if (key === live.renderedKey) return false;
+    live.renderedKey = key;
+    return true;
   }
 
-  function stamp(epoch) {
+  function changeCount(before, after) {
+    if (!before) return 0;
+    const left = flatten(before);
+    const right = flatten(after);
+    const keys = new Set([...Object.keys(left), ...Object.keys(right)]);
+    return [...keys].filter((key) => left[key] !== right[key]).length;
+  }
+
+  async function loadSectionPage(extraArgs) {
+    if (!SECTION) return;
+    if (extraArgs !== undefined) state.sectionArgs = extraArgs;
+    const payload = { name: SECTION };
+    if (state.sectionArgs) payload.args = state.sectionArgs;
+    const result = await read("ott.section", payload);
+    const data = result.data || {};
+    if (!isNewView(data)) {
+      stamp(result.captured_at);
+      return;
+    }
+    const changed = changeCount(state.data, data);
+    state.data = data;
+    pushHistory(data);
+    renderSection(data);
+    stamp(result.captured_at, changed ? `${changed} value${changed === 1 ? "" : "s"} changed` : "");
+  }
+
+  function stamp(epoch, note = "") {
     const label = $("appcms-updated");
     if (!label) return;
     const when = epoch ? new Date(epoch * 1000) : new Date();
-    label.textContent = `Captured ${when.toLocaleTimeString()}`;
+    label.textContent = `Captured ${when.toLocaleTimeString()}${note ? ` · ${note}` : ""}`;
   }
 
   async function loadDiagnostics() {
     const result = await read("ott.diagnostics");
     const findings = Array.isArray(result.findings) ? result.findings : [];
-    state.data = { findings };
     updateBadge(findings);
+    live.badgeAt = Date.now();
     const box = $("appcms-findings");
     if (!box) return;
     const order = { error: 0, warning: 1, info: 2 };
     findings.sort((a, b) => (order[a.severity] ?? 3) - (order[b.severity] ?? 3));
+    if (!isNewView(findings)) {
+      stamp(result.captured_at);
+      return;
+    }
+    state.data = { findings };
+    const open = rememberOpen(box);
     box.innerHTML = findings.length
       ? findings.map(findingHtml).join("")
       : `<p class="muted">No findings. Session, plan, entitlement, and config sources agree.</p>`;
+    restoreOpen(box, open);
     stamp(result.captured_at);
     applyFilter();
   }
@@ -338,7 +734,7 @@
   }
 
   function providerSupported() {
-    return HOST_MODE ? Boolean(state.provider) && state.provider !== "none" : state.provider === "AppCMS";
+    return providerOk(state.provider);
   }
 
   /* Manifest fields ({name, label, kind, options}) win over the built-in AppCMS forms. */
@@ -385,6 +781,8 @@
 
   async function refreshBadge() {
     if (PAGE === "diagnostics" || !state.clientId || !providerSupported()) return;
+    if (Date.now() - live.badgeAt < limitSeconds("live_diagnostics_seconds") * 1000) return;
+    live.badgeAt = Date.now();
     try {
       const result = await read("ott.diagnostics");
       updateBadge(Array.isArray(result.findings) ? result.findings : []);
@@ -490,6 +888,10 @@
     if (!scope || !left || !right || !section) return;
     const apps = scope.onlineApps();
     const options = apps.map((app) => `<option value="${escapeHtml(app.id)}">${escapeHtml(`${app.app_name} · ${app.platform || ""} ${app.device_name || ""}`.trim())}</option>`).join("");
+    const sectionOptions = state.sections.map((name) => `<option value="${escapeHtml(name)}">${escapeHtml(humanize(name))}</option>`).join("");
+    const signature = `${options}|${sectionOptions}`;
+    if (left.dataset.signature === signature) return;
+    left.dataset.signature = signature;
     const keepLeft = left.value || state.clientId;
     const keepRight = right.value;
     left.innerHTML = options;
@@ -497,7 +899,7 @@
     if (keepLeft) left.value = keepLeft;
     right.value = keepRight || (apps.find((app) => app.id !== left.value)?.id || "");
     const keepSection = section.value;
-    section.innerHTML = state.sections.map((name) => `<option value="${escapeHtml(name)}">${escapeHtml(humanize(name))}</option>`).join("");
+    section.innerHTML = sectionOptions;
     if (keepSection) section.value = keepSection;
   }
 
@@ -509,6 +911,7 @@
     const box = $("appcms-compare");
     if (!box) return;
     if (!left || !right || !section || left === right) {
+      live.renderedKey = "";
       box.innerHTML = `<p class="muted">Pick two different online apps with the same debug host, for example iOS and tvOS, or a prod and a uat build.</p>`;
       return;
     }
@@ -519,7 +922,8 @@
     const rows = diffRows(flatten(one.data || {}), flatten(two.data || {}), $("appcms-diff-only")?.checked);
     const name = (id) => window.VLScope?.app(id)?.app_name || id;
     state.data = { left: one.data, right: two.data };
-    box.innerHTML = rows.length ? diffTable(rows, name(left), name(right)) : `<p class="muted">Both apps report the same ${escapeHtml(section)} values.</p>`;
+    const html = rows.length ? diffTable(rows, name(left), name(right)) : `<p class="muted">Both apps report the same ${escapeHtml(section)} values.</p>`;
+    if (isNewView(html)) box.innerHTML = html;
   }
 
   /* ---------- bug bundle ---------- */
@@ -561,26 +965,113 @@
     const app = window.VLScope?.app(state.clientId);
     $("appcms-client").textContent = app ? `${app.app_name} · ${app.platform || ""} ${app.app_version || ""}`.trim() : "No app selected";
     const pill = $("appcms-provider");
-    pill.textContent = state.provider || "Waiting";
-    pill.className = `memory-pill ${providerSupported() ? "is-live" : state.provider ? "is-waiting" : "is-offline"}`;
+    const reconnecting = live.failures > 0 && Boolean(state.clientId);
+    pill.textContent = reconnecting ? "Reconnecting" : providerSupported() ? `${state.provider} · live` : state.provider || "Waiting";
+    pill.className = `memory-pill ${reconnecting ? "is-waiting" : providerSupported() ? "is-live" : state.provider ? "is-waiting" : "is-offline"}`;
   }
 
-  async function load() {
-    state.clientId = targetClientId();
+  /* ---------- live refresh ---------- */
+
+  /* Delay before the next poll: the server interval, doubled per consecutive failure up to the server cap. */
+  function liveDelayMs() {
+    if (!hasLiveLimits()) return LIMITS_RETRY_MS;
+    const base = limitSeconds("live_refresh_seconds") * 1000;
+    const cap = limitSeconds("live_backoff_max_seconds") * 1000;
+    return Math.min(cap, base * 2 ** Math.min(live.failures, 16));
+  }
+
+  function scheduleLive() {
+    window.clearTimeout(live.timer);
+    if (document.hidden || !state.clientId) return;
+    live.timer = window.setTimeout(() => {
+      if (!hasLiveLimits()) window.ViewliftLimits?.reload?.();
+      load();
+    }, liveDelayMs());
+  }
+
+  /* Starts a refresh now. Calls made while one is running collapse into one follow-up. */
+  function load() {
+    window.clearTimeout(live.timer);
+    if (live.running) {
+      live.queued = true;
+      return live.running;
+    }
+    live.running = runLoad().finally(() => {
+      live.running = null;
+      if (live.queued) {
+        live.queued = false;
+        load();
+      } else {
+        scheduleLive();
+      }
+    });
+    return live.running;
+  }
+
+  /* Clears the page when the target app changes, so one app's data never sits under another's name. */
+  function resetView() {
+    live.renderedKey = "";
+    live.failures = 0;
+    live.badgeAt = 0;
+    state.data = null;
+    state.sectionArgs = null;
+    state.manifestAt = 0;
+    state.provider = "";
+    ["appcms-summary", "appcms-sections", "appcms-findings", "appcms-compare"].forEach((id) => {
+      const node = $(id);
+      if (node) node.innerHTML = "";
+    });
+  }
+
+  function reportFailure(error) {
+    live.failures += 1;
+    renderClient();
+    const seconds = Math.max(1, Math.round(liveDelayMs() / 1000));
+    const message = String(error.message || error);
+    if (error.retryable === false) {
+      live.failures = 0;
+      notice(message, "is-error");
+      renderClient();
+      return;
+    }
+    const kept = live.renderedKey ? " Showing the last data." : "";
+    notice(`${message}${kept} Retrying in ${seconds}s.`, "is-warn");
+  }
+
+  function manifestStale() {
+    const slow = limitSeconds("live_diagnostics_seconds") * 1000;
+    return !state.provider || live.failures > 0 || Date.now() - state.manifestAt >= slow;
+  }
+
+  async function loadManifest() {
+    const sections = await read("ott.sections");
+    state.sections = Array.isArray(sections.sections) ? sections.sections : [];
+    state.actions = Array.isArray(sections.actions) ? sections.actions : [];
+    state.provider = sections.provider || "none";
+    state.manifest = sections;
+    state.manifestAt = Date.now();
+    renderClient();
+    renderHostNav();
+  }
+
+  async function runLoad() {
+    await limitsReady();
+    snapshotCache.clear();
+    const clientId = targetClientId();
+    if (clientId !== state.clientId) {
+      state.clientId = clientId;
+      resetView();
+    }
     renderClient();
     if (!state.clientId) {
       notice(`Choose one ${HOST_MODE ? "" : "AppCMS "}app in Scope. Several apps may be running on this device.`);
       return;
     }
     try {
-      const sections = await read("ott.sections");
-      state.sections = Array.isArray(sections.sections) ? sections.sections : [];
-      state.actions = Array.isArray(sections.actions) ? sections.actions : [];
-      state.provider = sections.provider || "none";
-      state.manifest = sections;
-      renderClient();
-      renderHostNav();
+      if (manifestStale()) await loadManifest();
       if (!providerSupported()) {
+        live.failures = 0;
+        renderClient();
         notice(HOST_MODE
           ? "This app registered no debug host. Run a DEBUG build that links ViewliftNetworkCapture and registers OTTDebugHost."
           : "This app has no AppCMS debug provider. Run an AppCMS DEBUG build with ViewliftNetworkCapture.", "is-error");
@@ -593,15 +1084,17 @@
           return;
         }
       }
-      notice("");
-      state.lastLoad = Date.now();
       if (PAGE === "diagnostics") await loadDiagnostics();
-      else if (PAGE === "actions") renderActions();
-      else if (PAGE === "compare") await loadCompare();
+      else if (PAGE === "actions") {
+        if (isNewView([state.actions, state.manifest.action_titles])) renderActions();
+      } else if (PAGE === "compare") await loadCompare();
       else await loadSectionPage();
+      if (live.failures > 0) live.failures = 0;
+      notice("");
+      renderClient();
       refreshBadge();
     } catch (error) {
-      notice(String(error.message || error), "is-error");
+      reportFailure(error);
     }
   }
 
@@ -611,9 +1104,7 @@
       refreshBadge();
       return;
     }
-    window.clearTimeout(state.refreshTimer);
-    const wait = Math.max(0, REFRESH_THROTTLE_MS - (Date.now() - state.lastLoad));
-    state.refreshTimer = window.setTimeout(load, wait);
+    load();
   }
 
   function connectSocket() {
@@ -626,11 +1117,17 @@
       if (data.type !== "debug-event" || !item || item.client_id !== state.clientId) return;
       if (item.module === "ott" && item.kind === "changed") scheduleRefresh(item.payload?.sections);
     });
-    socket.addEventListener("close", () => setTimeout(connectSocket, 1500));
+    socket.addEventListener("close", () => {
+      const wait = limitSeconds("live_refresh_seconds") * 1000 || LIMITS_RETRY_MS;
+      window.setTimeout(connectSocket, wait);
+    });
   }
 
   function bind() {
-    $("appcms-refresh")?.addEventListener("click", load);
+    $("appcms-refresh")?.addEventListener("click", () => {
+      live.renderedKey = "";
+      load();
+    });
     $("appcms-search")?.addEventListener("input", applyFilter);
     $("appcms-copy")?.addEventListener("click", async () => {
       const text = JSON.stringify(state.data || {}, null, 2);
@@ -659,16 +1156,25 @@
     $("appcms-paywall")?.addEventListener("submit", (event) => {
       event.preventDefault();
       const id = $("appcms-paywall-id").value.trim();
-      loadSectionPage(id ? { content_id: id } : undefined).catch((error) => notice(String(error.message || error), "is-error"));
+      snapshotCache.clear();
+      loadSectionPage(id ? { content_id: id } : null).catch((error) => notice(String(error.message || error), "is-error"));
     });
     ["appcms-left", "appcms-right", "appcms-compare-section", "appcms-diff-only"].forEach((id) => {
       $(id)?.addEventListener("change", () => loadCompare().catch((error) => notice(String(error.message || error), "is-error")));
     });
     document.addEventListener("vl:scope-change", load);
     document.addEventListener("vl:apps-change", () => {
-      if (targetClientId() !== state.clientId || !state.provider) load();
+      const app = window.VLScope?.app(state.clientId);
+      const recovered = live.failures > 0 && app?.online !== false;
+      if (targetClientId() !== state.clientId || !state.provider || recovered) load();
       if (PAGE === "compare") renderCompareChoices();
     });
+    /* Pause polling in a hidden tab and catch up the moment it returns or the network does. */
+    document.addEventListener("visibilitychange", () => {
+      if (document.hidden) window.clearTimeout(live.timer);
+      else load();
+    });
+    window.addEventListener("online", load);
   }
 
   bind();

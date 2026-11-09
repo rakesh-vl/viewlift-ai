@@ -126,13 +126,22 @@ sequenceDiagram
 
 ## Debug bridge loop
 
-`DebugBridgeService.start` does nothing when `debugModules` is empty. Otherwise it starts the performance collector and installs memory tracking, the macro recorder and the crash handler, then loops:
+`DebugBridgeService.start` does nothing when `debugModules` is empty. Otherwise it starts the performance collector and installs memory tracking, the macro recorder and the crash handler, then runs two loops.
+
+Telemetry loop:
 
 1. Register once (platform, OS, capabilities, app and device identity). This fails until the transport has paired, then retries.
-2. Send a `performance/sample` event if due.
-3. Poll `v1/debug/commands` and run each unexpired command.
-4. Post `command-result` events `{command_id, name, ok, result | error}`.
-5. Sleep 500 ms. On error, reset registration and sleep 2 seconds. While the transport is still starting or re-pairing (`notStarted`, `notPaired`) it retries after 250 ms instead.
+2. Send the optional telemetry (performance samples, activity, crashes, replays). A payload the receiver refuses with 400, 413, 422 or 429 is logged and dropped. It never tears down the registration.
+3. Sleep 500 ms (250 ms while a screen preview runs). On a connection error, reset registration and sleep 2 seconds. While the transport is still starting or re-pairing (`notStarted`, `notPaired`) it retries after 250 ms instead.
+
+Command loop, independent of the telemetry loop so a slow upload never delays a command:
+
+1. Wait until registration is ready.
+2. Poll `v1/debug/commands` and drop expired commands.
+3. Run each batch in its own task, in order, and post `command-result` events `{command_id, name, ok, result | error}`.
+4. On a connection error, ask the telemetry loop to register again.
+
+If the app registers again while a read command is in flight, the console sends that read once more. A mutating command is not repeated; the dashboard reports it as interrupted.
 
 ### Foreground, background and network changes
 
@@ -196,7 +205,7 @@ Notable limits:
 - Replay layout under `Caches/ViewliftCrash`: `replay/` is the live ring (`frame-00.jpg` to `frame-39.jpg`, `index.json`, `context.json`). On a crash the folder moves to `replays/<crash id>/` (at once for an exception, at the next launch for a signal) and gets `crash.json` (pid and time). A launch without a crash deletes `replay/`. At most 3 frozen replays are kept.
 - The crash event carries `context` and `replay: {status: "pending", frames, duration_ms}`. The video (about 600 kbit/s, typically under 1 MB) is sent after its crash event, in chunks of 225 000 bytes (300 000 base64 characters), with `index`, `total`, `pid`, and on chunk 0 the frame `timeline` and a `poster` JPEG. Progress is kept in `progress.json`, and the folder is deleted after the last chunk. An encoding error sends `crash/replay-failed`.
 - Replay frames are taken with `drawHierarchy(afterScreenUpdates: false)`, so video, Metal, and secure fields may show black, as in other snapshots. Frames stop while the app is not active.
-- Hang capture keeps 12 stalls. Each JPEG screenshot is at most 32 KB. `hang.list` drops older screenshots after 220 KB so the reply stays under the debug event cap. The stack is sampled by suspending the main thread on arm64 iOS and tvOS. The screenshot is taken when that thread resumes, because UIKit cannot draw during the stall. Each new stall is also pushed as module `hang`, kind `detected`, so the dashboard can show it without waiting for `hang.list`.
+- Hang capture keeps 12 stalls. A stall is a main-thread delay past 400 ms. Each JPEG screenshot is at most 32 KB. `hang.list` drops older screenshots after 220 KB so the reply stays under the debug event cap. The stack is sampled by suspending the main thread on arm64 iOS and tvOS. The screenshot is taken when that thread resumes, because UIKit cannot draw during the stall. Each new stall is also pushed as module `hang`, kind `detected`, so the dashboard can toast it without waiting for `hang.list`.
 - Runtime browser and memory graph see Objective-C metadata only.
 
 Which of these an agent may call, and how the results are masked, is in [MCP server and tools](mcp-server.md). To add a command, see [Contributing](contributing.md#add-a-debug-command).

@@ -35,6 +35,33 @@ COMMAND_TTL_SECONDS = 30.0
 CONFIRM_TTL_SECONDS = 30.0
 INVOKE_DEFAULT_TIMEOUT = defaults.COMMAND_TIMEOUT_SECONDS
 INVOKE_MAX_TIMEOUT = defaults.JOB_WAIT_SECONDS
+COMMAND_WATCH_SLICE_SECONDS = defaults.COMMAND_WATCH_SLICE_SECONDS
+COMMAND_READ_RETRIES = defaults.COMMAND_READ_RETRIES
+
+
+class DebugCommandTimeout(TimeoutError):
+    """No result in time. `phase` says where the command stopped: queued or delivered."""
+
+    def __init__(self, phase: str, waited: float) -> None:
+        if phase == "queued":
+            reason = (
+                "the app never picked the command up. It may be paused in Xcode, "
+                "frozen, or suspended by the system"
+            )
+        else:
+            reason = (
+                "the app took the command but sent no result. It may have restarted "
+                "or be busy"
+            )
+        super().__init__(f"debug command timed out after {waited:g} s: {reason}")
+        self.phase = phase
+        self.retryable = True
+
+
+class DebugCommandInterrupted(LookupError):
+    """The app reconnected while a command that must not run twice was in flight."""
+
+    retryable = True
 
 READ_COMMANDS = {
     "performance.snapshot",
@@ -284,6 +311,21 @@ class DebugCommand:
 
 
 @dataclass(slots=True)
+class _Waiter:
+    """One blocked `invoke`. Its result may arrive under any command id in `ids`."""
+
+    client_id: str
+    name: str
+    payload: dict[str, object]
+    done: threading.Event = field(default_factory=threading.Event)
+    event: dict[str, object] | None = None
+    error: Exception | None = None
+    ids: list[str] = field(default_factory=list)
+    delivered: set[str] = field(default_factory=set)
+    retries_left: int = 0
+
+
+@dataclass(slots=True)
 class DebugSessionService:
     store: EncryptedSqliteStore
     events: EventBus[dict[str, object]]
@@ -291,7 +333,7 @@ class DebugSessionService:
     _clients: dict[str, DebugClient] = field(default_factory=dict)
     _commands: dict[str, list[DebugCommand]] = field(default_factory=dict)
     _confirmations: dict[str, tuple[str, str, float]] = field(default_factory=dict)
-    _waiters: dict[str, tuple[threading.Event, dict[str, object]]] = field(default_factory=dict)
+    _waiters: dict[str, _Waiter] = field(default_factory=dict)
     _crash_cache: dict[tuple[str, str], dict[str, object]] = field(default_factory=dict)
     # Replay updates that arrived before their crash event.
     _replay_pending: dict[str, dict[str, object]] = field(default_factory=dict)
@@ -340,9 +382,47 @@ class DebugSessionService:
         self._persist(client)
         for old in superseded:
             self._persist(old)
+        if previous is not None:
+            self._recover_waiters(client_id)
         self._publish({"type": "debug-client", "client": client.as_dict()})
         self._publish_apps_changed()
         return {"ok": True, "client_id": client_id, "commands": sorted(ALLOWED_COMMANDS)}
+
+    def _recover_waiters(self, client_id: str) -> None:
+        """The app registered again, so a command it had taken may be lost with the old process.
+
+        A read is sent again under a new id. A command that changes state is never repeated:
+        its caller learns at once that the outcome is unknown, instead of waiting out the timeout.
+        """
+        with self._lock:
+            pending = {
+                id(waiter): waiter
+                for waiter in self._waiters.values()
+                if waiter.client_id == client_id and not waiter.done.is_set() and waiter.delivered
+            }
+        for waiter in pending.values():
+            if waiter.name in READ_COMMANDS and waiter.retries_left > 0:
+                waiter.retries_left -= 1
+                waiter.delivered.clear()
+                self._enqueue_for_waiter(waiter)
+            else:
+                waiter.error = DebugCommandInterrupted(
+                    "the app reconnected while the command ran; its result is unknown"
+                )
+                waiter.done.set()
+
+    def _enqueue_for_waiter(self, waiter: _Waiter, confirmation: str | None = None) -> None:
+        command_id = str(uuid.uuid4())
+        with self._lock:
+            self._waiters[command_id] = waiter
+            waiter.ids.append(command_id)
+        self.enqueue(
+            client_id=waiter.client_id,
+            name=waiter.name,
+            payload=waiter.payload,
+            confirmation=confirmation,
+            command_id=command_id,
+        )
 
     def heartbeat(self, client_id: str) -> dict[str, object]:
         client = self._require_client(client_id)
@@ -839,11 +919,16 @@ class DebugSessionService:
         wait = INVOKE_DEFAULT_TIMEOUT if timeout is None else float(timeout)
         if wait <= 0 or wait > INVOKE_MAX_TIMEOUT:
             raise ValueError(f"timeout must be between 0 and {INVOKE_MAX_TIMEOUT:g} seconds")
+        waiter = _Waiter(
+            client_id=client_id,
+            name=name,
+            payload=body,
+            retries_left=COMMAND_READ_RETRIES if name in READ_COMMANDS else 0,
+        )
         command_id = str(uuid.uuid4())
-        done = threading.Event()
-        box: dict[str, object] = {}
         with self._lock:
-            self._waiters[command_id] = (done, box)
+            self._waiters[command_id] = waiter
+            waiter.ids.append(command_id)
         try:
             command = self.enqueue(
                 client_id=client_id,
@@ -852,13 +937,46 @@ class DebugSessionService:
                 confirmation=confirmation,
                 command_id=command_id,
             )
-            if not done.wait(wait):
-                raise TimeoutError("debug command timed out")
-            event = box.get("event")
-            return {"ok": True, "command": command, "event": event}
+            self._await_result(waiter, wait)
+            return {"ok": True, "command": command, "event": waiter.event}
         finally:
+            self._forget_waiter(waiter)
+
+    def _await_result(self, waiter: _Waiter, wait: float) -> None:
+        """Block until a result, an interruption, the app leaving, or the deadline."""
+        deadline = time.monotonic() + wait
+        while not waiter.done.is_set():
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                phase = "delivered" if waiter.delivered else "queued"
+                raise DebugCommandTimeout(phase, wait)
+            if waiter.done.wait(min(COMMAND_WATCH_SLICE_SECONDS, remaining)):
+                break
+            # Registering again replaces the client object, so read it fresh each slice.
             with self._lock:
+                current = self._clients.get(waiter.client_id)
+            if current is None:
+                raise LookupError("debug client is no longer registered")
+            state = current.presence(self.time_fn())
+            if state == "background":
+                raise LookupError(
+                    "debug client went to the background; bring the app to the foreground"
+                )
+            if state != "online":
+                raise LookupError("debug client went offline")
+        if waiter.error is not None:
+            raise waiter.error
+
+    def _forget_waiter(self, waiter: _Waiter) -> None:
+        """Drop the waiter and any copy of its command the app has not picked up."""
+        with self._lock:
+            for command_id in waiter.ids:
                 self._waiters.pop(command_id, None)
+            queue = self._commands.get(waiter.client_id)
+            if queue:
+                self._commands[waiter.client_id] = [
+                    item for item in queue if item.id not in waiter.ids
+                ]
 
     def poll(self, client_id: str, *, limit: int = 10) -> list[dict[str, object]]:
         self.heartbeat(client_id)
@@ -869,6 +987,10 @@ class DebugSessionService:
             taken = live[: max(1, min(limit, 20))]
             taken_ids = {item.id for item in taken}
             self._commands[client_id] = [item for item in live if item.id not in taken_ids]
+            for item in taken:
+                waiter = self._waiters.get(item.id)
+                if waiter is not None:
+                    waiter.delivered.add(item.id)
         return [item.as_dict() for item in taken]
 
     def ingest_event(self, client_id: str, payload: dict[str, Any]) -> dict[str, object]:
@@ -1045,8 +1167,8 @@ class DebugSessionService:
             waiter = self._waiters.get(command_id)
         if waiter is None:
             return
-        waiter[1]["event"] = event
-        waiter[0].set()
+        waiter.event = event
+        waiter.done.set()
 
     def _publish_apps_changed(self) -> None:
         self._publish({"type": "apps-changed"})

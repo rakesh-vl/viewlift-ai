@@ -85,7 +85,7 @@ Copy from this skill’s references into
 - [references/ViewliftCaptureDebugService.swift](references/ViewliftCaptureDebugService.swift)
 - [references/AppCMSOTTDebugSnapshot.swift](references/AppCMSOTTDebugSnapshot.swift)
 
-Both files are wrapped in `#if DEBUG` so Release compiles them out.
+Both files are wrapped in `#if DEBUG` so Release compiles them out. `AppCMSOTTDebugSnapshot` also implements `OTTDebugCommandHandling` with provider name `AppCMS`, which the dashboard pages require.
 
 ### 3. AppDelegate start (before app networking)
 

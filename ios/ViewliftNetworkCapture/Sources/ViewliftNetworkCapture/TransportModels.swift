@@ -30,4 +30,13 @@ enum TransportError: Error {
             return false
         }
     }
+
+    /// The receiver refused this one payload (malformed, too large, rate limited).
+    /// The connection and registration are fine, so the caller drops the payload and carries on.
+    var isPayloadRejection: Bool {
+        guard case let .uploadFailed(status) = self else { return false }
+        return Self.rejectionStatuses.contains(status)
+    }
+
+    private static let rejectionStatuses: Set<Int> = [400, 413, 422, 429]
 }
