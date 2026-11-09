@@ -22,7 +22,7 @@ Everything binds to loopback by default, sensitive data is encrypted at rest, an
 | Use map local, rewrite, throttle or breakpoints | [Rules and breakpoints](rules-and-breakpoints.md) |
 | Debug several apps on one device | [Multi-app and scope](multi-app-and-scope.md) |
 | Connect Cursor or another agent | [MCP server and tools](mcp-server.md), then [AGENTS.md](../AGENTS.md) |
-| Wire an iOS/tvOS app and its MCP config | [AGENTS.md](../AGENTS.md) |
+| Wire an iOS/tvOS app and its MCP config | [AGENTS.md](../AGENTS.md), prompt in [Connect any app](connect-app-prompt.md) |
 | Work on the dashboard pages | [Web UI](web-ui.md) |
 | Add the SDK to an iOS/tvOS app | [iOS SDK guide](ios-sdk.md) |
 | Change the Swift package itself | [iOS SDK internals](ios-sdk-internals.md) |

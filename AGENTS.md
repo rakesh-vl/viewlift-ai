@@ -62,21 +62,4 @@ Tool reference: [docs/mcp-server.md](docs/mcp-server.md). SDK reference: [docs/i
 
 ## Prompt for an iOS or tvOS app repo
 
-Paste this into the app repository's agent chat, or save it as that repo's `AGENTS.md`.
-
-```text
-Connect this app to Viewlift AI so debug builds report to the local console and you can debug them through MCP.
-
-Do this for every iOS and tvOS app target:
-
-1. Add the Swift package https://github.com/rakesh-vl/viewlift-ai.git (branch main, product ViewliftNetworkCapture).
-2. Add NSLocalNetworkUsageDescription and NSBonjourServices with _viewliftdebug._tcp to each target Info.plist.
-3. Call ViewliftNetworkCapture.CaptureService.shared.start() inside #if DEBUG before the app creates a URLSession. UIKit: first lines of application(_:didFinishLaunchingWithOptions:). SwiftUI: App.init. Do not call start() from Release.
-4. If the app sends bearer tokens, add those header and JSON key names to CaptureConfiguration.extraRedactionKeys. Do not put token values in source.
-5. Write .cursor/mcp.json with one server, viewlift-ai, url http://127.0.0.1:8742/mcp. Tell me to enable it in Cursor Settings → MCP.
-6. Build each target in Debug.
-
-The Viewlift AI console must already be running (scripts/viewlift-ai.sh start in the Viewlift AI repo) with the SDK receiver enabled on Setup. If this is the AppCMS / ViewliftOne app, use its existing ViewliftCaptureDebugService instead of calling start() directly.
-
-After the app is online, debug through MCP. Call list_apps and pass that client_id. Use triage_app, failed_requests, summarize_logs, get_flow, and app_inspect. Ask before any tool that changes state (confirm: true). Never ask me to paste an auth token, cookie, or API key. Those values are masked on purpose.
-```
+The copy-paste prompt is [docs/connect-app-prompt.md](docs/connect-app-prompt.md). Paste it into the app repository's agent chat, or save it as that repo's `AGENTS.md`. It tells the agent to add `ViewliftNetworkCapture` with Swift Package Manager (`https://github.com/rakesh-vl/viewlift-ai.git`, branch `main`) on every iOS and tvOS app target.
