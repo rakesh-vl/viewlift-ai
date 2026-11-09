@@ -649,6 +649,7 @@ class DebugSessionService:
                     "os_version": client.os_version,
                     "is_simulator": client.is_simulator,
                     "online": False,
+                    "last_seen": client.last_seen,
                     "apps": [],
                 },
             )
@@ -661,7 +662,8 @@ class DebugSessionService:
             if online:
                 device["online"] = True
         rows = list(devices.values())
-        rows.sort(key=lambda item: (not item["online"], str(item["device_name"]).lower()))
+        # Online devices first, then the one heard from most recently.
+        rows.sort(key=lambda item: (not item["online"], -float(item["last_seen"])))
         return {"devices": rows, "online_apps": self.online_count()}
 
     def list_devices(self) -> list[dict[str, object]]:
@@ -678,6 +680,36 @@ class DebugSessionService:
             self._commands.pop(client_id, None)
         self.store.delete_clients([client_id])
         self._publish_apps_changed()
+
+    def purge_client(self, client_id: str) -> int:
+        """Delete one app's data, crash state, and replay media. Forget it when offline."""
+        deleted = self.store.delete_client_data(client_id)
+        with self._lock:
+            for key in [item for item in self._crash_cache if item[0] == client_id]:
+                self._crash_cache.pop(key, None)
+            for key in [item for item in self._replay_pending if client_id in item]:
+                self._replay_pending.pop(key, None)
+            client = self._clients.get(client_id)
+            online = client is not None and client.presence(self.time_fn()) == "online"
+            if client is not None:
+                client.crashed_at = 0.0
+        if self.media is not None:
+            self.media.prune(self.store.debug_event_ids(module="crash"))
+        if online:
+            self._publish_apps_changed()
+        else:
+            self.forget_client(client_id)
+        return deleted
+
+    def clear_crash_state(self) -> None:
+        """After every stored event is gone: drop cached crashes, pending replays, and media."""
+        with self._lock:
+            self._crash_cache.clear()
+            self._replay_pending.clear()
+            for client in self._clients.values():
+                client.crashed_at = 0.0
+        if self.media is not None:
+            self.media.prune(set())
 
     def reset_session(self) -> None:
         """Last dashboard tab closed: clear queues and forget apps that are not connected."""

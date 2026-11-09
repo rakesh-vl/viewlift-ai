@@ -55,12 +55,10 @@ def list_apps(request: Request) -> dict[str, object]:
 def clear_app_data(request: Request, client_id: str) -> dict[str, object]:
     _loopback(request)
     sessions = _sessions(request)
-    deleted = request.app.state.store.delete_client_data(client_id)
     ingest = getattr(request.app.state, "ingest", None)
     if ingest is not None:
         ingest.forget_client_activity(client_id)
-    if not sessions.is_online(client_id):
-        sessions.forget_client(client_id)
+    deleted = sessions.purge_client(client_id)
     return {"ok": True, "deleted": deleted, "client_id": client_id}
 
 
@@ -77,5 +75,7 @@ def clear_all_app_data(request: Request) -> dict[str, object]:
     registry = getattr(request.app.state, "proxy_clients", None)
     if registry is not None:
         registry.clear()
-    _sessions(request).reset_session()
+    sessions = _sessions(request)
+    sessions.clear_crash_state()
+    sessions.reset_session()
     return {"ok": True, "deleted": deleted}

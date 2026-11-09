@@ -179,6 +179,28 @@ def test_registry_groups_apps_by_device_and_never_flips(tmp_path: Path) -> None:
     assert service.resolve_client_id(None) == "app-a"
 
 
+def test_latest_device_first_and_purge_forgets_offline_app(tmp_path: Path) -> None:
+    clock = _Clock()
+    store = _store(tmp_path)
+    service = DebugSessionService(store=store, events=EventBus(), time_fn=clock)
+    service.register(_registration("old-phone", "com.example.alpha", device_key="PHONE"))
+    clock.now += CLIENT_TTL_SECONDS + 1
+    service.register(_registration("ipad", "com.example.alpha", device_key="IPAD"))
+    store.save_flow(_flow("old-phone"))
+    store.save_log(_log("old-phone"))
+
+    keys = [row["device_key"] for row in service.apps_tree()["devices"]]
+    assert keys == ["IPAD", "PHONE"]
+
+    assert service.purge_client("old-phone") == 2
+    with pytest.raises(LookupError):
+        service.get_client("old-phone")
+    assert [row["client_id"] for row in store.list_clients()] == ["ipad"]
+
+    assert service.purge_client("ipad") == 0
+    assert service.get_client("ipad")["online"] is True
+
+
 def test_reinstall_supersedes_old_instance_and_registry_survives_restart(tmp_path: Path) -> None:
     clock = _Clock()
     store = _store(tmp_path)

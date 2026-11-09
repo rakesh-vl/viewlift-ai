@@ -114,6 +114,8 @@
     proxyApps: [],
     byId: new Map(),
     loaded: false,
+    gone: new Map(),
+    asking: false,
 
     get() {
       if (this.value.startsWith("c:")) return { kind: "app", clientId: this.value.slice(2) };
@@ -152,6 +154,12 @@
       if (app.superseded_by) return "reinstalled";
       if (app.crashed) return "crashed";
       return app.state || (app.online ? "online" : "offline");
+    },
+
+    /* The picker lists apps that are running now. A crashed app stays so its report is one click away. */
+    listed(app) {
+      const state = this.stateOf(app);
+      return state === "online" || state === "background" || state === "crashed";
     },
 
     matches(clientId) {
@@ -207,6 +215,7 @@
         const res = await fetch("/api/apps");
         if (!res.ok) return;
         const data = await res.json();
+        const before = this.loaded ? this.byId : null;
         this.devices = data.devices || [];
         this.proxyApps = data.proxy_clients || [];
         this.byId = new Map();
@@ -218,16 +227,80 @@
         this.loaded = true;
         this.render();
         document.dispatchEvent(new CustomEvent("vl:apps-change", { detail: this }));
+        if (before) this.noteDisconnects(before);
       } catch {
         /* dashboard server restarting: keep the last known list */
       }
+    },
+
+    /* An app that was running and went silent. A crash or a paused debugger keeps its data for diagnosis. */
+    noteDisconnects(before) {
+      for (const [id, app] of this.byId) {
+        const was = before.get(id);
+        if (!was) continue;
+        const prev = this.stateOf(was);
+        if ((prev === "online" || prev === "background") && this.stateOf(app) === "offline" && !app.debugger_attached) {
+          this.gone.set(id, app);
+        }
+      }
+      this.offerCleanup();
+    },
+
+    /* One tab asks. The claim in localStorage stops every open tab from asking the same question. */
+    claimPrompt(ids) {
+      const key = `vl-disconnect:${ids.slice().sort().join(",")}`;
+      try {
+        const last = Number(localStorage.getItem(key) || "0");
+        if (Date.now() - last < 60000) return false;
+        localStorage.setItem(key, String(Date.now()));
+      } catch {
+        /* storage disabled: this tab asks on its own */
+      }
+      return true;
+    },
+
+    async offerCleanup() {
+      if (!this.gone.size || this.asking || document.visibilityState !== "visible") return;
+      const apps = Array.from(this.gone.values()).filter((app) => {
+        const now = this.byId.get(app.id);
+        return now && this.stateOf(now) === "offline";
+      });
+      this.gone.clear();
+      if (!apps.length || !this.claimPrompt(apps.map((app) => app.id))) return;
+      this.asking = true;
+      const names = apps.map((app) => `• ${app.app_name} on ${app.device_name || "unknown device"}`).join("\n");
+      const ok = window.confirm(
+        `${apps.length === 1 ? "This app" : "These apps"} disconnected:\n${names}\n\n`
+          + "Delete their captured requests, logs, debug events, crash replays, and alerts from this Mac? "
+          + "This cannot be undone."
+      );
+      try {
+        if (ok) await this.purge(apps.map((app) => app.id));
+      } finally {
+        this.asking = false;
+      }
+    },
+
+    async purge(ids) {
+      for (const id of ids) {
+        await fetch(`/api/apps/${encodeURIComponent(id)}/data`, { method: "DELETE" });
+      }
+      Alerts.forgetClients(ids);
+      await this.refresh();
+      const scope = this.get();
+      const stale =
+        (scope.kind === "app" && !this.byId.has(scope.clientId))
+        || (scope.kind === "device" && !Array.from(this.byId.values()).some((app) => app.device_key === scope.deviceKey));
+      if (stale) this.set("", { silent: true });
+      document.dispatchEvent(new CustomEvent("vl:scope-change", { detail: this.get() }));
     },
 
     render() {
       const select = document.getElementById("scope-select");
       if (!select) return;
       const groups = this.devices.map((device) => {
-        const apps = device.apps || [];
+        const apps = (device.apps || []).filter((app) => this.listed(app));
+        if (!apps.length) return "";
         const where = [device.platform, device.os_version, device.is_simulator ? "Simulator" : "Device"]
           .filter(Boolean)
           .join(" ");
@@ -279,7 +352,8 @@
         return;
       }
       const sharedDevice = this.devices.some((device) => (device.apps || []).filter((a) => a.online).length > 1);
-      const parts = [`${online} of ${this.byId.size} app${this.byId.size === 1 ? "" : "s"} online`];
+      const listed = Array.from(this.byId.values()).filter((a) => this.listed(a)).length;
+      const parts = [listed ? `${online} of ${listed} app${listed === 1 ? "" : "s"} online` : "No app connected"];
       const backgrounded = Array.from(this.byId.values()).filter((a) => this.stateOf(a) === "background").length;
       if (backgrounded) parts.push(`${backgrounded} in background`);
       if (proxyNote) parts.push(proxyNote);
@@ -294,26 +368,27 @@
       const scope = this.get();
       if (scope.kind === "all") {
         const ok = window.confirm(
-          "Clear captured flows, logs, and debug events for every app? This cannot be undone."
+          "Clear captured flows, logs, debug events, crash replays, and alerts for every app? This cannot be undone."
         );
         if (!ok) return;
         await fetch("/api/apps/data", { method: "DELETE" });
-      } else {
-        const targets =
-          scope.kind === "app"
-            ? [scope.clientId]
-            : Array.from(this.byId.values())
-                .filter((app) => app.device_key === scope.deviceKey)
-                .map((app) => app.id);
-        const names = targets.map((id) => (this.app(id) || { app_name: id }).app_name).join(", ");
-        const ok = window.confirm(`Clear captured flows, logs, and debug events for ${names}?`);
-        if (!ok) return;
-        for (const id of targets) {
-          await fetch(`/api/apps/${encodeURIComponent(id)}/data`, { method: "DELETE" });
-        }
+        Alerts.clear();
+        await this.refresh();
+        document.dispatchEvent(new CustomEvent("vl:scope-change", { detail: this.get() }));
+        return;
       }
-      await this.refresh();
-      document.dispatchEvent(new CustomEvent("vl:scope-change", { detail: this.get() }));
+      const targets =
+        scope.kind === "app"
+          ? [scope.clientId]
+          : Array.from(this.byId.values())
+              .filter((app) => app.device_key === scope.deviceKey)
+              .map((app) => app.id);
+      const names = targets.map((id) => (this.app(id) || { app_name: id }).app_name).join(", ");
+      const ok = window.confirm(
+        `Clear captured flows, logs, debug events, crash replays, and alerts for ${names}? This cannot be undone.`
+      );
+      if (!ok) return;
+      await this.purge(targets);
     },
 
     /* A crash is shown on every page, so it is not missed while looking at network or logs. */
@@ -333,6 +408,7 @@
       Alerts.push({
         key: ready ? `crash-ready:${id}` : `crash:${id}`,
         type: "crash",
+        client: msg.client_id,
         tone: "err",
         kicker: ready ? "Replay ready" : "Crash",
         title: appLabel(msg.client_id),
@@ -357,6 +433,7 @@
         Alerts.push({
           key: `hang:${event.id || payload.id || ""}`,
           type: "hang",
+          client: event.client_id,
           tone: "warn",
           kicker: "Hang",
           title: `${name} · ${ms} ms`,
@@ -370,6 +447,7 @@
         Alerts.push({
           key: `leak:${event.id || payload.object_id || payload.id || ""}`,
           type: "leak",
+          client: event.client_id,
           tone: "warn",
           kicker: "Memory leak",
           title: name,
@@ -389,6 +467,7 @@
         Alerts.push({
           key: `play:${event.id || payload.playback_id || play}:${payload.error_code || ""}`,
           type: "playback",
+          client: event.client_id,
           tone: "err",
           kicker: "Playback failed",
           title: name,
@@ -410,6 +489,7 @@
       Alerts.push({
         key: `flow:${flow.id}`,
         type: "request",
+        client: flow.client_id,
         tone: "err",
         kicker: "Request failed",
         title: `${appLabel(flow.client_id)} · ${statusText}`,
@@ -428,6 +508,7 @@
       Alerts.push({
         key: `log:${log.id}`,
         type: "console",
+        client: log.client_id,
         tone: "err",
         kicker: log.level === "fault" ? "Fault" : "Console error",
         title: appLabel(log.client_id),
@@ -595,7 +676,7 @@
       const last = this.history[0];
       // A busy app can fail a request or print an error many times a second. One row per burst; the count says how many.
       const burst = (item.type === "request" || item.type === "console")
-        && last && last.type === item.type && now - last.at < BURST_MS;
+        && last && last.type === item.type && last.client === (item.client || "") && now - last.at < BURST_MS;
       if (burst) {
         last.count = (last.count || 1) + 1;
         last.title = item.title;
@@ -605,6 +686,7 @@
       } else {
         this.history.unshift({
           type: item.type,
+          client: item.client || "",
           title: item.title,
           body: item.body,
           href: item.href,
@@ -645,6 +727,7 @@
 
     fill(card, item, count) {
       card.dataset.count = String(count);
+      card.dataset.client = item.client || "";
       const link = card.querySelector(".alert-link");
       link.href = item.href;
       const kicker = count > 1 ? `${item.kicker} · ${count}` : item.kicker;
@@ -743,6 +826,19 @@
       if (this.stack) [...this.stack.children].forEach((card) => dismissAlert(card));
     },
 
+    /* Data for these apps was deleted, so their alerts would link to nothing. */
+    forgetClients(ids) {
+      const drop = new Set(ids);
+      this.history = this.history.filter((item) => !drop.has(item.client));
+      this.unread = Math.min(this.unread, this.history.length);
+      this.saveHistory();
+      this.paintBadge();
+      this.paintList();
+      if (this.stack) {
+        [...this.stack.children].filter((card) => drop.has(card.dataset.client)).forEach((card) => dismissAlert(card));
+      }
+    },
+
     bind() {
       const button = document.getElementById("notify-toggle");
       const panel = document.getElementById("notify-panel");
@@ -831,6 +927,7 @@
       Scope.refresh();
       setInterval(() => Scope.refresh(), 15000);
     }
+    document.addEventListener("visibilitychange", () => Scope.offerCleanup());
     // Apps socket is open on every page. It owns the sidebar indicator so
     // Rules, Debug, Agent, and Setup show the same state as Network and Logs.
     Scope.watch(setConnection);
