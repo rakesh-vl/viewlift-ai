@@ -18,8 +18,14 @@ let package = Package(
         )
     ],
     targets: [
+        // Swift cannot catch NSException. The object explorer and crash bridge call this guard.
+        .target(
+            name: "ViewliftCaptureObjC",
+            path: "ios/ViewliftNetworkCapture/Sources/ViewliftCaptureObjC"
+        ),
         .target(
             name: "ViewliftNetworkCapture",
+            dependencies: ["ViewliftCaptureObjC"],
             path: "ios/ViewliftNetworkCapture/Sources/ViewliftNetworkCapture",
             // Xcode custom configurations (for example "Dev") do not give package targets DEBUG.
             // Hosts still start capture only under #if DEBUG.
