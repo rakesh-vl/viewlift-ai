@@ -14,6 +14,7 @@ from fastapi.staticfiles import StaticFiles
 
 from viewlift_ai import __version__
 from viewlift_ai.api.agent_routes import router as agent_router
+from viewlift_ai.api.appcms_routes import router as appcms_router
 from viewlift_ai.api.apps_routes import router as apps_router
 from viewlift_ai.api.debug_routes import router as debug_router
 from viewlift_ai.api.host_routes import router as host_router
@@ -397,6 +398,7 @@ app.include_router(setup_router)
 app.include_router(logs_router)
 app.include_router(session_router)
 app.include_router(debug_router)
+app.include_router(appcms_router)
 app.include_router(tools_router)
 app.include_router(host_router)
 app.include_router(simulator_router)

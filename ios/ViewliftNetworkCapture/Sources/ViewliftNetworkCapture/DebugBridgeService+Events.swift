@@ -136,6 +136,19 @@ extension DebugBridgeService {
         }
     }
 
+    /// Host-reported OTT state changes (login, plan, language), debounced into one event.
+    func sendOTTChangeEvents(config: CaptureConfiguration, transport: DebugTransporting) async throws {
+        guard config.debugModules.contains(.ott), let sections = OTTDebugRegistry.drainChanged() else { return }
+        try await transport.send(
+            event: DebugEvent(
+                module: "ott",
+                kind: "changed",
+                payload: ["sections": .array(sections.map(JSONValue.string))]
+            ),
+            clientId: clientId
+        )
+    }
+
     /// Screen and playback samples while the Live tab is tracking.
     func sendActivityEvents(config: CaptureConfiguration, transport: DebugTransporting) async throws {
         guard config.debugModules.contains(.activity) else { return }

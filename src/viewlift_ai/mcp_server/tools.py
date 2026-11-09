@@ -1,6 +1,7 @@
 """Agent tools. Every app call names a client_id. None of these import FastAPI.
 
-Every console response passes through guard.scrub in `_call`, so credentials never reach an agent.
+Every console response passes through guard.scrub_agent in `_call`.
+Credentials and account PII never reach an agent. The web dashboard is unchanged.
 """
 
 from __future__ import annotations
@@ -93,7 +94,7 @@ def _call(api: ConsoleClient, method: str, path: str, **kwargs: Any) -> dict[str
             result = api.post(path, kwargs.get("body"))
     except ConsoleError as exc:
         result = {"ok": False, "status": exc.status, "detail": exc.detail}
-    cleaned = guard.scrub(result)
+    cleaned = guard.scrub_agent(result)
     return cleaned if isinstance(cleaned, dict) else {"result": cleaned}
 
 
@@ -379,7 +380,8 @@ def app_inspect(
     ui.describe, ui.layers, ui.screenshot, swiftui.renders, assets.audit, accessibility.audit,
     storage.defaults, storage.keychain_metadata, storage.files, storage.file_read,
     storage.sqlite_schema, storage.sqlite_query, feature_flags.list, runtime.search,
-    runtime.describe, macro.list, bug.capture, ott.snapshot, hang.list, crash.list,
+    runtime.describe, macro.list, bug.capture, ott.snapshot, ott.sections, ott.section,
+    ott.diagnostics, hang.list, crash.list,
     activity.snapshot, activity.live_start, activity.live_stop, playback.snapshot, playback.drm,
     playback.waterfall, ui.focus, runtime.libraries, runtime.image_classes, explorer.roots,
     explorer.object, explorer.instances, storage.cookies, settings.get.
@@ -401,6 +403,53 @@ def app_inspect(
     )
 
 
+def host_section(
+    api: ConsoleClient,
+    *,
+    client_id: str,
+    name: str = "",
+    args: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """One debug-host section, or the provider manifest (pages and actions) when name is empty."""
+    if not name:
+        return app_inspect(api, client_id=client_id, command="ott.sections")
+    payload: dict[str, Any] = {"name": name}
+    if args:
+        payload["args"] = args
+    return app_inspect(api, client_id=client_id, command="ott.section", payload=payload)
+
+
+def host_diagnostics(api: ConsoleClient, *, client_id: str) -> dict[str, Any]:
+    """Rule-based findings the debug host computes from its live state."""
+    return app_inspect(api, client_id=client_id, command="ott.diagnostics")
+
+
+def host_action(
+    api: ConsoleClient,
+    *,
+    client_id: str,
+    name: str,
+    payload: dict[str, Any] | None = None,
+    confirm: bool = False,
+) -> dict[str, Any]:
+    """Run one whitelisted debug-host action. confirm must be true."""
+    if not name:
+        return {"ok": False, "detail": "name is required"}
+    return app_mutate(
+        api,
+        client_id=client_id,
+        command="ott.action",
+        payload={"name": name, "payload": payload or {}},
+        confirm=confirm,
+    )
+
+
+# AppCMS names kept for agents and docs that already use them.
+appcms_section = host_section
+appcms_diagnostics = host_diagnostics
+appcms_action = host_action
+
+
 def app_mutate(
     api: ConsoleClient,
     *,
@@ -415,7 +464,7 @@ def app_mutate(
     storage.snapshot_create, storage.snapshot_restore, feature_flags.set, feature_flags.reset,
     macro.record_start, macro.record_stop, macro.replay, push.local, nav.open_url, explorer.set,
     explorer.call, storage.defaults_delete, storage.file_rename, storage.file_delete,
-    storage.cookie_delete, settings.set.
+    storage.cookie_delete, settings.set, ott.action.
     """
     if refusal := guard.read_only_refusal():
         return refusal

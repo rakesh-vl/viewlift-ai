@@ -15,12 +15,65 @@ func hostCommand(_ command: DebugCommand) async throws -> [String: JSONValue] {
 
 private func ottOrActivity(_ command: DebugCommand) async throws -> [String: JSONValue] {
     guard command.name.hasPrefix("activity.") else {
-        if command.name == "ott.snapshot" {
-            return OTTDebugRegistry.snapshot()
-        }
-        return ["error": .string("Unsupported ott command")]
+        return try await ottCommand(command)
     }
     return try await executeActivity(command)
+}
+
+func ottCommand(_ command: DebugCommand) async throws -> [String: JSONValue] {
+    switch command.name {
+    case "ott.snapshot":
+        return await OTTDebugRegistry.snapshot()
+    case "ott.sections":
+        return OTTDebugRegistry.sections()
+    case "ott.section":
+        guard case let .string(name) = command.payload["name"], !name.isEmpty else {
+            throw DebugBridgeError.invalidPayload
+        }
+        var arguments: [String: JSONValue] = [:]
+        if case let .object(value) = command.payload["args"] {
+            arguments = value
+        }
+        return try await ottResult { try await OTTDebugRegistry.section(name, arguments: arguments) }
+    case "ott.diagnostics":
+        return try await ottResult { try await OTTDebugRegistry.diagnostics() }
+    case "ott.action":
+        guard case let .string(name) = command.payload["name"], !name.isEmpty else {
+            throw DebugBridgeError.invalidPayload
+        }
+        var arguments: [String: JSONValue] = [:]
+        if case let .object(value) = command.payload["payload"] {
+            arguments = value
+        }
+        do {
+            return try await OTTDebugRegistry.perform(name, payload: arguments)
+        } catch let error as OTTDebugError {
+            return ottErrorPayload(error)
+        }
+    default:
+        throw DebugBridgeError.unsupportedCommand
+    }
+}
+
+private func ottResult(_ body: () async throws -> [String: JSONValue]) async throws -> [String: JSONValue] {
+    do {
+        return try await body()
+    } catch let error as OTTDebugError {
+        return ottErrorPayload(error)
+    }
+}
+
+private func ottErrorPayload(_ error: OTTDebugError) -> [String: JSONValue] {
+    switch error {
+    case .noHandler:
+        return ["error": .string("no_handler"), "detail": .string("Host app registered no OTTDebugCommandHandling")]
+    case let .unknownSection(name):
+        return ["error": .string("unknown_section"), "detail": .string(name)]
+    case let .unknownAction(name):
+        return ["error": .string("unknown_action"), "detail": .string(name)]
+    case let .actionFailed(reason):
+        return ["error": .string("action_failed"), "detail": .string(reason)]
+    }
 }
 
 private func executeActivity(_ command: DebugCommand) async throws -> [String: JSONValue] {

@@ -121,6 +121,7 @@ public final class DebugBridgeService: @unchecked Sendable {
                 try await sendActivityEvents(config: config, transport: transport)
                 try await sendPlaybackEvents(config: config, transport: transport)
                 try await sendFocusEvents(config: config, transport: transport)
+                try await sendOTTChangeEvents(config: config, transport: transport)
                 let commands = try await transport.pollCommands(clientId: clientId)
                 for command in commands where command.expiresAt > Date().timeIntervalSince1970 {
                     await execute(command, transport: transport, config: config)

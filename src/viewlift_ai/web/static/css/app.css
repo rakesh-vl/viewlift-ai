@@ -285,6 +285,33 @@ svg { flex: none; }
 }
 .nav-link.active svg { stroke: var(--accent); }
 .nav-link.secondary { margin-top: var(--s-2); }
+.nav-sub { display: flex; flex-direction: column; gap: 1px; margin: 2px 0 var(--s-2) 28px; border-left: 1px solid var(--line-soft); }
+.nav-sub-link {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--s-2);
+  height: 26px;
+  padding: 0 8px;
+  border-radius: 0 var(--r-control) var(--r-control) 0;
+  color: var(--muted);
+  font-size: var(--fs-12);
+  white-space: nowrap;
+}
+.nav-sub-link:hover { background: var(--row-hover); color: var(--text); text-decoration: none; }
+.nav-sub-link.active { color: var(--text-strong); background: var(--surface); box-shadow: inset 2px 0 0 var(--accent); }
+#host-nav-pages { display: flex; flex-direction: column; gap: 1px; }
+.nav-sub-group { padding: 6px 8px 2px; font-size: var(--fs-11, 11px); text-transform: uppercase; letter-spacing: 0.04em; }
+.nav-badge {
+  min-width: 18px;
+  padding: 0 5px;
+  border-radius: 9px;
+  background: var(--err-soft);
+  color: var(--err);
+  font: 600 var(--fs-12) var(--font-mono);
+  text-align: center;
+}
+:root[data-rail="collapsed"] .nav-sub { display: none; }
 
 .rail-foot {
   margin-top: auto;
@@ -1245,6 +1272,7 @@ input[type="checkbox"] { accent-color: var(--accent); width: 14px; height: 14px;
   .brand { padding: 0 var(--s-1); }
   .brand-logo { width: 112px; }
   .nav { flex-direction: row; }
+  .nav-sub { display: none; }
   .nav-link { padding: 0 10px; height: 36px; }
   .nav-link span { display: none; }
   .nav-link.active::before { left: 8px; right: 8px; top: auto; bottom: -5px; width: auto; height: 2px; }

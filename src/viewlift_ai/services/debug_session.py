@@ -64,6 +64,9 @@ READ_COMMANDS = {
     "macro.list",
     "bug.capture",
     "ott.snapshot",
+    "ott.sections",
+    "ott.section",
+    "ott.diagnostics",
     "hang.list",
     "crash.list",
     "activity.snapshot",
@@ -122,6 +125,7 @@ MUTATING_COMMANDS = {
     "app.launch",
     "app.terminate",
     "net.profile",
+    "ott.action",
 }
 
 ALLOWED_COMMANDS = READ_COMMANDS | MUTATING_COMMANDS
@@ -809,8 +813,12 @@ class DebugSessionService:
         payload: dict[str, Any] | None = None,
         mutate: bool = False,
         timeout: float | None = None,
+        confirmation: str | None = None,
     ) -> dict[str, object]:
-        """Enqueue one command and block until that command's result event arrives."""
+        """Enqueue one command and block until that command's result event arrives.
+
+        A browser passes the one-use token it minted after the user approved; agents pass mutate.
+        """
         if not str(client_id or "").strip():
             raise LookupError("client_id is required")
         client = self._require_client(client_id)
@@ -821,11 +829,11 @@ class DebugSessionService:
             raise LookupError("debug client is offline")
         body = payload or {}
         _bounded_payload(body, MAX_COMMAND_BYTES)
-        confirmation: str | None = None
         if name in MUTATING_COMMANDS:
-            if not mutate:
-                raise PermissionError("mutate must be true for mutating commands")
-            confirmation = str(self.mint_confirmation(client_id, name)["token"])
+            if not confirmation:
+                if not mutate:
+                    raise PermissionError("mutate must be true for mutating commands")
+                confirmation = str(self.mint_confirmation(client_id, name)["token"])
         elif name not in READ_COMMANDS:
             raise ValueError("command is not allowlisted")
         wait = INVOKE_DEFAULT_TIMEOUT if timeout is None else float(timeout)

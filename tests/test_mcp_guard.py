@@ -150,6 +150,59 @@ def test_scrub_keeps_ordinary_text_and_images() -> None:
     assert "truncated 10 chars" in guard.scrub_text(long)
 
 
+def test_scrub_agent_masks_account_pii_and_keeps_flags() -> None:
+    cleaned = guard.scrub_agent(
+        {
+            "user": {
+                "name": "Ada Lovelace",
+                "email": "ada@viewlift.com",
+                "user_id": "user-123",
+                "logged_in": True,
+            },
+            "device_id": "A1B2C3D4-E5F6",
+            "site_id": "site-1",
+            "note": "contact ada@viewlift.com from 10.1.2.3",
+            "refreshToken": "abcdef123",
+            "name": "ott.section",
+        }
+    )
+    text = json.dumps(cleaned)
+    secrets = (
+        "Ada Lovelace",
+        "ada@viewlift.com",
+        "user-123",
+        "A1B2C3D4-E5F6",
+        "10.1.2.3",
+        "abcdef123",
+    )
+    for secret in secrets:
+        assert secret not in text
+    assert cleaned["user"]["logged_in"] is True
+    assert cleaned["site_id"] == "site-1"
+    assert cleaned["name"] == "ott.section"
+    assert guard.scrub({"email": "ada@viewlift.com"})["email"] == "ada@viewlift.com"
+
+
+def test_scrub_agent_masks_framework_drm_and_partner_values() -> None:
+    cleaned = guard.scrub_agent(
+        {
+            "stream": {
+                "licenseUrl": "https://drm.example.com/fp?k=1",
+                "completeSkd": "skd://abc",
+                "drm_enabled": True,
+            },
+            "softwareStatement": "eyJ.partner.sig",
+            "CloudFront-Key-Pair-Id": "K2ABC",
+            "state": "playing",
+        }
+    )
+    text = json.dumps(cleaned)
+    for secret in ("drm.example.com", "skd://abc", "eyJ.partner.sig", "K2ABC"):
+        assert secret not in text
+    assert cleaned["stream"]["drm_enabled"] is True
+    assert cleaned["state"] == "playing"
+
+
 def test_get_flow_masks_credentials() -> None:
     console = FakeConsole([_flow("f1")])
     text = json.dumps(get_flow(console, flow_id="f1", client_id="app-a"))  # type: ignore[arg-type]

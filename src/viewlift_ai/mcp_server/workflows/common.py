@@ -43,7 +43,7 @@ def host(
         result = api().post("/api/host/call", body)
     except ConsoleError as exc:
         result = {"ok": False, "status": exc.status, "detail": exc.detail}
-    cleaned = guard.scrub(result)
+    cleaned = guard.scrub_agent(result)
     return cleaned if isinstance(cleaned, dict) else {"result": cleaned}
 
 

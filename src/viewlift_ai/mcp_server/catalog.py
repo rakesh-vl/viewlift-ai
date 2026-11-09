@@ -196,6 +196,26 @@ TOOL_GROUPS: tuple[ToolGroup, ...] = (
                 "client_id, command, payload?",
                 "Runs one read command. Screenshots come back as an image.",
             ),
+            ToolDoc(
+                "appcms_section",
+                "client_id, name?, args?",
+                "AppCMS state by section: config, env, pages, session, plan, entitlements, TVE.",
+            ),
+            ToolDoc(
+                "appcms_diagnostics",
+                "client_id",
+                "Rule-based AppCMS bug findings: stale isSubscribed, login drift, ID mismatch.",
+            ),
+            ToolDoc(
+                "host_section",
+                "client_id, name?, args?",
+                "Any debug host (Player, Auth, Analytics) by section; empty name lists pages.",
+            ),
+            ToolDoc(
+                "host_diagnostics",
+                "client_id",
+                "Rule-based findings from the app's debug host.",
+            ),
         ),
     ),
     ToolGroup(
@@ -210,6 +230,18 @@ TOOL_GROUPS: tuple[ToolGroup, ...] = (
                 "app_mutate",
                 "client_id, command, payload?, confirm",
                 "Runs one write command inside that app.",
+                True,
+            ),
+            ToolDoc(
+                "appcms_action",
+                "client_id, name, payload?, confirm",
+                "One whitelisted AppCMS debug action: token refresh or expiry, refetch, flags.",
+                True,
+            ),
+            ToolDoc(
+                "host_action",
+                "client_id, name, payload?, confirm",
+                "One whitelisted debug-host action, for example seek, logout, send_test_event.",
                 True,
             ),
             ToolDoc(
@@ -736,6 +768,16 @@ COMMAND_NOTES: dict[str, str] = {
     "macro.list": "Recorded touch macros",
     "bug.capture": "Screenshot plus performance and memory",
     "ott.snapshot": "User, plan, TVE, theme, modules, metadataMap",
+    "ott.sections": "Host section names, action names, and provider (AppCMS) for this app",
+    "ott.section": (
+        "One host section by name (payload: name from ott.sections; optional args object, "
+        "for example entitlements args.content_id)"
+    ),
+    "ott.diagnostics": "Host bug findings with severity, evidence, hint, and source files",
+    "ott.action": (
+        "One whitelisted host debug action (payload: name, payload object). "
+        "Names come from ott.sections actions"
+    ),
     "hang.list": "Main-thread hangs with screen, screenshot, taps, console, and stack",
     "crash.list": "Uncaught exceptions and fatal signals from this run, plus the last run's crash",
     "activity.snapshot": "Current screen and playback state, without stream URLs",

@@ -26,8 +26,9 @@ mcp = FastMCP(
         "Mutating tools require confirm=true; say what will change first. "
         "Do not enable proxy rewrite. Network profiles throttle every proxied app. "
         "Device tools take a hardware UDID or the app's client_id, never an app device_key. "
-        "Credentials, cookies, API keys, and signed URL parameters are always masked as "
-        "[REDACTED]; never ask the user to paste them. "
+        "Credentials, cookies, API keys, signed URL parameters, emails, phone numbers, "
+        "user ids, device ids, and IP addresses are always masked as [REDACTED]. "
+        "Never ask the user to paste them. The local web dashboard can still show them. "
         "Extra tools are off. Call manage_workflows with the one group you need "
         "(project, targets, simulator, device, macos, ui, lldb, swiftpm, coverage, docs, previews) "
         "and disable it when that task ends. Call describe_command for on-device payloads."
@@ -288,6 +289,80 @@ def app_inspect(
     if image is None:
         return cleaned
     return [cleaned, Image(data=image, format="png")]
+
+
+@mcp.tool(annotations=_READ)
+def appcms_section(
+    client_id: str, name: str = "", args: dict[str, Any] | None = None
+) -> dict[str, Any]:
+    """AppCMS host state by section. Empty name lists sections and actions.
+
+    Sections include overview, config, environment, pages, session, subscription,
+    entitlements, tve, devices, analytics, player. Tokens arrive as presence and length only.
+    entitlements accepts args {"content_id": "..."} to explain why a paywall shows.
+    """
+    args = {"client_id": client_id, "name": name, "args": args}
+    return _run("appcms_section", args, lambda: tools.appcms_section(_api(), **args))
+
+
+@mcp.tool(annotations=_READ)
+def appcms_diagnostics(client_id: str) -> dict[str, Any]:
+    """AppCMS bug findings: isSubscribed drift, stale login keys, device ID mismatch, and more."""
+    args = {"client_id": client_id}
+    return _run("appcms_diagnostics", args, lambda: tools.appcms_diagnostics(_api(), **args))
+
+
+@mcp.tool(annotations=_DESTRUCTIVE)
+def appcms_action(
+    client_id: str,
+    name: str,
+    payload: dict[str, Any] | None = None,
+    confirm: bool = False,
+) -> dict[str, Any]:
+    """Run one whitelisted AppCMS debug action. confirm must be true.
+
+    Names come from appcms_section() actions, for example refresh_token, expire_token,
+    refetch_subscription, refresh_entitlements, override_flag, switch_language, force_logout.
+    """
+    args = {"client_id": client_id, "name": name, "payload": payload, "confirm": confirm}
+    return _run("appcms_action", args, lambda: tools.appcms_action(_api(), **args))
+
+
+@mcp.tool(annotations=_READ)
+def host_section(
+    client_id: str, name: str = "", args: dict[str, Any] | None = None
+) -> dict[str, Any]:
+    """Debug-host state by section for any app that registers OTTDebugHost.
+
+    Empty name returns the provider (AppCMS, PlayerSample, AuthSample, AnalyticsSample),
+    its pages with titles, and its actions with input fields. Tokens arrive as metadata only;
+    emails, user ids, and device ids arrive as [REDACTED].
+    """
+    args = {"client_id": client_id, "name": name, "args": args}
+    return _run("host_section", args, lambda: tools.host_section(_api(), **args))
+
+
+@mcp.tool(annotations=_READ)
+def host_diagnostics(client_id: str) -> dict[str, Any]:
+    """Rule-based findings from the app's debug host: playback errors, token expiry, drift."""
+    args = {"client_id": client_id}
+    return _run("host_diagnostics", args, lambda: tools.host_diagnostics(_api(), **args))
+
+
+@mcp.tool(annotations=_DESTRUCTIVE)
+def host_action(
+    client_id: str,
+    name: str,
+    payload: dict[str, Any] | None = None,
+    confirm: bool = False,
+) -> dict[str, Any]:
+    """Run one whitelisted debug-host action. confirm must be true.
+
+    Names and input fields come from host_section() with an empty name, for example
+    seek {seconds}, toggle_captions, logout, send_test_event {name}.
+    """
+    args = {"client_id": client_id, "name": name, "payload": payload, "confirm": confirm}
+    return _run("host_action", args, lambda: tools.host_action(_api(), **args))
 
 
 @mcp.tool(annotations=_DESTRUCTIVE)

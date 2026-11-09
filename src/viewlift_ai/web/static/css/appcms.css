@@ -1,0 +1,73 @@
+.appcms { display: flex; flex-direction: column; gap: var(--s-3); }
+.appcms-head { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: var(--s-3); }
+.appcms-title { display: flex; flex-wrap: wrap; align-items: baseline; gap: var(--s-3); }
+.appcms-title h1 { margin: 0; font-size: var(--fs-16, 16px); color: var(--text-strong); }
+.appcms-tools { display: flex; flex-wrap: wrap; gap: var(--s-2); align-items: center; }
+.appcms-tools input[type="search"] {
+  height: var(--control-h);
+  min-width: 220px;
+  padding: 0 8px;
+  border: 1px solid var(--line);
+  border-radius: var(--r-control);
+  background: var(--sunken);
+  color: var(--text);
+}
+.appcms-sub { margin: var(--s-2) 0 0; font-size: var(--fs-13); color: var(--muted); }
+
+.appcms-notice { margin: 0; padding: var(--s-2) var(--s-3); border: 1px solid var(--line); border-radius: var(--r-card); background: var(--surface); }
+.appcms-notice.is-error { border-color: var(--err); background: var(--err-soft); color: var(--err); }
+.appcms-notice.is-ok { border-color: var(--ok); color: var(--ok); }
+
+.appcms dd.is-bad, .appcms strong.is-bad { color: var(--err); font-weight: 600; }
+.appcms dd.is-warn, .appcms strong.is-warn { color: var(--warn); }
+.appcms .is-hit { background: var(--accent-soft); }
+.appcms-list { line-height: 1.6; }
+
+.appcms-history { display: flex; flex-wrap: wrap; gap: var(--s-3); align-items: center; }
+.appcms-history select,
+.appcms-compare-bar select,
+.appcms-action select {
+  height: var(--control-h);
+  border: 1px solid var(--line);
+  border-radius: var(--r-control);
+  background: var(--sunken);
+  color: var(--text);
+}
+.appcms-diff { overflow-x: auto; }
+.appcms-diff-table { width: 100%; border-collapse: collapse; font-size: var(--fs-12); }
+.appcms-diff-table th, .appcms-diff-table td { padding: 4px 8px; border-bottom: 1px solid var(--line-soft); text-align: left; vertical-align: top; word-break: break-word; }
+.appcms-diff-table th { color: var(--muted); font-weight: 500; }
+.appcms-diff-table tr.is-diff td { background: var(--warn-soft); }
+
+.appcms-findings { display: flex; flex-direction: column; gap: var(--s-2); }
+.appcms-finding { padding: var(--s-3); border: 1px solid var(--line); border-left-width: 3px; border-radius: var(--r-card); background: var(--surface); }
+.appcms-finding header { display: flex; flex-wrap: wrap; gap: var(--s-2); align-items: baseline; }
+.appcms-finding h3 { margin: 0; font-size: var(--fs-13); color: var(--text-strong); }
+.appcms-finding.is-error { border-left-color: var(--err); }
+.appcms-finding.is-warning { border-left-color: var(--warn); }
+.appcms-finding.is-info { border-left-color: var(--line); }
+.appcms-sev { font: 600 var(--fs-12) var(--font-mono); text-transform: uppercase; }
+.appcms-finding.is-error .appcms-sev { color: var(--err); }
+.appcms-finding.is-warning .appcms-sev { color: var(--warn); }
+.appcms-hint { margin: var(--s-2) 0 0; color: var(--text); }
+.appcms-files { margin-top: var(--s-2); display: flex; flex-wrap: wrap; gap: var(--s-1); }
+
+.appcms-actions { display: grid; grid-template-columns: repeat(auto-fit, minmax(360px, 1fr)); gap: var(--s-2); }
+.appcms-action {
+  display: flex;
+  flex-direction: column;
+  gap: var(--s-2);
+  padding: var(--s-3);
+  border: 1px solid var(--line);
+  border-radius: var(--r-card);
+  background: var(--surface);
+}
+.appcms-action p { margin: 2px 0 0; }
+.appcms-action-fields { display: flex; flex-wrap: wrap; gap: var(--s-2); align-items: end; }
+.appcms-action input { height: var(--control-h); padding: 0 6px; border: 1px solid var(--line); border-radius: var(--r-control); background: var(--sunken); color: var(--text); }
+.btn.danger { border-color: var(--err); color: var(--err); background: var(--err-soft); }
+.btn.danger:hover { background: var(--err); color: var(--accent-ink); }
+
+.appcms-compare-bar, .appcms-inline-form { display: flex; flex-wrap: wrap; gap: var(--s-3); align-items: end; }
+.appcms-inline-form input { height: var(--control-h); min-width: 280px; padding: 0 8px; border: 1px solid var(--line); border-radius: var(--r-control); background: var(--sunken); color: var(--text); }
+.appcms-compare { overflow-x: auto; }

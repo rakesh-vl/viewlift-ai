@@ -46,7 +46,10 @@ _KEY_FRAGMENTS = (
     "spc",
     "ckc",
 )
-_KEY_EXACT = frozenset({"auth", "otp", "pin", "pwd", "sig", "sid", "ssn", "cvv", "cvc"})
+_KEY_EXACT = frozenset({
+    "auth", "otp", "pin", "pwd", "sig", "sid", "ssn", "cvv", "cvc",
+    "parentalpin", "pincode", "userpin",
+})
 # Keys that are never secrets even though they contain a fragment above.
 _KEY_SAFE = frozenset({"tokencount", "hastoken", "tokenexpired", "cookiecount"})
 # Inside a masked container these label fields stay readable so the agent can see names.
@@ -189,6 +192,98 @@ def scrub(value: Any, report: ScrubReport | None = None) -> Any:
     return _scrub(value, report if report is not None else ScrubReport(), force=False)
 
 
+# Extra keys masked only on the MCP path. The web dashboard still receives the original values.
+_AGENT_KEY_FRAGMENTS = (
+    "email",
+    "phone",
+    "mobile",
+    "userid",
+    "anonymousid",
+    "deviceid",
+    "household",
+    "ipaddress",
+    "zipcode",
+    "postal",
+    "firstname",
+    "lastname",
+    "nickname",
+    "fullname",
+    "birth",
+    "latitude",
+    "longitude",
+    "profileid",
+    # DRM and partner secrets from the framework sample hosts.
+    "license",
+    "skd",
+    "softwarestatement",
+    "cloudfront",
+    "keypair",
+)
+_AGENT_KEY_EXACT = frozenset({
+    "email", "ip", "city", "dob", "zip", "address", "username",
+    "nickname", "fullname", "firstname", "lastname",
+})
+_AGENT_NAME_SIBLINGS = frozenset({"email", "userid", "loggedin", "nickname"})
+_EMAIL_TEXT = re.compile(r"(?i)\b[a-z0-9*._%+-]+@[a-z0-9.-]+\.[a-z]{2,}\b")
+_IPV4_TEXT = re.compile(
+    r"\b(?:(?:25[0-5]|2[0-4]\d|[01]?\d\d?)\.){3}(?:25[0-5]|2[0-4]\d|[01]?\d\d?)\b"
+)
+
+
+def is_agent_pii_key(key: object) -> bool:
+    """True for account, contact, and device identifiers an agent must not receive."""
+    if not isinstance(key, str) or not key:
+        return False
+    norm = _normalize(key)
+    if norm in _AGENT_KEY_EXACT:
+        return True
+    return any(fragment in norm for fragment in _AGENT_KEY_FRAGMENTS)
+
+
+def _mask_pii_text(text: str, report: ScrubReport) -> str:
+    if not text or text == MASK:
+        return text
+    cleaned, count = _EMAIL_TEXT.subn(MASK, text)
+    report.masked += count
+    cleaned, count = _IPV4_TEXT.subn(MASK, cleaned)
+    report.masked += count
+    return cleaned
+
+
+def _mask_agent_value(value: Any, report: ScrubReport) -> Any:
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)):
+        report.masked += 1
+        return MASK
+    return _mask_value(value, report)
+
+
+def _scrub_agent(value: Any, report: ScrubReport) -> Any:
+    if isinstance(value, dict):
+        norms = {_normalize(str(key)) for key in value}
+        person_record = bool(norms & _AGENT_NAME_SIBLINGS)
+        out: dict[str, Any] = {}
+        for key, item in value.items():
+            hide_name = person_record and key == "name"
+            if hide_name or is_agent_pii_key(key):
+                out[key] = _mask_agent_value(item, report)
+            else:
+                out[key] = _scrub_agent(item, report)
+        return out
+    if isinstance(value, list):
+        return [_scrub_agent(item, report) for item in value]
+    if isinstance(value, str):
+        return _mask_pii_text(value, report)
+    return value
+
+
+def scrub_agent(value: Any, report: ScrubReport | None = None) -> Any:
+    """Credential scrub plus account PII. Used only for MCP tool results."""
+    report = report if report is not None else ScrubReport()
+    return _scrub_agent(scrub(value, report), report)
+
+
 def _flag(name: str) -> bool:
     return os.environ.get(name, "").strip().lower() in {"1", "true", "yes", "on"}
 
@@ -223,6 +318,12 @@ def policy() -> dict[str, object]:
             "AWS, Google, GitHub, Slack, and Stripe key formats, and PEM private keys",
             "FairPlay SPC, CKC, and certificate material",
         ],
+        "agent_only_masked": [
+            "Emails, phone numbers, and IP addresses in any MCP text",
+            "User id, anonymous id, profile id, device id, and household id",
+            "Name on a user record, nickname, postal code, and date of birth",
+            "The web dashboard is not masked this way",
+        ],
         "never_returned": ["reveal unlock tokens", "mutation confirmation tokens"],
         "limits": {"max_string_chars": MAX_STRING},
         "switches": {
@@ -245,7 +346,7 @@ class AuditLog:
         row = {
             "at": time.strftime("%Y-%m-%dT%H:%M:%S"),
             "tool": tool,
-            "args": scrub({k: v for k, v in args.items() if v not in (None, "", {}, [])}),
+            "args": scrub_agent({k: v for k, v in args.items() if v not in (None, "", {}, [])}),
             "ok": ok,
             "duration_ms": round(duration_ms, 1),
         }

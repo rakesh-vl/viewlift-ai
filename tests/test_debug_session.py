@@ -178,6 +178,7 @@ def test_mutation_requires_one_use_matching_confirmation(tmp_path: Path) -> None
         "storage.file_delete",
         "storage.cookie_delete",
         "settings.set",
+        "ott.action",
     ],
 )
 def test_explorer_and_settings_writes_need_confirmation(tmp_path: Path, name: str) -> None:
@@ -199,12 +200,77 @@ def test_explorer_and_settings_writes_need_confirmation(tmp_path: Path, name: st
         "runtime.image_classes",
         "storage.cookies",
         "settings.get",
+        "ott.sections",
+        "ott.section",
+        "ott.diagnostics",
     ],
 )
 def test_explorer_and_settings_reads_need_no_confirmation(tmp_path: Path, name: str) -> None:
     service, _ = _service(tmp_path)
     client = _register(service)
     service.enqueue(client_id=client, name=name, payload={"handle": "h1"})
+
+
+def test_ott_results_stay_visible_for_the_dashboard(tmp_path: Path) -> None:
+    service, store = _service(tmp_path)
+    client = _register(service)
+    service.ingest_event(
+        client,
+        {
+            "module": "ott",
+            "kind": "command-result",
+            "payload": {
+                "name": "ott.section",
+                "result": {
+                    "data": {
+                        "authorizationToken": "eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0In0.abcdefgh",
+                        "parentalPin": "1234",
+                        "token_present": True,
+                        "site_id": "site-1",
+                    }
+                },
+            },
+        },
+    )
+    data = store.list_debug_events(client_id=client, module="ott")[0]["payload"]["result"]["data"]
+    assert data["authorizationToken"].startswith("eyJ")
+    assert data["parentalPin"] == "1234"
+    assert data["token_present"] is True
+    assert data["site_id"] == "site-1"
+
+
+def test_storage_defaults_result_stays_visible_for_the_dashboard(tmp_path: Path) -> None:
+    service, store = _service(tmp_path)
+    client = _register(service)
+    service.ingest_event(
+        client,
+        {
+            "module": "storage",
+            "kind": "command-result",
+            "payload": {
+                "name": "storage.defaults",
+                "result": {"values": {"refreshToken": "abc-123-secret", "autoPlay": True}},
+            },
+        },
+    )
+    values = store.list_debug_events(client_id=client, module="storage")[0]["payload"]["result"]
+    assert values["values"]["refreshToken"] == "abc-123-secret"
+    assert values["values"]["autoPlay"] is True
+
+
+def test_other_module_results_are_not_scrubbed(tmp_path: Path) -> None:
+    service, store = _service(tmp_path)
+    client = _register(service)
+    service.ingest_event(
+        client,
+        {
+            "module": "storage",
+            "kind": "command-result",
+            "payload": {"name": "storage.files", "token": "x1y2z3"},
+        },
+    )
+    payload = store.list_debug_events(client_id=client, module="storage")[0]["payload"]
+    assert payload["token"] == "x1y2z3"
 
 
 def test_unknown_command_and_large_payload_rejected(tmp_path: Path) -> None:

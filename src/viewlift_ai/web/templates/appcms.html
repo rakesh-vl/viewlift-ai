@@ -1,0 +1,69 @@
+{% extends "base.html" %}
+{% block title %}{{ title }} · Viewlift AI{% endblock %}
+{% block content %}
+<link rel="stylesheet" href="/static/css/debug.css?v=23">
+<link rel="stylesheet" href="/static/css/appcms.css?v=1">
+{% if mode == 'host' %}
+{% set current = (active_page, host_title, host_section) %}
+{% else %}
+{% set current = (pages | selectattr(0, "equalto", active_page) | list)[0] %}
+{% endif %}
+<section class="appcms" data-appcms-mode="{{ mode }}" data-appcms-page="{{ active_page }}" data-appcms-section="{{ current[2] or '' }}">
+  <header class="appcms-head">
+    <div class="appcms-title">
+      <h1 id="appcms-heading">{{ current[1] }}</h1>
+      <span id="appcms-client" class="muted">No app selected</span>
+      <span id="appcms-provider" class="memory-pill" role="status">Waiting</span>
+    </div>
+    <div class="appcms-tools">
+      <input type="search" id="appcms-search" placeholder="Filter keys and values" aria-label="Filter keys and values">
+      <button type="button" class="btn ghost" id="appcms-refresh">Refresh</button>
+      <button type="button" class="btn ghost" id="appcms-copy">Copy JSON</button>
+      <button type="button" class="btn ghost" id="appcms-history-toggle" aria-pressed="false">History</button>
+      <button type="button" class="btn" id="appcms-bundle">Download bug bundle</button>
+    </div>
+  </header>
+
+  <p id="appcms-notice" class="appcms-notice" role="status" hidden></p>
+  <p id="appcms-updated" class="muted"></p>
+
+  <div id="appcms-history" class="appcms-history" hidden>
+    <label>Compare with
+      <select id="appcms-history-select" aria-label="Earlier snapshot"></select>
+    </label>
+    <span class="muted">Snapshots are kept in this browser tab, up to 10 per section.</span>
+  </div>
+
+  {% if active_page == 'actions' %}
+  <p class="muted">Each action changes the running app and asks for confirmation first. Actions run only in DEBUG builds.</p>
+  <div id="appcms-actions" class="appcms-actions"></div>
+  <h2 class="appcms-sub">Last result</h2>
+  <div id="appcms-action-result" class="ott-sections"></div>
+  {% elif active_page == 'diagnostics' %}
+  <p class="muted">Rule-based checks computed by the app from its live state. Each finding lists evidence and the source files to open first.</p>
+  <div id="appcms-findings" class="appcms-findings"></div>
+  {% elif active_page == 'compare' %}
+  <div class="appcms-compare-bar">
+    <label>Left <select id="appcms-left" aria-label="Left app"></select></label>
+    <label>Right <select id="appcms-right" aria-label="Right app"></select></label>
+    <label>Section <select id="appcms-compare-section" aria-label="Section"></select></label>
+    <label><input type="checkbox" id="appcms-diff-only" checked> Differences only</label>
+  </div>
+  <div id="appcms-compare" class="appcms-compare"></div>
+  {% else %}
+  <div id="appcms-summary" class="metric-grid"></div>
+  {% if active_page == 'entitlements' %}
+  <form id="appcms-paywall" class="appcms-inline-form">
+    <label>Why paywall? Content id
+      <input type="text" id="appcms-paywall-id" placeholder="video or linear channel id" autocomplete="off">
+    </label>
+    <button type="submit" class="btn ghost">Evaluate</button>
+  </form>
+  {% endif %}
+  <div id="appcms-sections" class="ott-sections"></div>
+  {% endif %}
+</section>
+{% endblock %}
+{% block scripts %}
+<script src="/static/js/appcms.js?v=2"></script>
+{% endblock %}
