@@ -16,7 +16,6 @@ from viewlift_ai.services.analytics_inspect import list_analytics_traffic
 from viewlift_ai.services.debug_toolkit import (
     ANALYTICS_HOST_MARKERS,
     DIAGNOSTIC_QUERIES,
-    apply_network_profile,
     list_modules,
     list_network_profiles,
     open_deeplink,
@@ -37,13 +36,6 @@ router = APIRouter()
 
 # SwiftPM identities this repository's capture SDK can be resolved under.
 CAPTURE_SDK_PACKAGES = frozenset({"viewlift-ai", "viewliftnetworkcapture"})
-
-
-def _engine(request: Request):
-    engine = getattr(request.app.state, "rule_engine", None)
-    if engine is None:
-        raise HTTPException(status_code=503, detail="Rule engine unavailable")
-    return engine
 
 
 def _store(request: Request):
@@ -70,11 +62,6 @@ def _loopback(request: Request) -> None:
         raise HTTPException(status_code=403, detail="Debug actions are loopback-only")
 
 
-def _mutating(request: Request) -> bool:
-    engine = getattr(request.app.state, "rule_engine", None)
-    return bool(engine and engine.any_mutating_enabled())
-
-
 async def _json_body(request: Request) -> dict[str, Any]:
     try:
         body = await request.json()
@@ -93,7 +80,6 @@ async def debug_page(request: Request) -> HTMLResponse:
         {
             "title": "Debug",
             "active_nav": "debug",
-            "mutating_enabled": _mutating(request),
             "diagnostics": DIAGNOSTIC_QUERIES,
             "analytics_markers": ANALYTICS_HOST_MARKERS,
         },
@@ -391,6 +377,7 @@ async def debug_invoke(request: Request) -> dict[str, object]:
                 payload=payload,
                 mutate=body.get("mutate") is True,
                 timeout=None if timeout is None else float(timeout),
+                confirmation=str(body.get("confirmation") or "") or None,
             )
         )
     except LookupError as exc:
@@ -429,16 +416,6 @@ async def debug_enrich_frames(request: Request) -> dict[str, object]:
 @router.get("/api/debug/network-profiles")
 def debug_profiles() -> dict[str, object]:
     return {"profiles": list_network_profiles()}
-
-
-@router.post("/api/debug/network-profile")
-async def set_network_profile(request: Request) -> dict[str, object]:
-    _loopback(request)
-    body = await _json_body(request)
-    try:
-        return apply_network_profile(_engine(request), str(body.get("profile") or ""))
-    except ValueError as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
 def _client(request: Request, client_id: object) -> dict[str, object] | None:

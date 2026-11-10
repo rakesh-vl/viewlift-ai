@@ -175,16 +175,16 @@ The prefix before the first dot selects the module. A disabled module returns `m
 | memory | `memory.snapshot`, `memory.graph`, `memory.leaks`, `memory.heap`, `memory.object {id}`, `memory.live_start`, `memory.live_stop`; pushed events `memory/live` (not stored) and `memory/leak` |
 | ui | `ui.hierarchy`, `ui.layers {offset?, ids?, scale?}`, `ui.describe {id}`, `ui.highlight {id}`, `ui.edit {id, alpha?, hidden?}`, `ui.visual {slow?, guidelines?, baselines?, oversized?, repaint?}`, `ui.screenshot`, `ui.focus`. Pushed events `ui/focus` and `ui/remote` (not stored). Remote events are Menu, Play/Pause, and Select. Automation: `ui.accessibility_tree {limit?}`, `ui.find {label?, identifier?, text?, role?, view_id?, index?}`, `ui.wait_for {query keys, gone?, timeout?}`, `ui.tap {query keys or x, y}`, `ui.long_press {query keys, action?}`, `ui.swipe {direction, query keys?, fraction?}`, `ui.scroll {direction, query keys?, fraction?}`, `ui.type_text {text, query keys?, replace?, submit?}`, `ui.key {key, count?}`, `ui.remote {press, repeat?}` (tvOS). |
 | preview | `preview.list`, `preview.render {name, state?, color_scheme?, width?, height?, scale?}` |
-| bug | `bug.capture` (screenshot, performance, memory) |
+| bug | `bug.capture` (JPEG screenshot, screen, app, device, performance, recent taps) |
 | swiftui | `swiftui.renders` |
 | assets | `assets.audit` |
 | accessibility | `accessibility.audit` |
 | storage | `storage.defaults`, `storage.defaults_set {key, value}`, `storage.defaults_delete {key}`, `storage.keychain_metadata`, `storage.files {path}`, `storage.file_read {path}`, `storage.file_write {path, content, base64?}`, `storage.file_rename {path, name}`, `storage.file_delete {path}`, `storage.sqlite_schema {path}`, `storage.sqlite_query {path, query}`, `storage.snapshot_create {paths}`, `storage.snapshot_restore {snapshot}`, `storage.cookies`, `storage.cookie_delete {name, domain, path}` |
-| runtime | `runtime.search {query}`, `runtime.describe {class}`, `runtime.libraries`, `runtime.image_classes {image}` |
+| runtime | `runtime.search {query, app_only?}`, `runtime.describe {class}`, `runtime.libraries`, `runtime.image_classes {image}` |
 | explorer | `explorer.roots`, `explorer.object {handle?, view_id?, memory_id?}`, `explorer.instances {class, limit?}`, `explorer.set {handle, key, value}`, `explorer.call {handle, selector}`. Handles are weak. `explorer.call` refuses `init`, `set`, `copy`, `dealloc`, and teardown selectors |
 | settings | `settings.get`, `settings.set {modules?, capture_network?, max_request_body_bytes?, max_response_body_bytes?, body_content_types?, reset?}`. Overrides can disable modules the app enabled. They cannot add modules |
-| macro | `macro.record_start`, `macro.record_stop`, `macro.list`, `macro.replay {actions}` |
-| push | `push.local {title, body, sound?, badge?, user_info?, delay?}` |
+| macro | `macro.record_start`, `macro.record_stop`, `macro.list`, `macro.replay {actions?}`. Steps are `tap`, `swipe`, or `press` with the element label, identifier, role, point, and offset. Replay finds the element by identifier, then label, then point |
+| push | `push.local {title, body, subtitle?, sound?, badge?, delay?, image_url? or image_base64 + image_type?, actions?, thread_id?, user_info?}`, `push.status`, `push.clear`. Actions are `{id, title, input?, destructive?, foreground?}`, up to four. Taps are tracked only when the app has no notification delegate of its own |
 | ott | `ott.snapshot` |
 | crash, hang | `crash.list` (fatal signals and uncaught exceptions with frames and images), `hang.list` (screen class, screenshot, taps and scrolls, console, stack) |
 | activity | `activity.snapshot`, `activity.live_start {preview?}`, `activity.live_stop`; pushed events `activity/live` and `activity/frame` (not stored). Screen class and title, foreground or background, and playback (`playing`, `paused`, `buffering`, or `none`; live when duration is indefinite). No asset URL. Host keys `title`, `content_id`, `state`, `is_live`, `position_seconds`, `rate` override the probe. `preview: true` pushes a small JPEG about three times a second. |
@@ -194,7 +194,7 @@ The prefix before the first dot selects the module. A disabled module returns `m
 Notable limits:
 
 - Storage paths are relative to `NSHomeDirectory()`; absolute paths and NUL bytes are rejected. Files up to 512 KB. SQLite opens read-only and accepts a single `SELECT`, `PRAGMA`, `WITH` or `EXPLAIN`, up to 1,000 rows. Keychain returns attributes only.
-- Screenshots up to 480 KB (400 KB in `bug.capture`).
+- Screenshots up to 480 KB. `bug.capture` sends a JPEG of at most 300 KB.
 - Hierarchy depth 100, 2,500 nodes per capture. View controllers appear as parents of their root views.
 - SwiftUI hosts expand into the SwiftUI view tree from `_UIHostingView.makeViewDebugData()`, the private method Xcode's view debugger uses. UIKit views hosted by SwiftUI are placed under the SwiftUI node whose frame contains them. SwiftUI records this tree only when `SWIFTUI_VIEW_DEBUG` is set before the first hosting view exists. The debug bridge sets it to `29` (type, transform, position, size) when the `ui` module starts, unless the scheme already sets it. Hosts created earlier fall back to accessibility nodes.
 - `ui.layers` pages per-view images from the last `ui.hierarchy`: each view's own pixels with its direct subviews hidden, about 420 KB per page, longest side 1,024 px. Video, Metal, and blur views come back in `crop` so the dashboard uses the window screenshot. Views with no pixels come back in `empty`.

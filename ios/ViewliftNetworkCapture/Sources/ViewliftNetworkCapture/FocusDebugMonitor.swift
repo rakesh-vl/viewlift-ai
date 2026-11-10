@@ -15,6 +15,7 @@ final class FocusDebugMonitor: @unchecked Sendable {
     private var installed = false
     private var rejection: [String: JSONValue]?
     private var presses: [[String: JSONValue]] = []
+    private var history: [[String: JSONValue]] = []
     private var outbox: [DebugEvent] = []
 
     private init() {}
@@ -43,11 +44,13 @@ final class FocusDebugMonitor: @unchecked Sendable {
         lock.lock()
         let rejected = rejection
         let recent = presses
+        let moves = history
         lock.unlock()
         return [
             "focused": .object(Self.focusedItem()),
             "last_rejection": rejected.map(JSONValue.object) ?? .null,
-            "presses": .array(recent.reversed().map(JSONValue.object))
+            "presses": .array(recent.reversed().map(JSONValue.object)),
+            "history": .array(moves.reversed().map(JSONValue.object))
         ]
     }
 
@@ -66,16 +69,28 @@ final class FocusDebugMonitor: @unchecked Sendable {
             "heading": .string(Self.headingName(context.focusHeading)),
             "timestamp": .number(Date().timeIntervalSince1970)
         ]
+        let rejected = row.merging(["rejected": .bool(true)]) { _, new in new }
         lock.lock()
         rejection = row
+        rememberLocked(rejected)
         lock.unlock()
-        enqueue(module: "ui", kind: "focus", payload: row.merging(["rejected": .bool(true)]) { _, new in new })
+        enqueue(module: "ui", kind: "focus", payload: rejected)
     }
 
     func noteUpdate(_ context: UIFocusUpdateContext) {
         guard let view = context.nextFocusedItem as? UIView else { return }
         let row = Self.describe(view, heading: context.focusHeading)
+        lock.lock()
+        rememberLocked(row)
+        lock.unlock()
         enqueue(module: "ui", kind: "focus", payload: row)
+    }
+
+    private func rememberLocked(_ row: [String: JSONValue]) {
+        history.append(row)
+        if history.count > 40 {
+            history.removeFirst(history.count - 40)
+        }
     }
 
     private func installOnMain() {

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import gzip
 import json
 import threading
 from datetime import UTC, datetime
@@ -496,6 +497,47 @@ def test_send_flow_returns_the_response(tmp_path: Path) -> None:
             assert cookie == "session=abc"
             assert "hide-me" in data["body"]
             assert client.get("/api/flows").json()["count"] == 0
+    finally:
+        server.shutdown()
+        server.server_close()
+
+
+def test_send_flow_decodes_gzip_json(tmp_path: Path) -> None:
+    class Handler(BaseHTTPRequestHandler):
+        def do_GET(self) -> None:
+            raw = gzip.compress(b'{"ok":true}')
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Encoding", "gzip")
+            self.send_header("Content-Length", str(len(raw)))
+            self.end_headers()
+            self.wfile.write(raw)
+
+        def log_message(self, format: str, *args: object) -> None:
+            return
+
+    server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+    port = server.server_address[1]
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        with _client(tmp_path) as client:
+            sent = client.post(
+                "/api/flows/send",
+                json={
+                    "method": "GET",
+                    "url": f"http://127.0.0.1:{port}/v3/monetization",
+                    "headers": {"Accept-Encoding": "gzip"},
+                    "body": "",
+                },
+            )
+            assert sent.status_code == 200
+            data = sent.json()
+            assert data["body"] == '{"ok":true}'
+            encoding = next(
+                value for key, value in data["headers"].items() if key.lower() == "content-encoding"
+            )
+            assert encoding == "gzip"
     finally:
         server.shutdown()
         server.server_close()

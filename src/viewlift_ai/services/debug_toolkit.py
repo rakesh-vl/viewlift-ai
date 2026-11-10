@@ -10,11 +10,9 @@ from typing import Any
 from urllib import error as urlerror
 from urllib import request as urlrequest
 
-from viewlift_ai.services.rule_engine import RuleEngine, throttle_to_api
+from viewlift_ai.services.http_body import BodyDecodeError, decode_content_encoding
 
-PROFILE_RULE_ID = "debug-network-profile"
-
-# kbps is kilobits/s. Packet loss is listed for the UI only; the proxy has no loss model.
+# kbps is kilobits/s. The SDK applies latency, bandwidth, and offline. Packet loss is a label.
 NETWORK_PROFILES: dict[str, dict[str, object]] = {
     "wifi": {
         "latency_ms": 2,
@@ -437,37 +435,8 @@ def list_modules() -> list[dict[str, object]]:
 def list_network_profiles() -> list[dict[str, object]]:
     rows = []
     for name, spec in NETWORK_PROFILES.items():
-        rows.append({"id": name, **spec, "packet_loss": "not applied"})
+        rows.append({"id": name, **spec})
     return rows
-
-
-def apply_network_profile(engine: RuleEngine, profile: str) -> dict[str, object]:
-    name = (profile or "").strip().lower()
-    if name in {"off", "clear"}:
-        removed = engine.delete_throttle_if_present(PROFILE_RULE_ID)
-        return {"ok": True, "profile": "off", "removed": removed, "rule": None}
-    spec = NETWORK_PROFILES.get(name)
-    if spec is None:
-        known = ", ".join((*NETWORK_PROFILES.keys(), "off"))
-        raise ValueError(f"Unknown profile. Use one of: {known}")
-    rule = engine.upsert_throttle(
-        PROFILE_RULE_ID,
-        {
-            "enabled": True,
-            "host": "*",
-            "latency_ms": spec["latency_ms"],
-            "download_kbps": spec["download_kbps"],
-            "upload_kbps": spec["upload_kbps"],
-            "offline": spec["offline"],
-        },
-    )
-    return {
-        "ok": True,
-        "profile": name,
-        "rule": throttle_to_api(rule),
-        "loss_pct": spec["loss_pct"],
-        "packet_loss": "not applied",
-    }
 
 
 def validate_deeplink(url: str, udid: str) -> tuple[str, str]:
@@ -524,11 +493,15 @@ def replay_http(
     send = opener or _urllib_open
     payload = body if verb not in {"GET", "HEAD"} else None
     status, resp_headers, resp_body = send(verb, target, safe, payload)
+    try:
+        decoded = decode_content_encoding(resp_body, resp_headers)
+    except BodyDecodeError:
+        decoded = resp_body
     return {
         "ok": True,
         "status": status,
         "headers": resp_headers,
-        "body": resp_body[:65_536],
+        "body": decoded[:65_536],
     }
 
 

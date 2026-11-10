@@ -1,7 +1,7 @@
 {% extends "base.html" %}
 {% block title %}Remote Debug Suite · Viewlift AI{% endblock %}
 {% block content %}
-<link rel="stylesheet" href="/static/css/debug.css?v=26">
+<link rel="stylesheet" href="/static/css/debug.css?v=27">
 <link rel="stylesheet" href="/static/css/memory.css?v=2">
 <section class="debug-session-bar">
   <span id="debug-client-name" class="debug-client-name">No app selected</span>
@@ -334,9 +334,20 @@
 
 <section class="debug-panel hidden" data-panel="accessibility">
   <div class="panel-title"><h2>Accessibility scan</h2>
-    <button class="btn ghost" data-command="accessibility.audit">Scan live UI</button>
+    <button class="btn" data-command="accessibility.audit">Scan current screen</button>
   </div>
-  <div id="accessibility-result" class="debug-result"></div>
+  <p class="muted">Open the screen you want to check in the app, then scan. The scan reads the same tree VoiceOver uses, so SwiftUI and UIKit are both covered. It flags controls without a label, small touch targets, low text contrast, text that ignores Dynamic Type, and controls VoiceOver cannot reach. Select a finding to outline it on the screenshot.</p>
+  <div id="a11y-summary" class="metric-grid"></div>
+  <div id="a11y-filters" class="a11y-filters" hidden>
+    <label class="ui-check is-on"><input type="checkbox" data-a11y-severity="error" checked> Errors</label>
+    <label class="ui-check is-on"><input type="checkbox" data-a11y-severity="warning" checked> Warnings</label>
+    <label class="ui-check is-on"><input type="checkbox" data-a11y-severity="info" checked> Suggestions</label>
+    <button type="button" class="btn ghost" id="a11y-copy">Copy report</button>
+  </div>
+  <div class="a11y-split">
+    <figure id="a11y-shot" class="a11y-shot" hidden></figure>
+    <div id="accessibility-result" class="debug-result a11y-list"></div>
+  </div>
 </section>
 
 <section class="debug-panel hidden" data-panel="storage">
@@ -373,51 +384,125 @@
 
 <section class="debug-panel hidden" data-panel="bug">
   <div class="panel-title"><h2>Bug reporter</h2>
-    <button class="btn ghost" data-command="bug.capture">Capture bundle</button>
-    <button class="btn ghost" id="bug-clear">Clear marks</button>
-    <button class="btn ghost" id="bug-download">Download annotated PNG</button>
+    <button class="btn" data-command="bug.capture">Capture current screen</button>
   </div>
-  <canvas id="bug-canvas" width="1100" height="600"></canvas>
+  <ol class="steps-hint">
+    <li>Open the broken screen in the app, then press <strong>Capture current screen</strong>.</li>
+    <li>Draw on the screenshot to point at the problem. Pick pen, box, or arrow.</li>
+    <li>Fill in what happened, then copy the report or download it with the image.</li>
+  </ol>
+  <div class="bug-layout">
+    <div class="bug-stage">
+      <div class="ui-toolbar bug-tools" role="toolbar" aria-label="Annotation tools">
+        <button type="button" class="btn ghost active" data-bug-tool="pen" aria-pressed="true">Pen</button>
+        <button type="button" class="btn ghost" data-bug-tool="box" aria-pressed="false">Box</button>
+        <button type="button" class="btn ghost" data-bug-tool="arrow" aria-pressed="false">Arrow</button>
+        <span class="bug-colors">
+          <button type="button" class="bug-color active" data-bug-color="#ff3b30" aria-label="Red"></button>
+          <button type="button" class="bug-color" data-bug-color="#ffcc00" aria-label="Yellow"></button>
+          <button type="button" class="bug-color" data-bug-color="#34c759" aria-label="Green"></button>
+          <button type="button" class="bug-color" data-bug-color="#0a84ff" aria-label="Blue"></button>
+        </span>
+        <button type="button" class="btn ghost" id="bug-undo" disabled>Undo</button>
+        <button type="button" class="btn ghost" id="bug-clear" disabled>Clear marks</button>
+      </div>
+      <canvas id="bug-canvas" width="1100" height="600" hidden></canvas>
+      <p id="bug-empty" class="muted bug-empty">No screenshot yet. Capture the current screen to start a report.</p>
+    </div>
+    <form id="bug-form" class="bug-form">
+      <label>Title<input name="title" placeholder="Play button does nothing on the series page" autocomplete="off"></label>
+      <label>Steps to reproduce<textarea name="steps" rows="4" placeholder="1. Open Series&#10;2. Tap Play"></textarea></label>
+      <label>Expected<textarea name="expected" rows="2"></textarea></label>
+      <label>Actual<textarea name="actual" rows="2"></textarea></label>
+      <div class="bug-actions">
+        <button type="button" class="btn" id="bug-copy" disabled>Copy report</button>
+        <button type="button" class="btn ghost" id="bug-download" disabled>Download PNG</button>
+        <button type="button" class="btn ghost" id="bug-download-md" disabled>Download report</button>
+      </div>
+      <p id="bug-status" class="muted"></p>
+    </form>
+  </div>
   <div id="bug-result" class="debug-result"></div>
 </section>
 
 <section class="debug-panel hidden" data-panel="macro">
   <div class="panel-title"><h2>Macro recorder</h2>
-    <button class="btn ghost" data-command="macro.record_start">Start</button>
-    <button class="btn ghost" data-command="macro.record_stop">Stop</button>
-    <button class="btn ghost" data-command="macro.list">Refresh</button>
-    <button class="btn ghost" id="macro-replay">Replay current</button>
+    <span id="macro-pill" class="memory-pill" role="status">Idle</span>
+    <button type="button" class="btn" id="macro-record">Start recording</button>
+    <button type="button" class="btn ghost" id="macro-replay" disabled>Replay</button>
+    <input id="macro-name" class="macro-name" placeholder="Macro name" autocomplete="off" aria-label="Macro name">
+    <button type="button" class="btn ghost" id="macro-save" disabled>Save</button>
+    <button type="button" class="btn ghost" id="macro-export" disabled>Export JSON</button>
+    <label class="btn ghost macro-import">Import JSON<input type="file" id="macro-import" accept="application/json,.json" hidden></label>
   </div>
-  <div id="macro-result" class="debug-result"></div>
+  <ol class="steps-hint">
+    <li>Press <strong>Start recording</strong>, then use the app: taps, swipes, and on Apple TV the remote buttons.</li>
+    <li>Press <strong>Stop</strong>. Each step shows the element it hit.</li>
+    <li>Go back to the screen where you started and press <strong>Replay</strong>. Steps find their element by identifier or label, so layout changes do not break them.</li>
+  </ol>
+  <div class="macro-layout">
+    <aside class="macro-saved">
+      <h3>Saved macros</h3>
+      <ul id="macro-saved" class="macro-saved-list"><li class="muted">None yet.</li></ul>
+    </aside>
+    <div>
+      <p id="macro-status" class="muted">Nothing recorded yet.</p>
+      <ol id="macro-steps" class="macro-steps"></ol>
+      <div id="macro-result" class="debug-result"></div>
+    </div>
+  </div>
 </section>
 
 <section class="debug-panel hidden" data-panel="runtime">
   <div class="panel-title"><h2>Objective-C runtime browser</h2>
+    <button class="btn ghost" type="button" id="runtime-app-classes">App classes</button>
     <button class="btn ghost" type="button" data-command="runtime.libraries">Loaded libraries</button>
   </div>
-  <form data-command-form="runtime.search">
-    <input name="query" placeholder="Class name">
-    <button class="btn">Search</button>
-  </form>
-  <div id="runtime-result" class="debug-result"></div>
+  <p class="muted">Search any class loaded in the app. Select one to see its superclasses, protocols, properties, ivars, and methods. Open <strong>Live instances</strong> to inspect real objects in the Object explorer.</p>
+  <div class="runtime-layout">
+    <aside class="runtime-side">
+      <form id="runtime-search" class="runtime-search" role="search">
+        <input id="runtime-query" name="query" type="search" placeholder="Search classes, for example Player" autocomplete="off" aria-label="Search classes">
+      </form>
+      <label class="ui-check"><input type="checkbox" id="runtime-app-only"> App classes only</label>
+      <p id="runtime-count" class="muted"></p>
+      <ul id="runtime-classes" class="runtime-classes" role="listbox" aria-label="Classes"></ul>
+    </aside>
+    <div class="runtime-main">
+      <nav id="runtime-history" class="storage-crumb" aria-label="Viewed classes"></nav>
+      <input id="runtime-filter" type="search" placeholder="Filter members" autocomplete="off" aria-label="Filter members" hidden>
+      <div id="runtime-result" class="debug-result"><p class="muted">Type at least two letters to search, or open App classes.</p></div>
+    </div>
+  </div>
 </section>
 
 <section class="debug-panel hidden" data-panel="explorer">
   <div class="panel-title"><h2>Object explorer</h2>
-    <button class="btn ghost" type="button" data-command="explorer.roots">Shortcuts</button>
+    <button class="btn ghost" type="button" data-command="explorer.roots">Reload shortcuts</button>
   </div>
-  <p class="muted">Live objects in the app: properties, ivars, Swift fields, methods, and collection elements. Edits and method calls ask first. Only objects the app hands out can be opened, never a raw address.</p>
-  <form id="explorer-instances" class="explorer-search">
-    <input name="class" placeholder="Class name, for example UIViewController" autocomplete="off" aria-label="Class to find on the heap" required>
-    <button class="btn ghost" type="submit">Find live instances</button>
-  </form>
+  <p class="muted">Browse live objects in the app. Start from a shortcut or find live instances of a class, then click any object value to open it. Edits and method calls ask first.</p>
   <div class="explorer-split">
-    <div id="explorer-roots" class="explorer-roots"><p class="muted">Load shortcuts to start from the app, its windows, or a shared singleton.</p></div>
+    <aside class="explorer-side">
+      <form id="explorer-instances" class="explorer-search">
+        <input name="class" list="explorer-class-hints" placeholder="Find live instances of a class" autocomplete="off" aria-label="Class to find on the heap" required>
+        <button class="btn ghost" type="submit">Find</button>
+      </form>
+      <datalist id="explorer-class-hints"></datalist>
+      <div class="explorer-quick" id="explorer-quick"></div>
+      <div id="explorer-roots" class="explorer-roots"><p class="muted">Loading shortcuts…</p></div>
+    </aside>
     <div class="explorer-main">
-      <nav id="explorer-crumb" class="storage-crumb" aria-label="Explored objects"></nav>
-      <input id="explorer-filter" type="search" placeholder="Filter fields and methods" autocomplete="off" aria-label="Filter fields and methods">
+      <div class="explorer-nav">
+        <button type="button" class="btn ghost" id="explorer-back" disabled>Back</button>
+        <nav id="explorer-crumb" class="storage-crumb" aria-label="Explored objects"></nav>
+      </div>
+      <div class="explorer-toolbar" id="explorer-toolbar" hidden>
+        <div class="explorer-tabs" role="tablist" id="explorer-tabs"></div>
+        <input id="explorer-filter" type="search" placeholder="Filter by name or type" autocomplete="off" aria-label="Filter fields and methods">
+        <label class="ui-check"><input type="checkbox" id="explorer-system"> Show UIKit / Foundation members</label>
+      </div>
       <div id="explorer-call" class="explorer-call" hidden></div>
-      <div id="explorer-result" class="debug-result"></div>
+      <div id="explorer-result" class="debug-result"><p class="muted">Pick a shortcut on the left to start.</p></div>
     </div>
   </div>
 </section>
@@ -431,48 +516,120 @@
 </section>
 
 <section class="debug-panel hidden" data-panel="push">
-  <h2>Local notification tester</h2>
-  <form data-command-form="push.local" data-mutating="true">
-    <input name="title" placeholder="Title">
-    <input name="body" placeholder="Body">
-    <input name="delay" type="number" value="1" min="1">
-    <button class="btn">Schedule</button>
+  <div class="panel-title"><h2>Local notification tester</h2>
+    <button type="button" class="btn ghost" data-command="push.status">Check permission</button>
+    <button type="button" class="btn ghost" id="push-clear">Remove test notifications</button>
+  </div>
+  <p class="muted">Schedules a local notification inside the app. The first run asks the app for notification permission. Banners show while the app is open unless the app's own notification delegate hides them; to be sure, set a delay and send the app to the background. Apple TV shows only the badge.</p>
+  <div id="push-permission" class="metric-grid"></div>
+  <form id="push-form" class="push-form">
+    <fieldset class="settings-group"><legend>Content</legend>
+      <label class="settings-field">Title<input name="title" placeholder="New episode" autocomplete="off"></label>
+      <label class="settings-field">Subtitle<input name="subtitle" placeholder="Season 2" autocomplete="off"></label>
+      <label class="settings-field">Body<textarea name="body" rows="2" placeholder="Episode 4 is ready to watch."></textarea></label>
+      <div class="push-row">
+        <label class="settings-field">Delay (seconds)<input name="delay" type="number" value="3" min="1" max="86400"></label>
+        <label class="settings-field">Badge<input name="badge" type="number" min="0" placeholder="none"></label>
+        <label class="ui-check is-on"><input type="checkbox" name="sound" checked> Sound</label>
+      </div>
+    </fieldset>
+    <fieldset class="settings-group"><legend>Image</legend>
+      <div class="push-row">
+        <label class="settings-field grow">Image URL<input name="image_url" type="url" placeholder="https://example.com/poster.jpg" autocomplete="off"></label>
+        <span class="muted">or</span>
+        <label class="btn ghost">Choose file<input type="file" id="push-image-file" accept="image/png,image/jpeg,image/gif" hidden></label>
+        <button type="button" class="btn ghost" id="push-image-clear" hidden>Remove image</button>
+      </div>
+      <img id="push-image-preview" class="push-image-preview" alt="Attached image preview" hidden>
+      <p class="muted" id="push-image-note">The device downloads the URL. A chosen file is shrunk to fit the command size limit.</p>
+    </fieldset>
+    <fieldset class="settings-group"><legend>Action buttons</legend>
+      <div id="push-actions" class="push-actions"></div>
+      <button type="button" class="btn ghost" id="push-action-add">Add action</button>
+      <p class="muted">Actions show when the user long-presses or expands the notification. Taps are reported below.</p>
+    </fieldset>
+    <fieldset class="settings-group"><legend>Advanced</legend>
+      <label class="settings-field">Thread id<input name="thread_id" placeholder="Groups notifications" autocomplete="off"></label>
+      <label class="settings-field">User info (JSON)<textarea name="user_info" rows="2" placeholder='{"deeplink": "dirtvision://series/123"}'></textarea></label>
+    </fieldset>
+    <div class="settings-actions">
+      <button type="submit" class="btn">Schedule notification</button>
+      <span id="push-status" class="muted"></span>
+    </div>
   </form>
-  <div id="push-result" class="debug-result"></div>
+  <h3>Responses</h3>
+  <div id="push-result" class="debug-result"><p class="muted">Taps on the notification and its actions appear here after you press Check permission.</p></div>
 </section>
 
 <section class="debug-panel hidden" data-panel="network-tools">
-  <h2>Mac-side network and device tools</h2>
-  <div id="profile-buttons" class="row-actions"></div>
-  <p id="profile-status" class="muted"></p>
-  <div id="waterfall" class="waterfall"></div>
-  <form id="deeplink-form" class="filters">
-    <select id="deeplink-udid" data-cap="deeplink" aria-label="Deeplink target"></select>
-    <input id="deeplink-url" placeholder="scheme://path">
-    <button class="btn">Open deeplink</button>
-  </form>
-  <p id="deeplink-status" class="muted"></p>
-  <form id="location-form" class="filters">
-    <select id="loc-udid" data-cap="location" aria-label="Location target"></select>
-    <input id="loc-lat" type="number" step="any" placeholder="Latitude">
-    <input id="loc-lon" type="number" step="any" placeholder="Longitude">
-    <button class="btn">Set location</button>
-    <button type="button" id="loc-clear" class="btn ghost">Clear</button>
-  </form>
-  <p id="location-status" class="muted"></p>
-  <form data-command-form="nav.open_url" class="filters">
-    <input name="url" placeholder="scheme://content/id on the paired iPhone or Apple TV">
-    <button class="btn">Open on device</button>
-  </form>
-  <p id="nav-status" class="muted"></p>
+  <div class="panel-title"><h2>Network and device tools</h2></div>
+  <p class="muted">Each tool runs on the app selected at the top unless you pick another simulator or device.</p>
+
+  <div class="tool-card">
+    <h3>Network conditions</h3>
+    <p class="muted">Shapes the app selected in Scope. Choose an app first.</p>
+    <div id="profile-buttons" class="profile-grid"></div>
+    <p id="profile-status" class="muted">No profile applied.</p>
+  </div>
+
+  <div class="tool-card">
+    <h3>Open a link</h3>
+    <form id="deeplink-form" class="filters">
+      <label>Target<select id="deeplink-udid" data-cap="deeplink" aria-label="Deeplink target"></select></label>
+      <label>Open with
+        <select id="deeplink-via" aria-label="How to open the link">
+          <option value="system">System (like tapping the link)</option>
+          <option value="app">Inside the app (SDK)</option>
+        </select>
+      </label>
+      <label class="grow">URL<input id="deeplink-url" list="deeplink-hints" placeholder="scheme://path" autocomplete="off"></label>
+      <datalist id="deeplink-hints"></datalist>
+      <button class="btn">Open</button>
+    </form>
+    <p id="deeplink-status" class="muted"></p>
+    <p id="nav-status" class="muted"></p>
+  </div>
+
+  <div class="tool-card">
+    <h3>Simulated location</h3>
+    <form id="location-form" class="filters">
+      <label>Target<select id="loc-udid" data-cap="location" aria-label="Location target"></select></label>
+      <label>Preset
+        <select id="loc-preset" aria-label="Location preset">
+          <option value="">Custom</option>
+          <option value="37.3349,-122.0090">Cupertino</option>
+          <option value="40.7580,-73.9855">New York</option>
+          <option value="51.5074,-0.1278">London</option>
+          <option value="19.0760,72.8777">Mumbai</option>
+          <option value="35.6762,139.6503">Tokyo</option>
+          <option value="-33.8688,151.2093">Sydney</option>
+        </select>
+      </label>
+      <label>Latitude<input id="loc-lat" type="number" step="any" min="-90" max="90" placeholder="37.33"></label>
+      <label>Longitude<input id="loc-lon" type="number" step="any" min="-180" max="180" placeholder="-122.01"></label>
+      <button class="btn">Set location</button>
+      <button type="button" id="loc-clear" class="btn ghost">Clear</button>
+    </form>
+    <p id="location-status" class="muted"></p>
+  </div>
+
+  <div class="tool-card">
+    <div class="panel-title"><h3>Request waterfall</h3>
+      <button type="button" class="btn ghost" id="waterfall-refresh">Refresh</button>
+    </div>
+    <p class="muted">The last 80 requests in the current scope. Click a row to open it.</p>
+    <div id="waterfall" class="waterfall"></div>
+  </div>
 </section>
 {% endblock %}
 {% block scripts %}
-<script src="/static/js/storage_preview.js?v=1"></script>
+<script src="/static/js/storage_preview.js?v=2"></script>
 <script src="/static/js/memory_visuals.js?v=1"></script>
 <script src="/static/js/memory.js?v=5"></script>
 <script src="/static/js/live.js?v=4"></script>
-<script src="/static/js/explorer.js?v=4"></script>
-<script src="/static/js/debug.js?v=38"></script>
+<script src="/static/js/explorer.js?v=5"></script>
+<script src="/static/js/runtime.js?v=1"></script>
+<script src="/static/js/qa_tools.js?v=1"></script>
+<script src="/static/js/debug.js?v=41"></script>
 <script>document.addEventListener("DOMContentLoaded", () => ViewliftDebug.init());</script>
 {% endblock %}

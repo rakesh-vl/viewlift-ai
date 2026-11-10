@@ -24,7 +24,7 @@ mcp = FastMCP(
         "failed_requests, or summarize_logs, then drill in with get_flow, get_log, and "
         "app_inspect. Use wait_for_flow or wait_for_log after a UI action. "
         "Mutating tools require confirm=true; say what will change first. "
-        "Do not enable proxy rewrite. Network profiles throttle every proxied app. "
+        "set_network_profile needs a client_id and shapes that app through the SDK. "
         "Device tools take a hardware UDID or the app's client_id, never an app device_key. "
         "Credentials, cookies, API keys, signed URL parameters, emails, phone numbers, "
         "user ids, device ids, and IP addresses are always masked as [REDACTED]. "
@@ -271,12 +271,6 @@ def list_debug_events(client_id: str, module: str = "", limit: int = 50) -> dict
 
 
 @mcp.tool(annotations=_READ)
-def list_rules() -> dict[str, Any]:
-    """Proxy rules that may be altering traffic, and paused breakpoints. Read-only."""
-    return _run("list_rules", {}, lambda: tools.list_rules(_api()))
-
-
-@mcp.tool(annotations=_READ)
 def describe_command(command: str = "") -> dict[str, Any]:
     """Payload notes for app_inspect and app_mutate commands. Empty command lists all."""
     return tools.describe_command(command)
@@ -291,14 +285,14 @@ def app_inspect(
     """Run one read-only on-device command and wait for the result. client_id is required.
 
     Call describe_command for the command list and payloads. ui.screenshot and bug.capture
-    also return a PNG. Pass an explorer handle back as payload.handle to drill in.
+    also return an image. Pass an explorer handle back as payload.handle to drill in.
     """
     args = {"client_id": client_id, "command": command, "payload": payload}
     result = _run("app_inspect", args, lambda: tools.app_inspect(_api(), **args))
     cleaned, image = tools.split_image(result)
     if image is None:
         return cleaned
-    return [cleaned, Image(data=image, format="png")]
+    return [cleaned, Image(data=image, format=tools.image_format(image))]
 
 
 @mcp.tool(annotations=_READ)
@@ -382,7 +376,7 @@ def app_mutate(
     payload: dict[str, Any] | None = None,
     confirm: bool = False,
 ) -> dict[str, Any]:
-    """Change one running app. confirm must be true. Does not enable proxy rewrite.
+    """Change one running app. confirm must be true.
 
     Call describe_command for the write commands and their payloads.
     """
@@ -392,10 +386,9 @@ def app_mutate(
 
 @mcp.tool(annotations=_WRITE)
 def set_network_profile(profile: str, client_id: str = "", confirm: bool = False) -> dict[str, Any]:
-    """Apply wifi, 4g, 3g, edge, gprs, offline, or off.
+    """Shape one app's traffic: wifi, 4g, 3g, edge, gprs, offline, or off.
 
-    With client_id the SDK shapes that app's traffic on its simulator or device (latency, loss,
-    downlink, offline). Without it the preset throttles every app routed through the proxy.
+    client_id is required. The SDK applies the profile on that app's simulator or device.
     """
     args = {"profile": profile, "client_id": client_id, "confirm": confirm}
     return _run("set_network_profile", args, lambda: tools.set_network_profile(_api(), **args))

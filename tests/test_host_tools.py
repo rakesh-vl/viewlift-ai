@@ -27,6 +27,7 @@ from viewlift_ai.services.host.runner import (
     check_udid,
 )
 from viewlift_ai.services.host.session_defaults import SessionDefaults
+from viewlift_ai.services.host.target import capabilities
 from viewlift_ai.services.host.ui_driver import find_elements, normalize_axe, screen_map
 
 
@@ -412,3 +413,11 @@ def test_axe_tree_normalizes_and_summarizes() -> None:
     assert find_elements(elements, {"identifier": "login.submit"})[0]["label"] == "Sign In"
     assert find_elements(elements, {"text": "welc"})[0]["label"] == "Welcome"
     assert find_elements(elements, {"label": "sign"}) == []
+
+
+def test_host_ui_driver_is_a_simulator_capability_only() -> None:
+    assert "ui_host" in capabilities("simulator", "ios")
+    assert "ui_host" in capabilities("simulator", "tvos")
+    assert "ui_host" not in capabilities("device", "ios")
+    assert "ui_host" not in capabilities("device", "tvos")
+    assert "ui_runner" in capabilities("device", "ios")

@@ -79,7 +79,7 @@ Every console response passes through `guard.scrub` before an agent sees it. The
 | Reveal unlock tokens and mutation confirmation tokens (dropped) | |
 | FairPlay SPC, CKC, and certificate material | DRM step timing and error codes |
 
-Strings longer than 16,000 characters are truncated. Screenshot and layer image bytes are removed from JSON. `ui.screenshot` and `bug.capture` return the PNG as an MCP image instead.
+Strings longer than 16,000 characters are truncated. Screenshot and layer image bytes are removed from JSON. `ui.screenshot` (PNG) and `bug.capture` (JPEG) return the picture as an MCP image instead.
 
 | Switch | Effect |
 |---|---|
@@ -90,7 +90,7 @@ Strings longer than 16,000 characters are truncated. Screenshot and layer image 
 
 Tools set MCP hints so a client can auto-approve reads and prompt for writes. `openWorldHint` is false on every tool except the three `apple_docs_*` tools, which read public pages from developer.apple.com. Nothing else calls the public internet on its own. `app_mutate`, `replay_flow`, `erase_sims`, `clean`, `swift_package_clean`, `debug_attach_sim`, and `debug_lldb_command` are marked destructive.
 
-Agents cannot turn on proxy rewrite, map local, map remote, or breakpoints. `list_rules` only reports them. Agents cannot unlock reveal. Replay sends a captured request only when a person has already unlocked reveal in the dashboard.
+Agents cannot unlock reveal. Replay sends a captured request only when a person has already unlocked reveal in the dashboard.
 
 ## Find the app
 
@@ -98,7 +98,7 @@ These never run code on a device.
 
 | Tool | Arguments | Returns |
 |---|---|---|
-| `console_status` | | Reachable or not, online apps, whether reveal is unlocked, whether any rewrite rule is active, and the policy |
+| `console_status` | | Reachable or not, online apps, whether reveal is unlocked, and the policy |
 | `security_policy` | | The mask list and both switches. No console call |
 | `list_devices` | | Apps grouped by `device_key`. One phone can hold many apps |
 | `list_apps` | `device_key?`, `bundle_id?`, `online_only?`, `auth_state?` | `client_id`, name, bundle id, device, model, `auth_state`, platform, online. Same app on two phones is two rows. User ids stay on the dashboard. |
@@ -171,14 +171,13 @@ Stored on this Mac. Bodies and headers are redacted. Unattributed proxy rows (no
 | `get_log` | `log_id`, `client_id` | The full line and `linked_flow_id` when the line carried a request id. A line owned by another app is refused |
 | `list_debug_events` | `client_id`, `module?`, `limit?` | Events and command results the app posted |
 | `list_packages` | `client_id` | Swift packages resolved for that app's Xcode build |
-| `list_rules` | | Map local, map remote, rewrite, throttle, breakpoints, and any paused breakpoint. Read-only |
 | `get_session_audit` | `limit?` | Tool calls this MCP process has made, newest first, arguments scrubbed |
 
 ## Ask the running app
 
 `app_inspect` takes `client_id`, `command`, and an optional `payload`. It enqueues one read command and waits for that app's result (about 12 seconds, 25 at most). A command runs only if the app enabled its module. A disabled module returns `moduleDisabled`.
 
-`ui.screenshot` and `bug.capture` also return a PNG. Hierarchy and layer captures do not: their embedded images are stripped so they do not fill the context. Pass a returned `handle` back as `payload.handle` to open the next object. Handles are weak and short-lived.
+`ui.screenshot` and `bug.capture` also return an image. Hierarchy and layer captures do not: their embedded images are stripped so they do not fill the context. Pass a returned `handle` back as `payload.handle` to open the next object. Handles are weak and short-lived.
 
 | Area | Command | Payload | What you get |
 |---|---|---|---|
@@ -202,7 +201,7 @@ Stored on this Mac. Bodies and headers are redacted. Unattributed proxy rows (no
 | Previews | `preview.render` | `name`, `state?`, `color_scheme?`, `width?`, `height?`, `scale?` | PNG of one registered view, drawn off screen, under 480 KB |
 | SwiftUI | `swiftui.renders` | | Re-render counts per tracked view |
 | Assets | `assets.audit` | | Images larger than the size they are shown at |
-| Accessibility | `accessibility.audit` | | Missing labels and small touch targets |
+| Accessibility | `accessibility.audit` | | Findings by severity (missing labels, small targets, low contrast, Dynamic Type, unreachable controls), each with a frame and a fix, plus a JPEG of the screen |
 | Storage | `storage.defaults` | | UserDefaults keys. Secret-like values are masked |
 | Storage | `storage.keychain_metadata` | | Keychain items, attributes only, no secret bytes |
 | Storage | `storage.files` | `path` | Sandbox listing. Paths are relative to the app home |
@@ -210,7 +209,7 @@ Stored on this Mac. Bodies and headers are redacted. Unattributed proxy rows (no
 | Storage | `storage.sqlite_schema` | `path` | Table list. The database is opened read-only |
 | Storage | `storage.sqlite_query` | `path`, `query` | One `SELECT`, `PRAGMA`, `WITH`, or `EXPLAIN`. Up to 1,000 rows |
 | Storage | `storage.cookies` | | `HTTPCookieStorage` cookies. Values are masked |
-| Runtime | `runtime.search` | `query` | Objective-C classes matching the query |
+| Runtime | `runtime.search` | `query`, `app_only?` | Objective-C classes matching the query, and which of them come from the app bundle |
 | Runtime | `runtime.describe` | `class` | Methods and properties |
 | Runtime | `runtime.libraries` | | Loaded images and their class counts. App images come first |
 | Runtime | `runtime.image_classes` | image path | Classes defined in that image |
@@ -218,8 +217,9 @@ Stored on this Mac. Bodies and headers are redacted. Unattributed proxy rows (no
 | Explorer | `explorer.object` | `handle`, `view_id`, or `memory_id` | Class chain, properties, ivars, Swift fields, methods, elements |
 | Explorer | `explorer.instances` | `class`, `limit?` | Live instances of that class and its subclasses |
 | Settings | `settings.get` | | Modules, network-capture switch, and body limits as applied on the device |
-| Macros | `macro.list` | | Recorded touch macros |
-| Bug | `bug.capture` | | Screenshot plus a performance and memory snapshot |
+| Macros | `macro.list` | | Recording state and the recorded taps, swipes, and remote presses with the element each one hit |
+| Bug | `bug.capture` | | JPEG screenshot plus screen, app, device, performance, and recent taps |
+| Push | `push.status` | | Notification permission, badge, pending and delivered test notifications, and tapped actions |
 | OTT | `ott.snapshot` | | User, plan, TVE, theme, modules, metadata map |
 | Hangs | `hang.list` | | Main-thread stalls with screen, taps, console, and stack |
 | Crashes | `crash.list` | | Fatal signals and uncaught exceptions the SDK recorded, with frames and images |
@@ -240,7 +240,7 @@ Every tool in this section requires `confirm: true`. Call it only after telling 
 
 | Tool or command | Arguments | Effect |
 |---|---|---|
-| `set_network_profile` | `profile`, `client_id?`, `confirm` | `wifi`, `4g`, `3g`, `edge`, `gprs`, `offline`, or `off`. With `client_id`, the SDK shapes that app's captured traffic (`net.profile`). Without it, the proxy throttles every proxied app on this Mac. Does not enable rewrite |
+| `set_network_profile` | `profile`, `client_id`, `confirm` | `wifi`, `4g`, `3g`, `edge`, `gprs`, `offline`, or `off`. The SDK shapes that app's traffic (`net.profile`). `client_id` is required |
 | `open_deeplink` | `url`, `client_id`, `confirm` | Opens the URL on the simulator or paired device that hosts this app |
 | `set_location` | `udid` or `client_id`, `latitude?`, `longitude?`, `clear?`, `confirm` | Simulated GPS on a simulator or a paired iPhone, iPad, or Apple TV. A device on iOS 17+ needs the developer tunnel. `udid` is the hardware id, not an app `device_key` |
 | `replay_flow` | `flow_id`, `confirm` | Resends one captured request. Fails unless reveal is already unlocked. Does not unlock it |
@@ -255,10 +255,11 @@ Every tool in this section requires `confirm: true`. Call it only after telling 
 | `storage.snapshot_create` | `paths` | Saves defaults and the named files |
 | `storage.snapshot_restore` | snapshot | Restores a saved snapshot |
 | `storage.cookie_delete` | `name`, `domain`, `path` | Deletes matching cookies |
-| `macro.record_start` | | Starts recording touches |
-| `macro.record_stop` | | Stops and saves the macro |
-| `macro.replay` | | Replays a recorded macro |
-| `push.local` | title, body, … | Schedules a local notification |
+| `macro.record_start` | | Starts recording taps, swipes, and remote presses |
+| `macro.record_stop` | | Stops recording and returns the steps |
+| `macro.replay` | `actions?` | Replays the given steps, or the last recording, through UI automation. Returns a result per step |
+| `push.local` | `title`, `body`, `subtitle?`, `delay?`, `badge?`, `sound?`, `image_url?` or `image_base64?`, `actions?`, `thread_id?`, `user_info?` | Schedules a local notification. Asks for permission the first time. Up to four actions (`id`, `title`, `input?`, `destructive?`, `foreground?`). Images are iOS only |
+| `push.clear` | | Removes pending and delivered test notifications |
 | `nav.open_url` | `url` | Opens a URL inside the paired app. `javascript`, `data`, and `file` are rejected. The query is not echoed back |
 | `explorer.set` | `handle`, `key`, `value` | Sets one Objective-C property through KVC |
 | `explorer.call` | `handle`, `selector` | Calls a zero-argument method. `init`, `set`, `copy`, `dealloc`, and teardown selectors are refused |

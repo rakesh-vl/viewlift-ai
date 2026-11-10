@@ -45,6 +45,7 @@ global.document = {
   body: makeEl(),
 };
 
+vm.runInThisContext(fs.readFileSync(process.argv[2], "utf8"));
 vm.runInThisContext(fs.readFileSync(process.argv[1], "utf8"));
 const page = global.ViewliftNetwork;
 
@@ -72,6 +73,9 @@ page.renderDetail({
 
 assert.match(root.innerHTML, /Copy JSON/);
 assert.match(root.innerHTML, /data-copy-label="Copy JSON"/);
+assert.match(root.innerHTML, /class="json-tree"/);
+assert.match(root.innerHTML, /data-json-filter/);
+assert.match(root.innerHTML, /data-json-node-copy/);
 assert.match(root.innerHTML, /&quot;ok&quot;: true/);
 const responseAt = root.innerHTML.indexOf('data-panel="response"');
 const bodyAt = root.innerHTML.indexOf('data-panel="body"');
@@ -81,7 +85,12 @@ assert.doesNotMatch(root.innerHTML.slice(0, responseAt), /Copy JSON/);
 
 const block = page.copyBlockHtml('{\n  "n": 1\n}', "Copy JSON", "Body");
 assert.match(block, /data-copy-text/);
+assert.match(block, /class="json-tree"/);
 assert.match(block, /&quot;n&quot;: 1/);
+const tree = global.VLJsonTree.html('{"a":{"b":1},"c":[true,null]}', { toolbar: true, copyBar: true });
+assert.match(tree, /data-json-copy-all/);
+assert.match(tree, /jt-key">a</);
+assert.match(tree, /jt-boolean">true</);
 
 const pre = { textContent: '{\n  "n": 1\n}' };
 const button = {
@@ -93,9 +102,9 @@ const button = {
     return null;
   },
 };
-assert.equal(clicks.length, 1);
+assert.ok(clicks.length >= 2);
 (async () => {
-  clicks[0]({ target: button });
+  for (const click of clicks) click({ target: button });
   await Promise.resolve();
   assert.deepEqual(copied, ['{\n  "n": 1\n}']);
   assert.equal(button.textContent, "Copied");
@@ -109,6 +118,9 @@ assert.equal(clicks.length, 1);
 def test_response_json_has_copy_button() -> None:
     node = shutil.which("node")
     assert node, "node is required"
+    tree = ROOT / "src/viewlift_ai/web/static/js/json_tree.js"
     subprocess.run([node, "--check", str(APP)], check=True)
+    subprocess.run([node, "--check", str(tree)], check=True)
     subprocess.run([node, "--check", str(ROOT / "src/viewlift_ai/web/static/js/debug.js")], check=True)
-    subprocess.run([node, "-e", NODE, str(APP)], check=True)
+    subprocess.run([node, "--check", str(ROOT / "src/viewlift_ai/web/static/js/graphql.js")], check=True)
+    subprocess.run([node, "-e", NODE, str(APP), str(tree)], check=True)

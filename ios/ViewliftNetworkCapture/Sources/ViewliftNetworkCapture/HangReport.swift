@@ -324,6 +324,7 @@ private extension UIApplication {
 
 private enum HangTouchObserver {
     static func record(_ event: UIEvent) {
+        MacroRecorder.shared.observe(event)
         if event.type == .presses {
             noteReplayPresses(event)
             FocusDebugMonitor.shared.notePresses(event)

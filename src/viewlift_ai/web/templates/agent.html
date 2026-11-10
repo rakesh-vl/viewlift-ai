@@ -262,10 +262,9 @@ user.tokenExpiry: 2026-11-05T14:02:11Z   (expired)</pre>
           <li><strong>Loopback only.</strong> The MCP server and the console accept connections from this Mac only.</li>
           <li><strong>One app per call.</strong> The server never falls back to the most recent app.</li>
           <li><strong>Writes need confirm.</strong> Without <code>confirm: true</code>, a write tool returns before it sends anything.</li>
-          <li><strong>No rewrite.</strong> No tool turns on map, rewrite, or breakpoints. Use Rules for those.</li>
           <li><strong>Redacted by default.</strong> Tokens and secrets in flows stay masked. Raw bodies and replay need reveal already unlocked in the console. No tool unlocks it.</li>
           <li><strong>Keychain values never leave.</strong> Keychain reads return item metadata only.</li>
-          <li><strong>Global throttle.</strong> A network profile slows every proxied app on this Mac, not only the one in the chat.</li>
+          <li><strong>Network profile.</strong> A profile shapes the selected app through the SDK. It needs that app and confirm.</li>
         </ul>
       </section>
 

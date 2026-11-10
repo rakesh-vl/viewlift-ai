@@ -2,8 +2,9 @@
   const MUTATING = new Set([
     "ui.highlight", "ui.edit", "ui.visual", "storage.defaults_set", "storage.file_write",
     "storage.snapshot_create", "storage.snapshot_restore", "macro.record_start", "macro.record_stop", "macro.replay",
-    "push.local", "nav.open_url", "explorer.set", "explorer.call", "storage.defaults_delete",
+    "push.local", "push.clear", "nav.open_url", "explorer.set", "explorer.call", "storage.defaults_delete",
     "storage.file_rename", "storage.file_delete", "storage.cookie_delete", "settings.set",
+    "net.profile",
   ]);
 
   // Matches StateDebugService protected paths. These containers must stay on device.
@@ -48,9 +49,6 @@
     depthMode: "overlap",
     zRange: { low: 0, high: 100 },
     draw3DFrame: 0,
-    macro: null,
-    bugImage: null,
-    drawing: false,
     analytics: null,
     analyticsBeaconUrls: { user: "", player: "" },
     selectedAnalyticsId: "",
@@ -82,6 +80,15 @@
     .replaceAll("&", "&amp;").replaceAll("<", "&lt;")
     .replaceAll(">", "&gt;").replaceAll('"', "&quot;");
   const escapeAttr = (value) => escapeHtml(value).replaceAll("'", "&#39;");
+  const jsonValueHtml = (value) => {
+    if (value == null) return escapeHtml(value === null ? "null" : "");
+    const text = typeof value === "string" ? value : JSON.stringify(value);
+    const tree = (typeof value === "object" || typeof value === "string") && window.VLJsonTree
+      ? window.VLJsonTree.html(text, { toolbar: false, openDepth: 0 })
+      : "";
+    if (tree) return tree;
+    return escapeHtml(typeof value === "string" ? value : text);
+  };
   const tableSort = new Map();
   const SIZE_SORT_KEYS = new Set(["bytes", "estimated_memory_bytes"]);
   const ASSET_COLUMNS = ["name", "type", "bytes", "estimated_memory_bytes", "width", "height", "bundle", "path"];
@@ -221,9 +228,17 @@
         clientId: () => state.clientId,
         paint: (payload) => this.renderScreenshot(payload, "live-shot"),
       });
+      window.ViewliftQA?.init({
+        send: (name, payload, options) => this.sendCommand(name, payload, options),
+        notify: (message) => this.notify(message),
+        client: () => state.client,
+      });
+      window.ViewliftRuntime?.init({
+        send: (name, payload) => this.sendCommand(name, payload),
+        notify: (message) => this.notify(message),
+      });
       this.bindCommands();
       this.bindForms();
-      this.bindBugCanvas();
       document.getElementById("debug-refresh").addEventListener("click", async () => {
         if (window.VLScope) await window.VLScope.refresh();
         await this.loadClients();
@@ -231,12 +246,9 @@
       document.addEventListener("vl:scope-change", async () => {
         await this.loadClients();
         this.loadAnalyticsTraffic();
-        this.loadWaterfall();
+        window.ViewliftQA?.loadWaterfall();
       });
       document.addEventListener("vl:apps-change", () => this.loadClients());
-      document.getElementById("macro-replay").addEventListener("click", () => {
-        this.sendCommand("macro.replay", state.macro || { actions: [] });
-      });
       document.getElementById("ott-spm-refresh")?.addEventListener("click", () => this.loadSpm());
       document.getElementById("analytics-refresh")?.addEventListener("click", () => this.loadAnalyticsTraffic());
       ["af-kind", "af-method", "af-status", "af-host"].forEach((id) => {
@@ -293,8 +305,6 @@
       this.bindLayoutToggles();
       this.bindHierarchyCanvas();
       await this.loadClients();
-      await this.loadProfiles();
-      await this.loadWaterfall();
       await this.loadAnalyticsTraffic();
       this.connectWebSocket();
       this.ensureAnalyticsFlowSocket();
@@ -320,6 +330,7 @@
         }
         if (button.dataset.debugTab === "analytics") this.renderAnalyticsTraffic();
         if (button.dataset.debugTab === "hangs") this.markCrashTab(false);
+        window.ViewliftQA?.onTabShown(button.dataset.debugTab);
       });
       tabs.querySelector("[data-debug-tab]")?.classList.add("active");
       const openHashedTab = () => {
@@ -357,62 +368,6 @@
           this.sendCommand(form.dataset.commandForm, payload);
         });
       });
-      const deeplinkForm = document.getElementById("deeplink-form");
-      if (deeplinkForm) {
-        window.ViewliftNetwork?.fillTargetSelect(document.getElementById("deeplink-udid"));
-        deeplinkForm.addEventListener("submit", async (event) => {
-          event.preventDefault();
-          const choice = window.ViewliftNetwork
-            ? window.ViewliftNetwork.targetChoice(document.getElementById("deeplink-udid"))
-            : { udid: "", kind: "" };
-          const response = await fetch("/api/debug/deeplink", {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({
-              udid: choice.udid,
-              kind: choice.kind,
-              url: document.getElementById("deeplink-url").value.trim(),
-              client_id: state.clientId || null,
-            }),
-          });
-          const data = await response.json();
-          document.getElementById("deeplink-status").textContent = data.detail || (data.ok ? "Opened." : "Failed");
-        });
-      }
-      const locationForm = document.getElementById("location-form");
-      if (locationForm && document.getElementById("loc-lat")) {
-        window.ViewliftNetwork?.fillTargetSelect(document.getElementById("loc-udid"));
-        locationForm.addEventListener("submit", (event) => {
-          event.preventDefault();
-          this.sendLocation(false);
-        });
-        const clear = document.getElementById("loc-clear");
-        if (clear) clear.addEventListener("click", () => this.sendLocation(true));
-      }
-    },
-
-    async sendLocation(clear) {
-      const choice = window.ViewliftNetwork
-        ? window.ViewliftNetwork.targetChoice(document.getElementById("loc-udid"))
-        : { udid: "", kind: "" };
-      const body = {
-        udid: choice.udid,
-        kind: choice.kind,
-        clear,
-        client_id: state.clientId || null,
-      };
-      if (!clear) {
-        body.latitude = Number(document.getElementById("loc-lat").value);
-        body.longitude = Number(document.getElementById("loc-lon").value);
-      }
-      const response = await fetch("/api/debug/location", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(body),
-      });
-      const data = await response.json();
-      const status = document.getElementById("location-status");
-      if (status) status.textContent = data.detail || (data.ok ? "Location updated." : "Failed");
     },
 
     /*
@@ -478,8 +433,6 @@
         swiftUINames: new Map(),
         describeId: "",
         describeDetail: null,
-        macro: null,
-        bugImage: null,
         analytics: null,
         analyticsBeaconUrls: { user: "", player: "" },
         selectedAnalyticsId: "",
@@ -493,11 +446,14 @@
         playbackPlaybackId: "",
         playbackDirty: false,
         focusPresses: [],
+        focusHistory: [],
         crashes: [],
       });
       clearTimeout(state.describeTimer);
       state.describeTimer = 0;
       window.ViewliftExplorer?.reset();
+      window.ViewliftQA?.reset();
+      window.ViewliftRuntime?.reset();
       if (state.previewUrl) {
         URL.revokeObjectURL(state.previewUrl);
         state.previewUrl = "";
@@ -507,7 +463,7 @@
         "playback-summary", "playback-timeline", "playback-drm", "playback-waterfall", "ui-focus",
         "hangs-result", "crashes-live", "performance-metrics", "ui-tree", "ui-path", "ui-properties",
         "swiftui-result", "assets-result", "accessibility-result", "storage-inspector",
-        "storage-files", "bug-result", "macro-result", "runtime-result", "push-result",
+        "storage-files",
       ];
       clearIds.forEach((id) => {
         const node = document.getElementById(id);
@@ -520,7 +476,7 @@
       }
       const filter = document.getElementById("ui-filter");
       if (filter) filter.value = "";
-      ["performance-chart", "ui-3d", "bug-canvas"].forEach((id) => {
+      ["performance-chart", "ui-3d"].forEach((id) => {
         const canvas = document.getElementById(id);
         if (canvas) canvas.getContext("2d").clearRect(0, 0, canvas.width, canvas.height);
       });
@@ -582,6 +538,7 @@
       window.ViewliftMemory?.setClient(state.client);
       if (!state.client) {
         if (name) name.textContent = "No app selected";
+        window.ViewliftQA?.onClient(null);
         this.renderChooser();
         return;
       }
@@ -592,6 +549,7 @@
       }
       this.syncTargetSelect(document.getElementById("deeplink-udid"));
       this.syncTargetSelect(document.getElementById("loc-udid"));
+      window.ViewliftQA?.onClient(state.client);
       const capabilities = Object.entries(state.client.capabilities || {})
         .map(([name, status]) => `<span class="capability ${escapeHtml(status)}">${escapeHtml(name)}: ${escapeHtml(status)}</span>`)
         .join(" · ");
@@ -682,14 +640,15 @@
       state.noticeTimer = window.setTimeout(() => { bar.hidden = true; }, 6000);
     },
 
-    async sendCommand(name, payload) {
+    /** `quiet` skips the dialog for commands that change no app state, such as starting a recording. */
+    async sendCommand(name, payload, { quiet = false } = {}) {
       if (!state.clientId) {
         this.notify("Choose one app in Scope first. Several apps may be running on this device.");
         return false;
       }
       let confirmation = null;
       if (MUTATING.has(name)) {
-        const approved = await this.confirmAction(`Run ${name} on ${state.client?.app_name || "the app"}?`);
+        const approved = quiet || await this.confirmAction(`Run ${name} on ${state.client?.app_name || "the app"}?`);
         if (!approved) return false;
         const tokenResponse = await fetch("/api/debug/confirm", {
           method: "POST",
@@ -832,7 +791,7 @@
           return;
         }
         if (event.module === "storage") clearTimeout(state.storageInfoTimer);
-        this.renderError(event.module, data.error || "Command failed");
+        this.renderError(event.module, data.error || "Command failed", data.name);
         return;
       }
       this.renderResult(data.name, data.result || {});
@@ -858,6 +817,8 @@
       if (name === "hang.list") return this.renderHangs(result);
       if (name === "crash.list") return this.renderStacks(name, result);
       if (name.startsWith("memory.")) return window.ViewliftMemory?.onResult(name, result);
+      if (window.ViewliftQA?.onResult(name, result)) return;
+      if (window.ViewliftRuntime?.onResult(name, result)) return;
       if (window.ViewliftExplorer?.onResult(name, result)) return;
       if (name === "ui.hierarchy") return this.renderHierarchy(result);
       if (name === "ui.layers") return this.applyLayers(result);
@@ -869,14 +830,7 @@
       if (name.startsWith("activity.")) return window.ViewliftLive?.onResult(name, result);
       if (name === "swiftui.renders") return this.renderTable("swiftui-result", result.components || []);
       if (name === "assets.audit") return this.renderAssets(result.assets || []);
-      if (name === "accessibility.audit") return this.renderTable("accessibility-result", result.findings || []);
       if (name.startsWith("storage.")) return this.renderStorage(name, result);
-      if (name.startsWith("macro.")) return this.renderMacro(result);
-      if (name.startsWith("runtime.")) return this.renderRuntime(name, result);
-      if (name === "bug.capture") return this.renderBug(result);
-      if (name === "push.local") {
-        document.getElementById("push-result").textContent = "Notification scheduled.";
-      }
     },
 
     captureAnalyticsFromOtt(result) {
@@ -1487,6 +1441,19 @@
       if (presses.length) {
         lines.push(`<p class="muted">Remote: ${escapeHtml(presses.map((item) => item.button).filter(Boolean).join(", "))}</p>`);
       }
+      const history = Array.isArray(result.history) ? result.history : state.focusHistory;
+      if (Array.isArray(result.history)) state.focusHistory = result.history;
+      else if (result.focused && (result.focused.id || result.focused.rejected || result.focused.class)) {
+        state.focusHistory = [result.focused, ...state.focusHistory].slice(0, 40);
+      }
+      const shown = (state.focusHistory || history || []).slice(0, 12);
+      if (shown.length) {
+        const items = shown.map((row) => {
+          const mark = row.rejected ? "rejected" : "moved";
+          return `<li>${escapeHtml(mark)} ${escapeHtml(row.class || "")} ${escapeHtml(row.identifier || row.id || "")} ${escapeHtml(row.heading || "")}</li>`;
+        }).join("");
+        lines.push(`<ol class="focus-history">${items}</ol>`);
+      }
       target.innerHTML = lines.join("");
       document.getElementById("ui-focus-highlight")?.addEventListener("click", () => {
         this.sendCommand("ui.highlight", { id: focused.id });
@@ -1540,8 +1507,7 @@
       const entries = Object.entries(data || {}).filter(([, value]) => value !== undefined && value !== null && value !== "");
       if (!entries.length) return `<p class="muted">empty</p>`;
       return `<dl class="ott-kv">${entries.map(([key, value]) => {
-        const text = typeof value === "object" ? JSON.stringify(value) : String(value);
-        return `<dt>${escapeHtml(key)}</dt><dd>${escapeHtml(text)}</dd>`;
+        return `<dt>${escapeHtml(key)}</dt><dd>${jsonValueHtml(value)}</dd>`;
       }).join("")}</dl>`;
     },
 
@@ -3489,7 +3455,13 @@
           : rows;
         count.textContent = needle ? `${shown.length} of ${rows.length}` : `${rows.length} keys`;
         body.innerHTML = shown.length
-          ? shown.slice(0, 500).map((row) => `<tr><th>${escapeHtml(row.key)}</th><td class="plist-type">${escapeHtml(row.kind)}</td><td><pre class="defaults-value">${escapeHtml(row.text.length > 4000 ? `${row.text.slice(0, 4000)}…` : row.text)}</pre></td><td class="defaults-actions"><button type="button" class="btn ghost" data-defaults-delete="${escapeAttr(row.key)}" aria-label="Delete ${escapeAttr(row.key)}">Delete</button></td></tr>`).join("")
+          ? shown.slice(0, 500).map((row) => {
+            const tree = (row.kind === "object" || row.kind === "array") && window.VLJsonTree
+              ? window.VLJsonTree.html(row.text, { toolbar: false, openDepth: 0 })
+              : "";
+            const cell = tree || `<pre class="defaults-value">${escapeHtml(row.text.length > 4000 ? `${row.text.slice(0, 4000)}…` : row.text)}</pre>`;
+            return `<tr><th>${escapeHtml(row.key)}</th><td class="plist-type">${escapeHtml(row.kind)}</td><td>${cell}</td><td class="defaults-actions"><button type="button" class="btn ghost" data-defaults-delete="${escapeAttr(row.key)}" aria-label="Delete ${escapeAttr(row.key)}">Delete</button></td></tr>`;
+          }).join("")
           : `<tr><td colspan="4" class="muted">${rows.length ? "No keys match." : "UserDefaults has no keys."}</td></tr>`;
       };
       paint("");
@@ -3779,73 +3751,6 @@
       return date.toLocaleString();
     },
 
-    renderMacro(result) {
-      state.macro = { actions: result.actions || [] };
-      this.renderTable("macro-result", result.actions || []);
-    },
-
-    renderRuntime(name, result) {
-      const target = document.getElementById("runtime-result");
-      if (name === "runtime.search") {
-        target.innerHTML = (result.classes || []).map((className) =>
-          `<button class="btn ghost runtime-class" data-class="${escapeHtml(className)}">${escapeHtml(className)}</button>`
-        ).join(" ");
-        target.querySelectorAll("[data-class]").forEach((button) => {
-          button.onclick = () => this.sendCommand("runtime.describe", { class: button.dataset.class });
-        });
-      } else {
-        target.innerHTML = window.ViewliftNetwork.copyBlockHtml(JSON.stringify(result, null, 2), "Copy JSON");
-      }
-    },
-
-    renderBug(result) {
-      const canvas = document.getElementById("bug-canvas");
-      const image = new Image();
-      image.onload = () => {
-        canvas.width = image.width;
-        canvas.height = image.height;
-        canvas.getContext("2d").drawImage(image, 0, 0);
-        state.bugImage = image;
-      };
-      image.src = `data:${result.screenshot_mime};base64,${result.screenshot_base64}`;
-      document.getElementById("bug-result").innerHTML = window.ViewliftNetwork.copyBlockHtml(
-        JSON.stringify({ performance: result.performance, memory: result.memory, app: result.app }, null, 2),
-        "Copy JSON"
-      );
-    },
-
-    bindBugCanvas() {
-      const canvas = document.getElementById("bug-canvas");
-      const point = (event) => {
-        const rect = canvas.getBoundingClientRect();
-        return {
-          x: (event.clientX - rect.left) * canvas.width / rect.width,
-          y: (event.clientY - rect.top) * canvas.height / rect.height,
-        };
-      };
-      canvas.addEventListener("pointerdown", (event) => {
-        state.drawing = true;
-        const p = point(event);
-        const ctx = canvas.getContext("2d");
-        ctx.beginPath(); ctx.moveTo(p.x, p.y);
-      });
-      canvas.addEventListener("pointermove", (event) => {
-        if (!state.drawing) return;
-        const p = point(event), ctx = canvas.getContext("2d");
-        ctx.strokeStyle = "#ff3b30"; ctx.lineWidth = 5; ctx.lineTo(p.x, p.y); ctx.stroke();
-      });
-      window.addEventListener("pointerup", () => { state.drawing = false; });
-      document.getElementById("bug-clear").onclick = () => {
-        if (state.bugImage) canvas.getContext("2d").drawImage(state.bugImage, 0, 0);
-      };
-      document.getElementById("bug-download").onclick = () => {
-        const link = document.createElement("a");
-        link.download = "viewlift-bug.png";
-        link.href = canvas.toDataURL("image/png");
-        link.click();
-      };
-    },
-
     bindAssets() {
       const host = document.getElementById("assets-result");
       const select = document.getElementById("assets-bundle");
@@ -3937,7 +3842,7 @@
         const amount = Number(value);
         return `<td class="asset-size" title="${escapeAttr(`${amount} bytes`)}">${escapeHtml(this.bytes(amount))}</td>`;
       }
-      return `<td>${escapeHtml(typeof value === "object" ? JSON.stringify(value) : value)}</td>`;
+      return `<td>${jsonValueHtml(value)}</td>`;
     },
 
     assetPathCell(value) {
@@ -3999,7 +3904,7 @@
       }).join("");
       const body = view.map((row) => `<tr>${columns.map((key) => {
         const value = row[key];
-        return `<td>${escapeHtml(typeof value === "object" ? JSON.stringify(value) : value)}</td>`;
+        return `<td>${jsonValueHtml(value)}</td>`;
       }).join("")}</tr>`).join("");
       target.innerHTML = `<table class="debug-table"><thead><tr>${header}</tr></thead><tbody>${body}</tbody></table>`;
       if (!sortable) return;
@@ -4019,52 +3924,18 @@
       });
     },
 
-    renderError(module, message) {
+    renderError(module, message, name = "") {
+      if (window.ViewliftQA?.onError(module, name, message)) return;
       const targets = {
         memory: "memory-status", ui: "ui-properties", swiftui: "swiftui-result",
         assets: "assets-result", accessibility: "accessibility-result", storage: "storage-inspector",
-        bug: "bug-result", macro: "macro-result",
-        runtime: "runtime-result", push: "push-result",
+        runtime: "runtime-result",
         ott: "ott-sections", hang: "hangs-result", crash: "hangs-result",
         playback: "playback-timeline", nav: "nav-status",
         activity: "live-note", explorer: "explorer-result", settings: "settings-result",
       };
       const target = document.getElementById(targets[module]);
       if (target) target.innerHTML = `<p class="warn-text">${escapeHtml(message)}</p>`;
-    },
-
-    async loadProfiles() {
-      const data = await (await fetch("/api/debug/network-profiles")).json();
-      const host = document.getElementById("profile-buttons");
-      const names = (data.profiles || []).map((item) => item.id).concat(["off"]);
-      host.innerHTML = names.map((name) => `<button class="btn ghost" data-profile="${escapeHtml(name)}">${escapeHtml(name)}</button>`).join("");
-      host.onclick = async (event) => {
-        const button = event.target.closest("[data-profile]");
-        if (!button) return;
-        const response = await fetch("/api/debug/network-profile", {
-          method: "POST", headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ profile: button.dataset.profile }),
-        });
-        const result = await response.json();
-        document.getElementById("profile-status").textContent =
-          response.ok ? `${result.profile} applied; packet loss ${result.packet_loss}` : result.detail;
-      };
-    },
-
-    async loadWaterfall() {
-      const params = new URLSearchParams({ limit: "80" });
-      if (window.VLScope) window.VLScope.applyTo(params);
-      const flows = (await (await fetch(`/api/flows?${params}`)).json()).flows || [];
-      const host = document.getElementById("waterfall");
-      if (!flows.length) { host.innerHTML = `<p class="muted">No flows.</p>`; return; }
-      const start = Math.min(...flows.map((flow) => Date.parse(flow.created_at)));
-      const finish = Math.max(...flows.map((flow) => Date.parse(flow.created_at) + (flow.duration_ms || 1)));
-      const span = Math.max(1, finish - start);
-      host.innerHTML = flows.map((flow) => {
-        const left = (Date.parse(flow.created_at) - start) / span * 100;
-        const width = Math.max(1, (flow.duration_ms || 1) / span * 100);
-        return `<a class="fall-row" href="/flows/${encodeURIComponent(flow.id)}"><span class="fall-label">${escapeHtml(flow.method)} ${escapeHtml(flow.host)}${escapeHtml(flow.path)}</span><span class="fall-track"><span class="fall-bar" style="left:${left}%;width:${Math.min(width, 100 - left)}%"></span></span></a>`;
-      }).join("");
     },
 
     bytes(value) {

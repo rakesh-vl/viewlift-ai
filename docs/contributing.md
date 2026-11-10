@@ -112,13 +112,9 @@ Swift side:
 
 Then update the command tables in [iOS SDK internals](ios-sdk-internals.md#commands) and [MCP server](mcp-server.md#on-device-commands).
 
-### Add a rule type
+### Allowlist
 
-1. Add the dataclass to [models/rules.py](../src/viewlift_ai/models/rules.py) and a list field to `RulesConfig`; update `any_mutating_enabled()`.
-2. Add serialization in `rule_store.py` and validation and CRUD in `rule_engine.py`.
-3. Apply it in [proxy/rules.py](../src/viewlift_ai/proxy/rules.py) at the right point in the request or response order.
-4. Add routes in `rules_routes.py` and UI in `rules.html` / `app.js`.
-5. Add tests for validation, ordering (`tests/test_rules_addon_order.py`) and the API.
+The proxy decrypts only hosts in `RulesConfig.allowlist`. Persist them through `RuleEngine.set_allowlist`. The Setup page calls `PUT /api/rules/allowlist`. Do not add map, rewrite, throttle, or breakpoint rules.
 
 ### Add an MCP tool
 

@@ -13,7 +13,6 @@ from viewlift_ai.api.debug_routes import (
     TEMPLATES,
     _json_body,
     _loopback,
-    _mutating,
     _sessions,
 )
 
@@ -60,7 +59,6 @@ def _page(request: Request, slug: str) -> HTMLResponse:
             "active_page": slug,
             "pages": APPCMS_PAGES,
             "section_names": [section for _slug, _label, section in APPCMS_PAGES if section],
-            "mutating_enabled": _mutating(request),
         },
     )
 
@@ -82,7 +80,6 @@ def _host_page(request: Request, slug: str) -> HTMLResponse:
             "host_section": section,
             "host_title": title,
             "host_tools": HOST_TOOL_PAGES,
-            "mutating_enabled": _mutating(request),
         },
     )
 

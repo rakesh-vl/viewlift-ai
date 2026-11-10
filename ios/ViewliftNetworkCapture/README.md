@@ -77,7 +77,7 @@ Not supported / unavoidable limits:
 - Background `URLSession` configurations (not inserted into those configs)
 - Custom `URLSessionDelegate` authentication challenges and redirect policies on
   the app’s session are not forwarded through the interceptor’s replay session
-- SDK mode is inspection-only (no breakpoints / map / rewrite / throttle)
+- SDK mode is inspection-only. `net.profile` can shape this app's own traffic.
 
 Request/response bodies are capped. Sensitive headers and nested JSON secrets are
 redacted on-device. Upload uses a one-use pairing token, short-lived bearer session,

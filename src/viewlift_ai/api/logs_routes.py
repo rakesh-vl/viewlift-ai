@@ -22,13 +22,6 @@ TEMPLATES = Jinja2Templates(directory=str(WEB_ROOT / "templates"))
 router = APIRouter()
 
 
-def _mutating_enabled(request: Request) -> bool:
-    engine = getattr(request.app.state, "rule_engine", None)
-    if engine is None:
-        return False
-    return bool(engine.any_mutating_enabled())
-
-
 def _tail(request: Request):
     svc = getattr(request.app.state, "log_tail", None)
     if svc is None:
@@ -48,7 +41,6 @@ async def logs_page(request: Request) -> HTMLResponse:
         {
             "title": "Logs",
             "active_nav": "logs",
-            "mutating_enabled": _mutating_enabled(request),
         },
     )
 

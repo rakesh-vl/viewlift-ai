@@ -2,25 +2,21 @@
 
 from __future__ import annotations
 
+import gzip
 from pathlib import Path
 
 import pytest
 
 from viewlift_ai.services.debug_toolkit import (
     DEBUG_MODULES,
-    apply_network_profile,
+    NETWORK_PROFILES,
+    list_network_profiles,
     open_deeplink,
     replay_http,
     reveal_simulator_asset,
     set_device_location,
     validate_deeplink,
 )
-from viewlift_ai.services.rule_engine import RuleEngine
-from viewlift_ai.services.rule_store import RuleConfigStore
-
-
-def _engine(tmp_path: Path) -> RuleEngine:
-    return RuleEngine(RuleConfigStore(tmp_path / "rules.json"))
 
 
 def test_module_catalog_covers_phantom_groups() -> None:
@@ -37,23 +33,14 @@ def test_module_catalog_covers_phantom_groups() -> None:
     assert "crash-stacks" in ids
 
 
-def test_network_profile_upserts_one_rule_and_clears(tmp_path: Path) -> None:
-    engine = _engine(tmp_path)
-    applied = apply_network_profile(engine, "3g")
-    assert applied["rule"]["latency_ms"] == 200
-    assert applied["rule"]["download_kbps"] == 1600
-    assert applied["packet_loss"] == "not applied"
-    apply_network_profile(engine, "offline")
-    assert len(engine.config.throttle) == 1
-    assert engine.config.throttle[0].offline is True
-    cleared = apply_network_profile(engine, "off")
-    assert cleared["removed"] is True
-    assert engine.config.throttle == []
-
-
-def test_unknown_profile_rejected(tmp_path: Path) -> None:
-    with pytest.raises(ValueError, match="Unknown profile"):
-        apply_network_profile(_engine(tmp_path), "dialup")
+def test_network_profile_catalog() -> None:
+    rows = list_network_profiles()
+    ids = [row["id"] for row in rows]
+    assert ids == list(NETWORK_PROFILES)
+    offline = next(row for row in rows if row["id"] == "offline")
+    assert offline["offline"] is True
+    three_g = next(row for row in rows if row["id"] == "3g")
+    assert three_g["latency_ms"] == 200
 
 
 def test_deeplink_blocks_unsafe_schemes() -> None:
@@ -99,6 +86,24 @@ def test_replay_rejects_non_http_and_calls_opener() -> None:
     )
     assert sent["status"] == 201
     assert sent["body"] == b'{"ok":true}'
+
+
+def test_replay_decodes_gzip_before_the_size_cap() -> None:
+    payload = gzip.compress(b'{"ok":true}')
+
+    def opener(method, url, headers, body):
+        assert method == "GET"
+        return 200, {"Content-Encoding": "gzip"}, payload
+
+    sent = replay_http(
+        method="GET",
+        url="https://example.com/v3/monetization",
+        headers={"Accept-Encoding": "gzip"},
+        body=b"",
+        opener=opener,
+    )
+    assert sent["body"] == b'{"ok":true}'
+    assert sent["headers"]["Content-Encoding"] == "gzip"
 
 
 def test_location_refuses_while_log_stream_is_running() -> None:

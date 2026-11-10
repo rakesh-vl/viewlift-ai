@@ -200,6 +200,14 @@ def test_network_profile_without_confirm_does_not_post() -> None:
     assert _posted(console) == []
 
 
+def test_network_profile_requires_client_id() -> None:
+    console = FakeConsole([])
+    result = set_network_profile(console, profile="offline", confirm=True)  # type: ignore[arg-type]
+    assert result["ok"] is False
+    assert result["detail"] == "client_id is required"
+    assert _posted(console) == []
+
+
 def test_network_profile_with_client_shapes_that_app_only() -> None:
     console = FakeConsole([{"id": "app-a", "bundle_id": "com.a", "online": True}])
     set_network_profile(console, profile="3g", client_id="app-a", confirm=True)  # type: ignore[arg-type]

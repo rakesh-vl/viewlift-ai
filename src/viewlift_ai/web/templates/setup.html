@@ -45,6 +45,13 @@
       <p class="muted" id="proxy-msg"></p>
     </section>
 
+    <section class="rules-block" id="block-allowlist">
+      <h2>Allowlist</h2>
+      <p class="muted">Hosts whose TLS the proxy may decrypt. One host or glob per line. Empty denies every HTTPS host. The SDK path does not use this list.</p>
+      <textarea id="allowlist-text" class="rules-textarea" rows="4" placeholder="*.example.com" spellcheck="false"></textarea>
+      <button type="button" class="btn" id="btn-save-allowlist">Save allowlist</button>
+    </section>
+
     <section class="rules-block" id="block-iphone">
       <h2>iPhone</h2>
       <ol class="setup-steps">
@@ -117,6 +124,27 @@
         <button type="button" class="btn" id="btn-save-roots">Save roots</button>
       </div>
       <p class="muted" id="roots-msg"></p>
+    </section>
+
+    <section class="rules-block" id="block-graphql">
+      <h2>GraphQL</h2>
+      <p class="muted">
+        Endpoints for the <a href="/graphql">GraphQL page</a>. One base URL.
+        Requests go to <code>/graphql</code>. The hosted page is always <code>/playground</code>
+        on that same host. The password stays on this Mac and is not shown again.
+        Leave it blank to keep the current one.
+      </p>
+      <div class="rules-form">
+        <label class="check">Seen in traffic
+          <select id="gql-seen" aria-label="GraphQL hosts seen in traffic"></select>
+        </label>
+      </div>
+      <div id="gql-setup-list"></div>
+      <div class="rules-form">
+        <button type="button" class="btn ghost" id="gql-setup-add">Add endpoint</button>
+        <button type="button" class="btn" id="gql-setup-save">Save endpoints</button>
+      </div>
+      <p class="muted" id="gql-setup-msg"></p>
     </section>
 
     <section class="rules-block" id="block-test">

@@ -1,0 +1,323 @@
+/* GraphQL playground. Tokens live in app.css. */
+
+.main > .gql-page {
+  flex: 1 1 auto;
+  min-height: 0;
+}
+
+.gql-page {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  height: 100%;
+}
+
+.gql-bar,
+.gql-ops {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--s-2) var(--s-3);
+  align-items: end;
+  padding: var(--s-3) var(--s-4) 0;
+}
+
+.gql-bar label,
+.gql-ops label {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 0;
+  color: var(--muted);
+  font-size: var(--fs-12);
+}
+
+.gql-url { flex: 1 1 280px; }
+
+.gql-bar input,
+.gql-bar select,
+.gql-ops input,
+.gql-ops select,
+.gql-search input {
+  height: var(--control-h);
+  width: 100%;
+  min-width: 140px;
+  border: 1px solid var(--line);
+  border-radius: var(--r-control);
+  background: var(--sunken);
+  color: var(--text);
+  padding: 0 var(--s-2);
+  font: var(--fs-12) var(--font-mono);
+}
+
+.gql-bar input:focus,
+.gql-bar select:focus,
+.gql-ops input:focus,
+.gql-ops select:focus,
+.gql-search input:focus,
+.gql-editor:focus {
+  outline: none;
+  border-color: var(--accent);
+  background: var(--surface);
+  box-shadow: 0 0 0 3px var(--accent-soft);
+}
+
+.gql-hosted[hidden] { display: none; }
+
+.gql-split {
+  display: grid;
+  grid-template-columns: minmax(0, 1.15fr) minmax(280px, 0.85fr);
+  gap: var(--s-3);
+  flex: 1 1 auto;
+  min-height: 0;
+  padding: var(--s-3) var(--s-4);
+}
+
+.gql-editors,
+.gql-result {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  min-width: 0;
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: 6px;
+}
+
+.gql-tabs {
+  display: flex;
+  gap: 0;
+  border-bottom: 1px solid var(--line);
+}
+
+.gql-tabs button {
+  height: 32px;
+  padding: 0 var(--s-3);
+  border: 0;
+  border-bottom: 2px solid transparent;
+  background: transparent;
+  color: var(--muted);
+  font: 600 var(--fs-12) var(--font-sans);
+  cursor: pointer;
+}
+
+.gql-tabs button[aria-selected="true"] {
+  color: var(--text-strong);
+  border-bottom-color: var(--accent);
+}
+
+.gql-editor {
+  flex: 1 1 auto;
+  min-height: 180px;
+  margin: 0;
+  padding: var(--s-3);
+  border: 0;
+  resize: none;
+  background: var(--sunken);
+  color: var(--text);
+  font: var(--fs-12)/1.55 var(--font-mono);
+}
+
+#gql-header-note {
+  margin: 0;
+  padding: var(--s-2) var(--s-3) 0;
+}
+
+.gql-result-head {
+  display: flex;
+  align-items: center;
+  gap: var(--s-3);
+  min-height: 32px;
+  padding: 0 var(--s-3);
+  border-bottom: 1px solid var(--line);
+}
+
+.gql-status {
+  font: 600 var(--fs-12) var(--font-mono);
+  color: var(--muted);
+}
+
+.gql-status.ok { color: var(--ok); }
+.gql-status.err { color: var(--err); }
+
+#gql-time { margin-right: auto; font: var(--fs-12) var(--font-mono); }
+
+#gql-output,
+.gql-schema-body {
+  flex: 1 1 auto;
+  min-height: 0;
+  margin: 0;
+  padding: var(--s-3);
+  overflow: auto;
+  background: var(--code-bg);
+  color: var(--text);
+  font: var(--fs-12)/1.55 var(--font-mono);
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+#gql-output.is-tree {
+  padding: 0;
+  white-space: normal;
+  background: transparent;
+}
+
+#gql-output.is-tree .json-tree {
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  min-height: 100%;
+}
+
+#gql-output.is-tree .json-tree-body { max-height: none; }
+
+.gql-schema-body {
+  white-space: normal;
+  word-break: normal;
+  overflow-wrap: break-word;
+}
+
+.gql-search { padding: var(--s-2) var(--s-3) 0; }
+
+#gql-schema-panel {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  flex: 1 1 auto;
+}
+
+#gql-schema-panel[hidden],
+#gql-output[hidden],
+#gql-schema-reload[hidden] { display: none; }
+
+.gql-schema-group { margin: 0 0 var(--s-4); }
+.gql-schema-group h3 {
+  margin: 0 0 var(--s-2);
+  font: 600 var(--fs-12)/1.3 var(--font-mono);
+  color: var(--text-strong);
+}
+
+.gql-schema-row {
+  margin: 0 0 2px;
+  border-bottom: 1px solid var(--line-soft);
+}
+
+.gql-schema-row > summary {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px 10px;
+  padding: 6px 0;
+  cursor: pointer;
+  list-style: none;
+}
+
+.gql-schema-row > summary::-webkit-details-marker { display: none; }
+
+.gql-schema-row > summary::before {
+  content: "▸";
+  width: 0.8em;
+  color: var(--faint);
+}
+
+.gql-schema-row[open] > summary::before { content: "▾"; }
+
+.gql-schema-id {
+  display: flex;
+  flex: 1 1 auto;
+  align-items: baseline;
+  gap: 8px;
+  min-width: min(100%, 14em);
+}
+
+.gql-schema-name,
+.gql-schema-type,
+.gql-schema-req {
+  white-space: nowrap;
+}
+
+.gql-schema-name {
+  color: var(--text-strong);
+  font: 600 var(--fs-12)/1.4 var(--font-mono);
+}
+
+.gql-schema-type {
+  color: var(--accent);
+  font: var(--fs-12)/1.4 var(--font-mono);
+}
+
+.gql-schema-desc {
+  flex: 1 1 18em;
+  min-width: min(100%, 16em);
+  color: var(--muted);
+  font: var(--fs-12)/1.45 var(--font-sans);
+  white-space: normal;
+}
+
+.gql-schema-actions {
+  display: flex;
+  gap: 4px;
+  margin-left: auto;
+  flex: none;
+}
+
+.gql-schema-actions button {
+  height: 22px;
+  padding: 0 7px;
+  border: 1px solid var(--line);
+  border-radius: var(--r-control);
+  background: transparent;
+  color: var(--muted);
+  font: 600 11px var(--font-sans);
+  cursor: pointer;
+}
+
+.gql-schema-actions button:hover {
+  color: var(--text-strong);
+  border-color: var(--accent-line);
+}
+
+.gql-schema-detail { margin: 0 0 8px 16px; }
+
+.gql-schema-args {
+  margin: 0 0 8px;
+  padding: 0;
+  list-style: none;
+}
+
+.gql-schema-args li {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  padding: 2px 0;
+  font: var(--fs-12)/1.45 var(--font-mono);
+}
+
+.gql-schema-req {
+  color: var(--warn);
+  font: 600 10px var(--font-sans);
+}
+
+.gql-schema-meta {
+  margin: 0 0 6px;
+  color: var(--muted);
+  font: var(--fs-12) var(--font-sans);
+}
+
+.gql-schema-values {
+  margin: 0 0 8px;
+  font: var(--fs-12)/1.45 var(--font-mono);
+}
+
+.gql-schema-row.is-deprecated > summary { opacity: 0.55; }
+
+#gql-note {
+  margin: 0;
+  padding: 0 var(--s-4) var(--s-3);
+  min-height: 1.2em;
+}
+
+@media (max-width: 900px) {
+  .gql-split { grid-template-columns: 1fr; }
+  .gql-page { height: auto; }
+  .gql-editor { min-height: 220px; }
+}

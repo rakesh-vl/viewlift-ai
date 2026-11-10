@@ -64,23 +64,6 @@ enum UIInspectionService {
     }
 
     @MainActor
-    static func accessibilityAudit() -> [String: JSONValue] {
-        #if canImport(UIKit)
-        var findings: [JSONValue] = []
-        let windows = AutomationScreen.allWindows()
-        for window in windows {
-            audit(view: window, path: className(window), findings: &findings)
-        }
-        return [
-            "findings": .array(findings),
-            "count": .number(Double(findings.count))
-        ]
-        #else
-        return ["findings": .array([]), "count": .number(0)]
-        #endif
-    }
-
-    @MainActor
     static func screenshot(windowId: String = "", sceneId: String = "") async -> ScreenGrab? {
         #if canImport(UIKit)
         guard var window = AutomationScreen.window(windowId: windowId, sceneId: sceneId) else { return nil }
@@ -233,39 +216,6 @@ enum UIInspectionService {
     }
 
     #if canImport(UIKit)
-    @MainActor
-    private static func audit(view: UIView, path: String, findings: inout [JSONValue]) {
-        if UILayoutDebugService.isOverlay(view) { return }
-        let current = "\(path)/\(className(view))"
-        if view.isAccessibilityElement {
-            if (view.accessibilityLabel ?? "").trimmingCharacters(in: .whitespaces).isEmpty {
-                findings.append(finding("missing-label", current, "Accessibility element has no label"))
-            }
-            let size = view.bounds.size
-            if size.width < 44 || size.height < 44 {
-                findings.append(finding("small-target", current, "Touch target is smaller than 44x44"))
-            }
-        }
-        if view.alpha > 0, view.alpha < 0.3, !view.isHidden {
-            findings.append(finding("low-alpha", current, "Visible view has very low alpha"))
-        }
-        for child in view.subviews {
-            audit(view: child, path: current, findings: &findings)
-        }
-    }
-
-    private static func finding(_ kind: String, _ path: String, _ message: String) -> JSONValue {
-        .object([
-            "kind": .string(kind),
-            "path": .string(path),
-            "message": .string(message)
-        ])
-    }
-
-    private static func className(_ value: AnyObject) -> String {
-        NSStringFromClass(type(of: value))
-    }
-
     @MainActor
     static func findView(id: String) -> UIView? {
         let windows = AutomationScreen.allWindows()

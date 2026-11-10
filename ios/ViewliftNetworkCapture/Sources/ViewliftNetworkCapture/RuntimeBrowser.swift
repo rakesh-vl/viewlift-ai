@@ -7,7 +7,9 @@ enum RuntimeBrowser {
     static let maxClasses = 1_000
     static let maxImageClasses = 3_000
 
-    static func search(_ query: String) -> [String: JSONValue] {
+    /// Classes whose name contains `query`. `appOnly` keeps classes loaded from the app bundle;
+    /// `app_classes` always lists the matches that come from the app, so the dashboard can rank them.
+    static func search(_ query: String, appOnly: Bool = false) -> [String: JSONValue] {
         let needle = query.lowercased()
         var count: UInt32 = 0
         guard let list = objc_copyClassList(&count) else {
@@ -17,17 +19,23 @@ enum RuntimeBrowser {
         defer { free(raw) }
         // Reading through the autoreleasing pointer retains each class, and some root classes abort on retain.
         let pointers = raw.assumingMemoryBound(to: UnsafeRawPointer.self)
+        let bundle = Bundle.main.bundlePath
         var rows: [String] = []
+        var app: [String] = []
         for index in 0..<Int(count) {
             let cls: AnyClass = unsafeBitCast(pointers[index], to: AnyClass.self)
             let name = String(cString: class_getName(cls))
-            if needle.isEmpty || name.lowercased().contains(needle) {
-                rows.append(name)
-                if rows.count >= maxClasses { break }
-            }
+            guard needle.isEmpty || name.lowercased().contains(needle) else { continue }
+            let image = class_getImageName(cls).map { String(cString: $0) } ?? ""
+            let fromApp = !bundle.isEmpty && image.hasPrefix(bundle)
+            if appOnly, !fromApp { continue }
+            rows.append(name)
+            if fromApp { app.append(name) }
+            if rows.count >= maxClasses { break }
         }
         return [
             "classes": .array(rows.sorted().map(JSONValue.string)),
+            "app_classes": .array(app.sorted().map(JSONValue.string)),
             "truncated": .bool(rows.count >= maxClasses)
         ]
     }

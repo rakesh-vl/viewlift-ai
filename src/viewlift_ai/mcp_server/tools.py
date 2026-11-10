@@ -24,12 +24,7 @@ _SYSLOG_NOTE = (
     "syslog_matches are rows whose message contains this app's bundle id or "
     "executable and that do not belong to a different app."
 )
-_NETWORK_NOTE = (
-    "Without client_id this throttle applies to every proxied app on this Mac. Pass client_id "
-    "to shape one app's traffic through the SDK instead. It does not enable rewrite, map "
-    "local, or breakpoints."
-)
-_REVEAL_NOTE = "Reveal is locked. This tool does not unlock reveal or enable rewrite."
+_REVEAL_NOTE = "Reveal is locked. This tool does not unlock reveal."
 
 
 def _apps(api: ConsoleClient) -> list[dict[str, Any]]:
@@ -354,7 +349,7 @@ def split_image(result: dict[str, Any]) -> tuple[dict[str, Any], bytes | None]:
         result = {**result, "event": {**event, "payload": {**payload, "result": inner}}}
         event = result["event"]
         payload = event["payload"]
-    if inner.get("mime") != "image/png":
+    if inner.get("mime") not in {"image/png", "image/jpeg"}:
         return result, None
     encoded = inner.get("base64")
     if not isinstance(encoded, str) or not encoded:
@@ -369,6 +364,11 @@ def split_image(result: dict[str, Any]) -> tuple[dict[str, Any], bytes | None]:
         **result,
         "event": {**event, "payload": {**payload, "result": cleaned}},
     }, raw
+
+
+def image_format(raw: bytes) -> str:
+    """MCP image format for bytes returned by split_image."""
+    return "jpeg" if raw.startswith(b"\xff\xd8") else "png"
 
 
 def app_inspect(
@@ -463,11 +463,11 @@ def app_mutate(
     payload: dict[str, Any] | None = None,
     confirm: bool = False,
 ) -> dict[str, Any]:
-    """Change one app. confirm must be true. Does not enable proxy rewrite.
+    """Change one app. confirm must be true.
 
     Commands: ui.highlight, ui.edit, ui.visual, storage.defaults_set, storage.file_write,
     storage.snapshot_create, storage.snapshot_restore, macro.record_start, macro.record_stop,
-    macro.replay, push.local, nav.open_url, explorer.set,
+    macro.replay, push.local, push.clear, nav.open_url, explorer.set,
     explorer.call, storage.defaults_delete, storage.file_rename, storage.file_delete,
     storage.cookie_delete, settings.set, ott.action.
     """
@@ -500,26 +500,23 @@ def app_mutate(
 def set_network_profile(
     api: ConsoleClient, *, profile: str, client_id: str = "", confirm: bool = False
 ) -> dict[str, Any]:
-    """Apply a named throttle preset. confirm must be true.
+    """Shape one app's traffic through the SDK. confirm and client_id must be set.
 
-    With client_id the SDK shapes that app's own traffic on any simulator or device. Without
-    it the preset applies to the proxy and every app routed through it.
+    Profiles: wifi, 4g, 3g, edge, gprs, offline, or off.
     """
     if refusal := guard.read_only_refusal():
         return refusal
     if confirm is not True:
-        return {"ok": False, "detail": "confirm must be true", "note": _NETWORK_NOTE}
-    if client_id:
-        return app_mutate(
-            api,
-            client_id=client_id,
-            command="net.profile",
-            payload={"profile": profile},
-            confirm=True,
-        )
-    result = _call(api, "POST", "/api/debug/network-profile", body={"profile": profile})
-    result["note"] = _NETWORK_NOTE
-    return result
+        return {"ok": False, "detail": "confirm must be true"}
+    if not client_id:
+        return {"ok": False, "detail": "client_id is required"}
+    return app_mutate(
+        api,
+        client_id=client_id,
+        command="net.profile",
+        payload={"profile": profile},
+        confirm=True,
+    )
 
 
 def open_deeplink(
@@ -930,25 +927,13 @@ def _logs_brief(api: ConsoleClient, target: str) -> dict[str, Any]:
     return {"levels": summary["levels"], "top_issues": summary["top_issues"]}
 
 
-def list_rules(api: ConsoleClient) -> dict[str, Any]:
-    """Rules that can change traffic: map local, map remote, rewrite, throttle, breakpoints."""
-    rules = _call(api, "GET", "/api/rules")
-    pending = _call(api, "GET", "/api/breakpoints/pending")
-    return {
-        "rules": rules,
-        "pending_breakpoints": pending,
-        "note": "Read-only. Agents cannot create or toggle proxy rules.",
-    }
-
-
 def console_status(api: ConsoleClient) -> dict[str, Any]:
-    """Health check: console reachability, apps online, reveal lock, rules, and agent policy."""
+    """Health check: console reachability, apps online, reveal lock, and agent policy."""
     try:
         clients = _apps(api)
     except ConsoleError as exc:
         return {"ok": False, "status": exc.status, "detail": exc.detail, "policy": guard.policy()}
     reveal = _call(api, "GET", "/api/reveal/status")
-    rules = _call(api, "GET", "/api/rules/status")
     online = [item for item in clients if item.get("online")]
     return {
         "ok": True,
@@ -957,7 +942,6 @@ def console_status(api: ConsoleClient) -> dict[str, Any]:
         "apps_online": len(online),
         "online": _brief(online),
         "reveal_unlocked": bool(reveal.get("unlocked")),
-        "rewrite_rules_active": bool(rules.get("mutating_enabled")),
         "policy": guard.policy(),
     }
 

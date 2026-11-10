@@ -54,7 +54,6 @@ _DEVICE_CAPS = (
     "screenshot",
     "logs",
     "lldb",
-    "ui_host",
     "ui_runner",
     "apps",
     "processes",

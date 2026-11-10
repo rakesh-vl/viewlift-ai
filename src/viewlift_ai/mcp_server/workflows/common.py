@@ -119,4 +119,4 @@ def split_sdk_image(result: dict[str, Any]) -> dict[str, Any] | list[Any]:
     cleaned, image = tools.split_image(result)
     if image is None:
         return cleaned
-    return [cleaned, Image(data=image, format="png")]
+    return [cleaned, Image(data=image, format=tools.image_format(image))]

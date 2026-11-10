@@ -53,3 +53,14 @@ def test_page_calls_only_registered_host_tools(tmp_path: Path) -> None:
     registered = set(HostToolkit(tmp_path).names())
     missing = sorted(name for name in called if name not in registered)
     assert missing == [], f"simulator page calls unknown host tools: {missing}"
+    for name in ("discover_projs", "list_schemes", "show_build_settings", "sync_xcode_defaults"):
+        assert name in called, f"simulator page no longer auto-fills with {name}"
+
+
+def test_page_script_ids_exist_in_template() -> None:
+    source = SCRIPT.read_text(encoding="utf-8")
+    template = TEMPLATE.read_text(encoding="utf-8")
+    wanted = set(re.findall(r'\$\("([a-z0-9-]+)"\)', source))
+    present = set(re.findall(r'id="([a-z0-9-]+)"', template))
+    missing = sorted(wanted - present)
+    assert missing == [], f"simulator.js looks up ids the template lacks: {missing}"

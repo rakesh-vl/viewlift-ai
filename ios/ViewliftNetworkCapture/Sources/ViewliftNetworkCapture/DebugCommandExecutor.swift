@@ -101,17 +101,13 @@ final class DebugCommandExecutor {
         }
         switch command.name {
         case "bug.capture":
-            var result = try await screenshot(AutomationPayload(command.payload), limit: 400_000)
-            result["performance"] = .object(performance.sample())
-            result["memory"] = .object(MemoryDebugService.shared.snapshot())
-            result["app"] = .string(Bundle.main.bundleIdentifier ?? "")
-            return result
+            return try await BugReportService.capture(performance: performance.sample())
         case "swiftui.renders":
             return SwiftUIRenderTracker.shared.snapshot()
         case "assets.audit":
             return UIInspectionService.assetAudit()
         case "accessibility.audit":
-            return await UIInspectionService.accessibilityAudit()
+            return await AccessibilityAuditService.audit()
         default:
             throw DebugBridgeError.unsupportedCommand
         }
@@ -180,7 +176,7 @@ extension DebugCommandExecutor {
     private func runtime(_ command: DebugCommand) -> [String: JSONValue] {
         switch command.name {
         case "runtime.search":
-            return RuntimeBrowser.search(string(command.payload["query"]))
+            return RuntimeBrowser.search(string(command.payload["query"]), appOnly: bool(command.payload["app_only"]))
         case "runtime.describe":
             return RuntimeBrowser.describe(string(command.payload["class"]))
         case "runtime.libraries":
@@ -195,8 +191,7 @@ extension DebugCommandExecutor {
     private func qa(_ command: DebugCommand) async throws -> [String: JSONValue] {
         switch command.name {
         case "macro.record_start":
-            MacroRecorder.shared.start()
-            return ["recording": .bool(true)]
+            return MacroRecorder.shared.start()
         case "macro.record_stop":
             return MacroRecorder.shared.stop()
         case "macro.list":
@@ -205,6 +200,10 @@ extension DebugCommandExecutor {
             return await MacroRecorder.shared.replay(command.payload)
         case "push.local":
             return try await PushDebugService.schedule(payload: command.payload)
+        case "push.status":
+            return await PushDebugService.status()
+        case "push.clear":
+            return await PushDebugService.clear()
         default:
             throw DebugBridgeError.unsupportedCommand
         }

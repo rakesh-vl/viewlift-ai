@@ -6,9 +6,8 @@ The dashboard is server-rendered Jinja templates with plain JavaScript. There is
 
 Every page extends [base.html](../src/viewlift_ai/web/templates/base.html):
 
-- left rail: Network, Logs, Rules, Debug, Devices, Tools, Agent, Setup, Health, with a live indicator, theme toggle and rail collapse;
-- top bar: scope picker and "Clear all data". The picker separates the same app on two phones (device name, model, short device key, LAN address) and filters by bundle or by who was signed in (guest, logged in, TVE, user id, profile);
-- a warning banner while any mutating rule is enabled.
+- left rail: Network, GraphQL, Logs, Debug, Devices, Tools, Agent, Setup, Health, with a live indicator, theme toggle and rail collapse;
+- top bar: scope picker and "Clear all data". The picker separates the same app on two phones (device name, model, short device key, LAN address) and filters by bundle or by who was signed in (guest, logged in, TVE, user id, profile).
 
 [shell.js](../src/viewlift_ai/web/static/js/shell.js) runs on every page. It owns the scope picker (`window.VLScope`), sends `/api/session/ping` and `/api/session/leave` for tab presence, handles theme and rail state, and listens to `/ws/debug?client_id=__apps__` to refresh the app list. See [Multi-app and scope](multi-app-and-scope.md#dashboard-scope-picker).
 
@@ -18,11 +17,11 @@ Design guidance lives in [DESIGN.md](../DESIGN.md).
 
 | Page | Template | Script entry | Main endpoints |
 |---|---|---|---|
-| Network `/` | `dashboard.html` | `app.js` `initDashboard` | `/api/flows`, `/api/flows/delete`, `/ws/flows`, `/api/reveal/*`, `/api/export/har`, `/api/flows/{id}/curl`, `/api/flows/send`, `/api/breakpoints/*` |
+| Network `/` | `dashboard.html` | `app.js` `initDashboard` | `/api/flows`, `/api/flows/delete`, `/ws/flows`, `/api/reveal/*`, `/api/export/har`, `/api/flows/{id}/curl`, `/api/flows/send` |
+| GraphQL `/graphql` | `graphql.html` | `graphql.js` | `/api/graphql/endpoints`, `/api/graphql/execute`, `/api/graphql/schema` |
 | Flow detail `/flows/{id}` | `flow_detail.html` | server-rendered | `/api/flows/{id}/replay`, `/api/flows/{id}/curl`, `/api/flows/send` |
 | Logs `/logs` | `logs.html` | `app.js` `initLogs` | `/api/logs/*`, `/ws/logs` |
-| Rules `/rules` | `rules.html` | `app.js` `initRules` | `/api/rules/*` |
-| Setup `/setup` | `setup.html` | `app.js` `initSetup` | `/api/setup/*`, `/api/apps`, `/api/host/call` (tunnel, Apple TV pairing) |
+| Setup `/setup` | `setup.html` | `app.js` `initSetup` | `/api/setup/*`, `/api/rules`, `/api/apps`, `/api/host/call` (tunnel, Apple TV pairing) |
 | Debug `/debug` | `debug_suite.html` | `debug.js` | `/api/debug/*`, `/ws/debug` |
 | Devices `/simulator` and `/devices` | `simulator.html` | `simulator.js` | `/api/host/targets`, `/api/host/call` |
 | Tools `/tools` | `tools.html` | `js/toolkit/*.js`, `tools.js` | `/api/tools/scripts`, `/api/tools/action/{name}` |
@@ -30,19 +29,21 @@ Design guidance lives in [DESIGN.md](../DESIGN.md).
 
 ### Network
 
-Filter bar (method, host, status, content type, kind, operation, text), HAR export, reveal bar (token, unlock, lock) and an SDK activity hint. Kind is Any, GraphQL, or HTTP. Operation matches the GraphQL operation name. GraphQL rows show that name in the path column and `graphql` in the type column. A split view shows the live flow table and a detail pane with overview, headers, cookies, bodies (JSON tree, image or text), query, timing waterfall, WebSocket frames, and an Edit tab. Edit prefills the visible request. Copy cURL on that tab builds a multiline command in the browser from the form, including edits, so it can be imported into Postman. Send posts the form to `/api/flows/send` and shows the response as received. The header Copy cURL button still copies the stored request. Pending breakpoints appear in the table with a resume or drop editor. Delete flows removes stored requests only. Device logs, debug events, and rules stay.
+Filter bar (method, host, status, content type, kind, operation, text), HAR export, reveal bar (token, unlock, lock) and an SDK activity hint. Kind is Any, GraphQL, or HTTP. Operation matches the GraphQL operation name. GraphQL rows show that name in the path column and `graphql` in the type column. A split view shows the live flow table and a detail pane with overview, headers, cookies, bodies (JSON tree, image or text), query, timing waterfall, WebSocket frames, and an Edit tab. Edit prefills the visible request. Copy cURL on that tab builds a multiline command in the browser from the form, including edits, so it can be imported into Postman. Send posts the form to `/api/flows/send` and shows the response as received. The header Copy cURL button still copies the stored request. Delete flows removes stored requests only. Device logs, debug events, and the proxy allowlist stay.
+
+### GraphQL
+
+Pick a saved endpoint or type any `http` or `https` URL. The page edits the query, variables, and headers, then Run posts them from this Mac. Saved basic auth from Setup is added only for the same scheme, host, and port, and only when the request has no `Authorization` header. Setup stores one base URL. Requests go to `/graphql` on that host, and the hosted playground is always `/playground` on the same host. Hosts already seen on captured GraphQL calls can fill the base. If the URL field is empty, the page uses the newest captured host for the current scope. Schema runs introspection. Searching the schema and choosing a field inserts a short operation. Named operations stay in this browser under `vl-graphql-v1:<endpoint id>`. Prettify uses the toolkit GraphQL formatter. On a captured GraphQL flow, Edit → Open in GraphQL fills the query, variables, and headers. Hop-by-hop headers are left out.
+
+The password is write-only.
 
 ### Logs
 
 Pick a simulator or device, set process and subsystem filters, start, stop, pause or delete. Paused rows are buffered. Selecting an app in the scope picker auto-targets its simulator and executable. Log detail links to the matching flow by `request_id`.
 
-### Rules
-
-Allowlist, map-local root, and a form and table for each rule kind with enable toggles. See [Rules and breakpoints](rules-and-breakpoints.md).
-
 ### Setup
 
-CA status and one-use downloads (PEM and iOS profile), proxy bind (interface, port, LAN with basic auth), iPhone and Apple TV steps, the developer tunnel (administrator prompt, console stays unprivileged), Apple TV PIN pairing, simulator helpers and a test request, the SDK receiver (interface, port, pairing token, receiver URL, pinned fingerprint, app activity, Swift snippet) and the connected apps tree.
+CA status and one-use downloads (PEM and iOS profile), proxy bind (interface, port, LAN with basic auth), the HTTPS decryption allowlist (one host or glob per line; empty denies all), iPhone and Apple TV steps, the developer tunnel (administrator prompt, console stays unprivileged), Apple TV PIN pairing, simulator helpers and a test request, the SDK receiver (interface, port, pairing token, receiver URL, pinned fingerprint, app activity, Swift snippet) and the connected apps tree.
 
 ### Devices
 
@@ -65,7 +66,13 @@ The bell in the scope bar opens the notification center. Show alerts turns the w
 
 The scope picker lists only apps that are running now (online, background, or crashed), with the most recently active device first. Each option names the device and model, and the signed-in user or guest when the app has reported a session. **By app** selects one bundle on every device. **By account** selects a user id, a profile, or guests. Those account filters follow who was signed in when the request was captured. Offline and reinstalled instances are hidden. When a running app goes offline, one open tab asks whether to delete its data. A crashed app or one paused in a debugger is not offered, so its report stays. Confirming deletes that app's flows, logs, debug events, crash replay media, and its alerts, then refreshes the dashboard. If that app was selected, the scope returns to All apps. Clear app data does the same for the current selection. Clear all data does it for every app and empties the notification center. `/debug#hangs`, `/debug#memory`, and `/debug#ott` open that tab.
 
-Explorer opens live objects. Start from a root (application, delegate, windows, view controllers, bundle, defaults, caches), a selected view in the UI tab, a heap class in Memory, or an instance search by class name. Each object shows its class chain, Objective-C properties and ivars per class, Swift stored properties, and methods. Writable properties can be edited inline. Only zero-argument methods can be called, and `init`, `set`, `dealloc` and other destructive selectors are refused on the device. Objects are referenced by short-lived handles, never by address. Runtime adds a loaded-libraries list with the classes in each image. Storage adds defaults add and delete, file rename and delete, file type detection with plist preview, and cookies with masked values.
+Explorer opens live objects. The left column groups shortcuts into Current screen, Your app, and System, and finds live instances by class name (with suggestions from Runtime). Each object has Fields, Methods, and Elements tabs, a filter, a back button, and breadcrumbs. UIKit and Foundation levels are hidden until "Show system classes" is on. Writable properties can be edited inline. Only zero-argument methods can be called, and `init`, `set`, `dealloc` and other destructive selectors are refused on the device. Objects are referenced by short-lived handles, never by address.
+
+Runtime lists the app's own classes first. Search ranks matches, "App only" hides system frameworks, and the arrow keys move through results. A class shows its superclass chain, protocols, and filterable properties, ivars, and methods. "Live instances" opens them in Explorer and "Copy interface" copies an Objective-C header. Loaded libraries list the classes in each image.
+
+Accessibility scans the current screen and draws each finding on a screenshot. Findings are grouped by rule with a suggested fix, can be filtered by severity, and copy as Markdown. Bug report captures the screen, app, device, performance, and recent taps. Draw on the image with pen, box, or arrow, fill in title, steps, expected, and actual, then copy or download the report (Markdown plus PNG). Recent failed requests for the app are added. Macros records taps, swipes, and Apple TV remote presses while the step list updates live. Replay runs the steps through UI automation and marks each one passed or failed. Macros can be named, saved in this browser, and exported or imported as JSON. Push schedules a local notification with optional subtitle, badge, sound, image (URL or file, iOS only), up to four actions (text reply, destructive, opens app), thread, and user info. It shows permission state, pending notifications, and the actions the tester tapped. Network tools throttles the selected app (SDK) or the Mac proxy, opens deep links through the system or inside the app, sets a simulated location from presets or coordinates, and shows a request waterfall.
+
+Storage adds defaults add and delete, file rename and delete, file type detection with plist preview, and cookies with masked values.
 
 Device settings changes what the SDK does without a rebuild: debug modules on or off (within the modules the app was built with), network capture on or off, body size limits, and the body content types to keep. The device saves these overrides and keeps them across launches. Reset returns to the app's built-in configuration.
 
@@ -97,10 +104,14 @@ MCP status, connect snippets, a sample session, the apps on each device, tool gr
 | `css/debug.css` | Debug Suite |
 | `css/tools.css` | Tools |
 | `css/agent.css` | Agent |
+| `css/graphql.css` | GraphQL |
 | `js/shell.js` | All pages |
-| `js/app.js` | Network, Logs, Rules, Setup |
+| `js/app.js` | Network, Logs, Setup |
+| `js/graphql.js` | GraphQL |
 | `js/debug.js` | Debug Suite |
-| `js/explorer.js` | Debug Suite Explorer, Runtime libraries, cookies and Device settings |
+| `js/explorer.js` | Debug Suite Explorer, cookies and Device settings |
+| `js/runtime.js` | Debug Suite Runtime browser |
+| `js/qa_tools.js` | Debug Suite Accessibility, Bug report, Macros, Push, and Network tools |
 | `js/tools.js` | Tools |
 | `js/agent.js` | Agent |
 | `img/viewlift-logo.png` | Rail |

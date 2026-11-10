@@ -134,6 +134,23 @@ public final class PlaybackDebugService: @unchecked Sendable {
         record(kind: "drm", fields: note.fields())
     }
 
+    /// One host event (buffer, playback start, playback error). Strings are clipped. No URLs or key bytes.
+    public func noteEvent(kind: String, fields: [String: JSONValue] = [:]) {
+        var clean: [String: JSONValue] = [:]
+        var count = 0
+        for (key, value) in fields {
+            if count == 12 { break }
+            count += 1
+            let name = String(key.prefix(40))
+            if case let .string(text) = value {
+                clean[name] = .string(String(text.prefix(120)))
+            } else {
+                clean[name] = value
+            }
+        }
+        record(kind: String(kind.prefix(40)), fields: clean)
+    }
+
     public func registerDRMProvider(_ provider: PlaybackDRMProviding?) {
         lock.lock()
         drmProvider = provider

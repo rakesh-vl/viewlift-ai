@@ -764,7 +764,8 @@
       const parsed = jsonNode(JSON.parse(text));
       plainValue = plain(parsed);
       extra = summaryOf(parsed);
-      view = renderNode(parsed, 0);
+      const tree = window.VLJsonTree && window.VLJsonTree.html(text, { toolbar: true, copyBar: true, openDepth: 2 });
+      view = tree || renderNode(parsed, 0);
       source = JSON.stringify(JSON.parse(text), null, 2);
     } else if (info.kind === "image") {
       view = `<figure class="file-preview-media"><img class="img-preview" alt="${escapeAttr(filename)}" src="data:${mime};base64,${bytesToBase64(bytes)}"><figcaption class="muted" data-file-dims></figcaption></figure>`;

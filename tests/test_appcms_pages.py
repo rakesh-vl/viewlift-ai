@@ -92,7 +92,7 @@ def test_appcms_link_is_in_the_primary_menu(tmp_path: Path) -> None:
     with TestClient(create_app(_config(tmp_path))) as client:
         text = client.get("/debug").text
         assert 'href="/appcms"' in text
-        assert 'href="/host"' in text
+        assert 'href="/host"' not in text
 
 
 @pytest.mark.parametrize(
@@ -105,8 +105,6 @@ def test_host_pages_render_from_the_manifest_shell(tmp_path: Path, slug: str, se
         assert page.status_code == 200
         assert 'data-appcms-mode="host"' in page.text
         assert f'data-appcms-section="{section}"' in page.text
-        assert 'id="host-nav-pages"' in page.text
-        assert 'href="/host/diagnostics"' in page.text
 
 
 @pytest.mark.parametrize("slug", ["Bad", "1abc", "a-b", "x" * 60])

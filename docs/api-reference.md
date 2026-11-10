@@ -14,9 +14,9 @@ JSON bodies are shown as `{field, field?}`; `?` means optional.
 | Method and path | Template |
 |---|---|
 | `GET /` | `dashboard.html` (Network) |
+| `GET /graphql` | `graphql.html` |
 | `GET /flows/{flow_id}` | `flow_detail.html` |
 | `GET /logs` | `logs.html` |
-| `GET /rules` | `rules.html` |
 | `GET /setup` | `setup.html` |
 | `GET /debug` | `debug_suite.html` |
 | `GET /simulator`, `GET /devices` | `simulator.html` (Devices) |
@@ -60,7 +60,7 @@ Source: [api/routes.py](../src/viewlift_ai/api/routes.py)
 | Method and path | Loopback | Purpose |
 |---|---|---|
 | `GET /api/flows` | no | List flows. Query: `method`, `host`, `status`, `content-type`, `text`, `kind` (`graphql` or `http`), `operation` (operation-name substring), `limit` (1 to 1000, default 200), `client_id` (repeatable), `device_key`, `bundle_id`, `auth_state`, `user_id`, `profile_id`, `anonymous_id`. Account filters match the session span that covered `created_at`. Returns `{flows, count}`. Each flow includes `graphql`, `operation`, and `operation_type`. |
-| `POST /api/flows/delete` | no | Delete every stored flow. Logs, debug events, and rules stay. Clears the in-memory reveal cache. Returns `{deleted}`. |
+| `POST /api/flows/delete` | no | Delete every stored flow. Logs, debug events, and the allowlist stay. Clears the in-memory reveal cache. Returns `{deleted}`. |
 | `GET /api/flows/{id}` | for `reveal=true` | Stored detail, including cookies and JSON secrets. `?reveal=true` uses the in-memory copy when the reveal session is unlocked. |
 | `GET /api/flows/{id}/summary` | no | Summary JSON |
 | `GET /api/flows/{id}/har` | no | Single-flow HAR from the stored bytes |
@@ -80,23 +80,14 @@ Source: [api/apps_routes.py](../src/viewlift_ai/api/apps_routes.py). All loopbac
 | `DELETE /api/apps/{client_id}/data` | Delete one app's flows, logs and debug events; forget the client if offline |
 | `DELETE /api/apps/data` | Wipe all captured data, the reveal cache and ingest activity |
 
-## Rules and breakpoints
+## Allowlist
 
-Source: [api/rules_routes.py](../src/viewlift_ai/api/rules_routes.py). `{kind}` is one of `map-local`, `map-remote`, `rewrite`, `throttle`, `breakpoints`.
+Source: [api/rules_routes.py](../src/viewlift_ai/api/rules_routes.py). The editor is on the Setup page.
 
 | Method and path | Purpose |
 |---|---|
-| `GET /api/rules` | Full rules config |
-| `GET /api/rules/status` | `{mutating_enabled}` |
-| `PUT /api/rules/allowlist {patterns}` | Replace allowlist (`allowlist` is accepted as an alias) |
-| `PUT /api/rules/map-local/root {map_local_root}` | Set map-local root (`root` alias) |
-| `POST /api/rules/{kind}` | Create a rule |
-| `PATCH /api/rules/{kind}/{id}` | Update a rule |
-| `POST /api/rules/{kind}/{id}/toggle?enabled=true` | Enable or disable |
-| `DELETE /api/rules/{kind}/{id}` | Delete |
-| `GET /api/breakpoints/pending` | Paused flows |
-| `POST /api/breakpoints/{pause_id}/resume {headers?, body?, status?}` | Resume, optionally edited |
-| `POST /api/breakpoints/{pause_id}/drop` | Kill the paused flow |
+| `GET /api/rules` | `{allowlist}` |
+| `PUT /api/rules/allowlist {patterns}` | Replace the allowlist (`allowlist` is accepted as an alias). Empty denies every HTTPS host. |
 
 ## Setup
 
@@ -117,6 +108,20 @@ Source: [api/setup_routes.py](../src/viewlift_ai/api/setup_routes.py)
 | `POST /api/setup/sdk/enable {host?, iface?, port?}` | Enable the SDK receiver (default port 8743) |
 | `POST /api/setup/sdk/disable` | Disable it |
 | `POST /api/setup/sdk/pairing-token` | Mint a pairing token |
+
+## GraphQL
+
+Source: [api/graphql_routes.py](../src/viewlift_ai/api/graphql_routes.py). Loopback only. `PUT` and `POST` require `Content-Type: application/json`. Bodies are at most 1 MB. The password is never returned.
+
+| Method and path | Purpose |
+|---|---|
+| `GET /api/graphql/bases` | Distinct GraphQL origins in captured traffic, newest first. Same scope query as `/api/flows`. `{bases: [{base, count}]}`. |
+| `GET /api/graphql/endpoints` | `{endpoints: [{id, name, base, url, playground_url, username, has_password}]}`. `url` is `{base}/graphql`. `playground_url` is `{base}/playground`. |
+| `PUT /api/graphql/endpoints {endpoints}` | Replace the list. Each row accepts `base`, or a pasted `url` / `playground_url`; only the origin is kept. A blank `password` keeps the saved one. `clear_password: true` removes it. |
+| `POST /api/graphql/execute {endpoint_id?, url?, query, variables?, operation_name?, headers?}` | Run one document. Response includes `status`, `body`, `elapsed_ms`, `auth_note`, `html_page`, `html_hint`. |
+| `POST /api/graphql/schema {endpoint_id?, url?, headers?, refresh?}` | Introspection. Cached in memory for 10 minutes per endpoint. `refresh: true` fetches again. |
+
+Saved basic auth is added only when the request URL has the same scheme, host, and port as that endpoint and the request has no `Authorization` header. Redirects onto another host are refused. These calls are not stored as captured flows.
 
 ## Logs
 
@@ -146,7 +151,7 @@ Source: [api/debug_routes.py](../src/viewlift_ai/api/debug_routes.py)
 | Method and path | Loopback | Purpose |
 |---|---|---|
 | `GET /api/debug/modules` | no | Module catalog |
-| `GET /api/debug/network-profiles` | no | Network profile list |
+| `GET /api/debug/network-profiles` | no | Profile names for Debug Network tools. The button sends `net.profile` to the selected app |
 | `GET /api/debug/clients` | yes | All known apps |
 | `GET /api/debug/app?client_id=` | yes | Selected app identity. `409 client_required` when several apps are online and none is given. |
 | `GET /api/debug/packages?client_id=` | yes | Swift packages from DerivedData, plus runtime frameworks |
@@ -156,7 +161,6 @@ Source: [api/debug_routes.py](../src/viewlift_ai/api/debug_routes.py)
 | `POST /api/debug/command {client_id, name, payload, confirmation?}` | yes | Enqueue a command; result arrives on `/ws/debug` |
 | `POST /api/debug/invoke {client_id, name, payload, mutate?, timeout?}` | yes | Enqueue and wait for the result (default 12 s, max 25 s, `504` on timeout) |
 | `POST /api/debug/ott/enrich-frames {frames}` | yes | Parse stack frames |
-| `POST /api/debug/network-profile {profile}` | yes | Apply a global throttle profile |
 | `POST /api/debug/deeplink {url, udid?, kind?, client_id?}` | yes | Open a URL on a simulator or a paired device. `kind` is `simulator` or `device` |
 | `POST /api/debug/location {udid?, client_id?, latitude, longitude, clear?}` | yes | Simulated GPS on a simulator or a paired device. `409` while a device log stream holds USB |
 | `GET /api/host/targets` | yes | Simulators and paired devices, each with capabilities |
@@ -174,7 +178,7 @@ Source: [api/debug_routes.py](../src/viewlift_ai/api/debug_routes.py)
 
 | Path | Events |
 |---|---|
-| `/ws/flows?client_id=` | `{"type": "flow", "flow": <summary>, "app": <tag>}` and `{"type": "breakpoint", "kind", "pending"}` |
+| `/ws/flows?client_id=` | `{"type": "flow", "flow": <summary>, "app": <tag>}` |
 | `/ws/logs?client_id=` | `{"type": "log", "log": <summary>, "app": <tag>}` |
 | `/ws/debug?client_id=` | `debug-client`, `debug-command`, `debug-event`, `apps-changed` |
 | `GET /api/ws/ping` | Subscriber counts (plain HTTP) |

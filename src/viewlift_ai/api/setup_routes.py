@@ -28,13 +28,6 @@ def _setup(request: Request) -> SetupService:
     return svc
 
 
-def _mutating_enabled(request: Request) -> bool:
-    engine = getattr(request.app.state, "rule_engine", None)
-    if engine is None:
-        return False
-    return bool(engine.any_mutating_enabled())
-
-
 @router.get("/setup", response_class=HTMLResponse)
 async def setup_page(request: Request) -> HTMLResponse:
     return TEMPLATES.TemplateResponse(
@@ -43,7 +36,6 @@ async def setup_page(request: Request) -> HTMLResponse:
         {
             "title": "Setup",
             "active_nav": "setup",
-            "mutating_enabled": _mutating_enabled(request),
             "dashboard_url": str(request.base_url).rstrip("/"),
             "proxy_port": request.app.state.config.proxy_port,
             "sdk_port": defaults.ingest_port(),

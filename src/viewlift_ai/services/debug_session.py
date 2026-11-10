@@ -90,6 +90,7 @@ READ_COMMANDS = {
     "runtime.search",
     "runtime.describe",
     "macro.list",
+    "push.status",
     "bug.capture",
     "ott.snapshot",
     "ott.sections",
@@ -130,6 +131,7 @@ MUTATING_COMMANDS = {
     "macro.record_stop",
     "macro.replay",
     "push.local",
+    "push.clear",
     "nav.open_url",
     "explorer.set",
     "explorer.call",
@@ -156,12 +158,11 @@ MUTATING_COMMANDS = {
 
 ALLOWED_COMMANDS = READ_COMMANDS | MUTATING_COMMANDS
 
-# Streamed once a second; persisting them would push command results out of the event history.
+# Streamed once a second. Playback events stay stored so a stall is still there after it happens.
 EPHEMERAL_EVENTS = frozenset({
     ("memory", "live"),
     ("activity", "live"),
     ("activity", "frame"),
-    ("playback", "event"),
     ("playback", "digest"),
     ("ui", "focus"),
     ("ui", "remote"),

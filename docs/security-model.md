@@ -15,7 +15,7 @@ Validators live in [services/bind_policy.py](../src/viewlift_ai/services/bind_po
 
 ## HTTPS decryption allowlist
 
-`HostAllowlist` ([proxy/allowlist.py](../src/viewlift_ai/proxy/allowlist.py)) matches exact hosts or `fnmatch` globs, case-insensitive, trailing dot ignored. An empty allowlist denies everything. Non-allowlisted TLS connections are tunnelled without decryption and are not captured. Allowlist edits apply immediately.
+`HostAllowlist` ([proxy/allowlist.py](../src/viewlift_ai/proxy/allowlist.py)) matches exact hosts or `fnmatch` globs, case-insensitive, trailing dot ignored. An empty allowlist denies everything. Non-allowlisted TLS connections are tunnelled without decryption and are not captured. Edit the list on Setup (`PUT /api/rules/allowlist`). Changes apply immediately. The proxy does not rewrite, map, throttle, or pause traffic.
 
 ## Encryption at rest
 
@@ -30,9 +30,9 @@ Values are encrypted with PyNaCl SecretBox (XSalsa20-Poly1305, random nonce) in 
 
 Text search decrypts a bounded batch of recent rows in memory. Note that URL paths and query strings are stored in plaintext.
 
-Crash replay videos and posters in `crash-media/` are not encrypted. They show whatever was on screen in the ten seconds before a crash, which can include personal data in a test account. They stay in the data folder, are served only on loopback, and are deleted when their crash is deleted (checked at startup and after each upload). The replay `context` sent with a crash holds request method, host, and path without query strings, headers, or bodies, and console lines, which are not redacted (see known gap 4).
+Crash replay videos and posters in `crash-media/` are not encrypted. They show whatever was on screen in the ten seconds before a crash, which can include personal data in a test account. They stay in the data folder, are served only on loopback, and are deleted when their crash is deleted (checked at startup and after each upload). The replay `context` sent with a crash holds request method, host, and path without query strings, headers, or bodies, and console lines, which are not redacted (see known gap 3).
 
-Other files: `rules.json` `0600` (atomic write), CA private key `0600` and never served (export refuses anything containing `PRIVATE KEY`), ingest key and `debug.key` `0600`.
+Other files: `rules.json` `0600` (atomic write), `graphql-endpoints.json` `0600` (URLs in plaintext, username and password encrypted), CA private key `0600` and never served (export refuses anything containing `PRIVATE KEY`), ingest key and `debug.key` `0600`.
 
 ## Redaction
 
@@ -74,18 +74,21 @@ The UI runner is a signed XCUITest process. It connects out to the receiver with
 
 The Swift SDK does nothing unless compiled with `DEBUG` or `VIEWLIFT_CAPTURE_ENABLED`. Never enable it in App Store builds.
 
+## GraphQL playground
+
+The GraphQL page runs a document from this Mac. `GET /api/graphql/endpoints` returns the username and `has_password`, never the password. Execute and schema are loopback-only and require `Content-Type: application/json`. Saved basic auth is attached only when the request URL has the same scheme, host, and port as the saved endpoint, and the request does not already include `Authorization`. A redirect to another host is refused, so the password is not sent there. Request headers typed on the page are not written to the endpoint file. The MCP server has no GraphQL tool and does not read `graphql-endpoints.json`.
+
 ## Known gaps
 
 These were found while reading the code for this documentation. They are current behavior, not design goals.
 
 1. **Receiver and MCP ports.** The receiver defaults to 8743 and refuses the MCP port. Setting `VIEWLIFT_INGEST_PORT` to the MCP port fails the bind on purpose.
 2. **No Origin or CSRF check.** Several POST endpoints parse JSON regardless of content type, and there is no `Origin` or `Host` validation. A web page open in the same browser could probably send simple cross-site requests to endpoints such as `/api/debug/invoke`, `/api/setup/proxy` or `/api/logs/start`. DNS rebinding is a similar risk.
-3. **Breakpoint payloads are raw.** Paused flows are sent unredacted on `/ws/flows` (not scoped by app) and `/api/breakpoints/pending`.
-4. **Logs are not redacted.** Simulator, device and SDK log messages are encrypted but not redacted.
-5. **The dashboard shows `Authorization`.** MCP masks it. `extra_redaction_keys` is no longer applied before storage.
-6. **The unlock token is readable** from `/api/setup/status`, which is not loopback-guarded. Reveal gates by intent, not by secrecy.
-7. **Retention edges.** `24h` cleanup only runs at startup. The last-tab wipe runs regardless of retention mode. The reveal cache has no size cap.
-8. **SDK side.** Bodies over the cap are truncated before redaction, so truncated JSON is uploaded unredacted. Bonjour discovery can replace a configured receiver and pin, and the debug key is advertised in the TXT record. See [iOS SDK internals](ios-sdk-internals.md#known-issues).
+3. **Logs are not redacted.** Simulator, device and SDK log messages are encrypted but not redacted.
+4. **The dashboard shows `Authorization`.** MCP masks it. `extra_redaction_keys` is no longer applied before storage.
+5. **The unlock token is readable** from `/api/setup/status`, which is not loopback-guarded. Reveal gates by intent, not by secrecy.
+6. **Retention edges.** `24h` cleanup only runs at startup. The last-tab wipe runs regardless of retention mode. The reveal cache has no size cap.
+7. **SDK side.** Bodies over the cap are truncated before redaction, so truncated JSON is uploaded unredacted. Bonjour discovery can replace a configured receiver and pin, and the debug key is advertised in the TXT record. See [iOS SDK internals](ios-sdk-internals.md#known-issues).
 
 ## Key files
 
@@ -95,4 +98,4 @@ These were found while reading the code for this documentation. They are current
 - [src/viewlift_ai/services/encrypted_store.py](../src/viewlift_ai/services/encrypted_store.py)
 - [tests/test_proxy_security.py](../tests/test_proxy_security.py)
 
-Next: [Rules and breakpoints](rules-and-breakpoints.md)
+Next: [Multi-app and scope](multi-app-and-scope.md)

@@ -259,7 +259,7 @@ Side effects of interception:
 - an `X-Viewlift-Capture-Internal: 1` header is added to requests;
 - upload tasks and `httpBodyStream` bodies larger than 2 MB are recorded as empty. Smaller stream bodies, including GraphQL JSON that URL loading moves off `httpBody`, are buffered and replayed.
 
-SDK mode is inspection-only. Use the proxy path for breakpoints, mapping, rewrites or throttling.
+SDK mode is inspection-only. Network profiles (`net.profile`) shape that app's own traffic.
 
 ## Troubleshooting
 

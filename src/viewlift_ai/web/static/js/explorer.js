@@ -1,4 +1,4 @@
-// Explorer tab: live object browser, loaded libraries, cookies, and device debug settings.
+// Explorer tab: live object browser, cookies, and device debug settings.
 (() => {
   const escapeHtml = (value) => String(value ?? "")
     .replaceAll("&", "&amp;").replaceAll("<", "&lt;")
@@ -11,9 +11,11 @@
     selectedViewId: () => "",
     stack: [],
     current: null,
+    lastObject: null,
+    counts: {},
+    tab: "fields",
+    showSystem: false,
     filter: "",
-    libraries: [],
-    libraryFilter: "",
   };
 
   const MODULE_LABELS = {
@@ -37,8 +39,8 @@
         return `<span class="plist-string">"${escapeHtml(item.value)}"</span>`;
       case "object":
       case "value":
-        return `<button type="button" class="explorer-link" data-open-handle="${escapeHtml(item.handle)}" data-label="${escapeHtml(item.class)}">`
-          + `<span class="explorer-class">${escapeHtml(item.class)}</span> <span class="muted">${escapeHtml(item.preview)}</span></button>`;
+        return `<button type="button" class="explorer-link" data-open-handle="${escapeHtml(item.handle)}" data-label="${escapeHtml(item.class)}" title="Open ${escapeHtml(item.class)}">`
+          + `<span class="explorer-class">${escapeHtml(String(item.class || "").split(".").pop())}</span> <span class="muted">${escapeHtml(item.preview)}</span> <span class="explorer-open" aria-hidden="true">›</span></button>`;
       case "struct":
         return `<span class="mono">${escapeHtml(item.preview)}</span>`;
       case "void":
@@ -66,6 +68,16 @@
     return "";
   };
 
+  // Swift classes carry a module prefix ("App.Player"); system classes do not.
+  const isSystemClass = (name) => /^(NS|UI|CA|CF|AV|WK|_)/.test(String(name || "")) && !String(name).includes(".");
+  const displayClass = (name) => String(name || "")
+    .replace(/^NSKVONotifying_/, "")
+    .replace(/^GUL_/, "")
+    .replace(/-[0-9A-F]{8}-[0-9A-F-]{27}$/i, "")
+    .split(".").pop();
+  const SCREEN_ROOTS = ["Top view controller", "Root view controller", "Key window"];
+  const QUICK_CLASSES = ["UIViewController", "UINavigationController", "UIWindow", "AVPlayer", "WKWebView"];
+
   const Explorer = {
     init({ send, notify, selectedViewId }) {
       state.send = send;
@@ -80,6 +92,23 @@
         state.filter = event.target.value.trim().toLowerCase();
         this.applyFilter();
       });
+      $("explorer-system")?.addEventListener("change", (event) => {
+        state.showSystem = event.target.checked;
+        event.target.closest(".ui-check")?.classList.toggle("is-on", state.showSystem);
+        if (state.lastObject) this.renderObject("explorer.object", state.lastObject, true);
+      });
+      $("explorer-tabs")?.addEventListener("click", (event) => {
+        const tab = event.target.closest("[data-explorer-tab]");
+        if (!tab) return;
+        state.tab = tab.dataset.explorerTab;
+        this.paintTabs();
+      });
+      $("explorer-back")?.addEventListener("click", () => {
+        if (state.stack.length < 2) return;
+        state.stack.pop();
+        const entry = state.stack[state.stack.length - 1];
+        this.load({ handle: entry.handle });
+      });
       $("explorer-crumb")?.addEventListener("click", (event) => {
         const button = event.target.closest("[data-crumb]");
         if (!button) return;
@@ -87,7 +116,11 @@
         const entry = state.stack[index];
         if (!entry) return;
         state.stack = state.stack.slice(0, index + 1);
-        state.send("explorer.object", { handle: entry.handle });
+        this.load({ handle: entry.handle });
+      });
+      $("explorer-quick")?.addEventListener("click", (event) => {
+        const chip = event.target.closest("[data-quick-class]");
+        if (chip) this.findInstances(chip.dataset.quickClass);
       });
       $("ui-explore")?.addEventListener("click", () => {
         const viewId = state.selectedViewId();
@@ -116,20 +149,28 @@
       document.querySelector('[data-debug-tab="explorer"]')?.addEventListener("click", () => {
         if (!$("explorer-roots")?.querySelector("[data-open-handle]")) state.send("explorer.roots", {});
       });
+      this.renderQuick("");
     },
 
     /** Another app was selected; its handles mean nothing here. */
     reset() {
       state.stack = [];
       state.current = null;
-      ["explorer-result", "explorer-crumb", "settings-result"].forEach((id) => {
+      state.lastObject = null;
+      ["explorer-crumb", "settings-result"].forEach((id) => {
         const node = $(id);
         if (node) node.innerHTML = "";
       });
+      const result = $("explorer-result");
+      if (result) result.innerHTML = `<p class="muted">Pick a shortcut on the left to start.</p>`;
       const call = $("explorer-call");
       if (call) call.hidden = true;
+      const toolbar = $("explorer-toolbar");
+      if (toolbar) toolbar.hidden = true;
       const roots = $("explorer-roots");
-      if (roots) roots.innerHTML = `<p class="muted">Load shortcuts to start from the app, its windows, or a shared singleton.</p>`;
+      if (roots) roots.innerHTML = `<p class="muted">Open this tab with an app selected to load shortcuts.</p>`;
+      this.renderQuick("");
+      this.paintBack();
     },
 
     showTab() {
@@ -141,6 +182,10 @@
     open(payload, reset = false) {
       if (reset) state.stack = [];
       this.showTab();
+      this.load(payload);
+    },
+
+    load(payload) {
       $("explorer-result").innerHTML = `<p class="muted">Loading object…</p>`;
       state.send("explorer.object", payload);
     },
@@ -149,8 +194,14 @@
       this.showTab();
       const input = $("explorer-instances")?.elements.class;
       if (input) input.value = className;
-      $("explorer-result").innerHTML = `<p class="muted">Walking the heap for ${escapeHtml(className)}…</p>`;
+      $("explorer-toolbar").hidden = true;
+      $("explorer-result").innerHTML = `<p class="muted">Looking for live ${escapeHtml(className)} objects…</p>`;
       state.send("explorer.instances", { class: className, limit: 200 });
+    },
+
+    setClassHints(classes) {
+      const list = $("explorer-class-hints");
+      if (list) list.innerHTML = classes.map((name) => `<option value="${escapeHtml(name)}"></option>`).join("");
     },
 
     onClick(event) {
@@ -158,7 +209,7 @@
       if (open && open.closest("#explorer-roots, #explorer-result, #explorer-call")) {
         const fromRoots = Boolean(open.closest("#explorer-roots")) || Boolean(open.closest("[data-instances]"));
         if (fromRoots) state.stack = [];
-        this.open({ handle: open.dataset.openHandle });
+        this.load({ handle: open.dataset.openHandle });
         return;
       }
       const explore = event.target.closest("[data-explore-class]");
@@ -182,15 +233,17 @@
         if (input) this.commitEdit(input);
         return;
       }
-      const image = event.target.closest("[data-image-classes]");
-      if (image) {
-        $("runtime-result").innerHTML = `<p class="muted">Loading classes…</p>`;
-        state.send("runtime.image_classes", { image: image.dataset.imageClasses });
+      const describe = event.target.closest("[data-describe-class]");
+      if (describe && describe.closest("#explorer-result")) {
+        window.ViewliftRuntime?.describe(describe.dataset.describeClass);
         return;
       }
-      const describe = event.target.closest("[data-describe-class]");
-      if (describe) {
-        state.send("runtime.describe", { class: describe.dataset.describeClass });
+      if (event.target.closest("[data-show-system]")) {
+        const box = $("explorer-system");
+        if (box) {
+          box.checked = true;
+          box.dispatchEvent(new Event("change"));
+        }
         return;
       }
       const cookie = event.target.closest("[data-cookie-delete]");
@@ -233,9 +286,6 @@
         "explorer.set": () => this.renderObject(name, result),
         "explorer.instances": () => this.renderInstances(result),
         "explorer.call": () => this.renderCall(result),
-        "runtime.libraries": () => this.renderLibraries(result),
-        "runtime.image_classes": () => this.renderImageClasses(result),
-        "runtime.describe": () => this.renderDescribe(result),
         "settings.get": () => this.renderSettings(result),
         "settings.set": () => {
           state.notify("Device settings saved");
@@ -250,20 +300,43 @@
 
     renderRoots(result) {
       const rows = result.roots || [];
+      const groups = [
+        ["Current screen", rows.filter((row) => SCREEN_ROOTS.includes(row.name))],
+        ["Your app", rows.filter((row) => !SCREEN_ROOTS.includes(row.name) && !isSystemClass(row.value?.class))],
+        ["System", rows.filter((row) => !SCREEN_ROOTS.includes(row.name) && isSystemClass(row.value?.class))],
+      ];
+      const item = (row) => {
+        const value = row.value || {};
+        if (!value.handle) return `<li class="muted">${escapeHtml(row.name)}: ${escapeHtml(value.preview || "nil")}</li>`;
+        return `<li><button type="button" class="explorer-root" data-open-handle="${escapeHtml(value.handle)}">`
+          + `<span>${escapeHtml(row.name)}</span><span class="mono muted">${escapeHtml(displayClass(value.class))}</span></button></li>`;
+      };
       $("explorer-roots").innerHTML = rows.length
-        ? `<h3>Shortcuts</h3><ul class="explorer-root-list">${rows.map((row) => `<li><span class="explorer-root-name">${escapeHtml(row.name)}</span>${valueHtml(row.value)}</li>`).join("")}</ul>`
+        ? groups.filter(([, items]) => items.length).map(([title, items]) =>
+          `<h3>${escapeHtml(title)}</h3><ul class="explorer-root-list">${items.map(item).join("")}</ul>`).join("")
         : `<p class="muted">No shortcut objects reported.</p>`;
+      const top = rows.find((row) => row.name === "Top view controller")?.value?.class || "";
+      this.renderQuick(top);
+    },
+
+    renderQuick(topClass) {
+      const host = $("explorer-quick");
+      if (!host) return;
+      const classes = [...new Set([topClass, ...QUICK_CLASSES].filter(Boolean))];
+      host.innerHTML = `<span class="muted">Find:</span>` + classes.map((name) =>
+        `<button type="button" class="runtime-chip" data-quick-class="${escapeHtml(name)}" title="${escapeHtml(name)}">${escapeHtml(displayClass(name))}</button>`).join("");
     },
 
     renderInstances(result) {
       if (result.error) return this.renderError(result.error);
       const rows = result.instances || [];
       const note = result.truncated ? ` Showing the first ${rows.length}.` : "";
-      $("explorer-result").innerHTML = `<div data-instances><h3>${rows.length} live ${escapeHtml(result.class)} instances</h3>`
-        + `<p class="muted">Subclasses included.${note} Objects can be released while you browse.</p>`
+      $("explorer-result").innerHTML = `<div data-instances><h3>${rows.length} live ${escapeHtml(displayClass(result.class))} object${rows.length === 1 ? "" : "s"}</h3>`
+        + `<p class="muted">Subclasses included.${note} Click one to open it. Objects can be released while you browse.</p>`
         + (rows.length
-          ? `<ul class="explorer-root-list">${rows.map((row) => `<li>${valueHtml(row)}</li>`).join("")}</ul>`
-          : `<p class="muted">No live instances found.</p>`)
+          ? `<ul class="explorer-instance-list">${rows.map((row) => `<li><button type="button" class="explorer-root" data-open-handle="${escapeHtml(row.handle)}">`
+            + `<span class="mono">${escapeHtml(displayClass(row.class))}</span><span class="muted">${escapeHtml(row.preview)}</span></button></li>`).join("")}</ul>`
+          : `<p class="muted">No live instances found. Check the spelling, or open the screen that creates them.</p>`)
         + `</div>`;
     },
 
@@ -280,7 +353,65 @@
         : `<span class="mono">-${escapeHtml(result.selector)}</span> returned ${valueHtml(result.result)}`;
     },
 
-    renderObject(name, result) {
+    fieldRow(row, kind, rows) {
+      rows.set(row.name, row);
+      const edit = row.writable
+        ? `<button type="button" class="btn ghost" data-edit-key="${escapeHtml(row.name)}">Edit</button>`
+        : "";
+      const tag = kind === "i" ? `<span class="explorer-tag">ivar</span>` : "";
+      return `<tr data-filter="${escapeHtml(`${row.name} ${row.type}`.toLowerCase())}">`
+        + `<th class="mono">${escapeHtml(row.name)}${tag}</th>`
+        + `<td class="explorer-value">${valueHtml(row.value)}</td>`
+        + `<td class="plist-type">${escapeHtml(row.type)}</td><td class="explorer-actions">${edit}</td></tr>`;
+    },
+
+    fieldsHtml(result, rows) {
+      const table = (body) => `<table class="plist-table explorer-table"><tbody>${body}</tbody></table>`;
+      const levels = (result.levels || []).filter((level) => (level.properties || []).length || (level.ivars || []).length);
+      const appLevels = levels.filter((level) => !isSystemClass(level.class));
+      const keep = (level, index) => state.showSystem || (appLevels.length ? !isSystemClass(level.class) : index === 0);
+      const shown = levels.filter(keep);
+      const hidden = levels.length - shown.length;
+      const swift = result.swift || [];
+      let html = swift.length
+        ? `<details class="explorer-section" open><summary>Swift fields <span class="muted">${swift.length}</span></summary>${table(swift.map((row) => this.fieldRow(row, "s", rows)).join(""))}</details>`
+        : "";
+      html += shown.map((level, index) => {
+        const props = level.properties || [];
+        const ivars = level.ivars || [];
+        const body = props.map((row) => this.fieldRow(row, "p", rows)).join("") + ivars.map((row) => this.fieldRow(row, "i", rows)).join("");
+        const open = index === 0 || !isSystemClass(level.class);
+        return `<details class="explorer-section" ${open ? "open" : ""}><summary>${escapeHtml(displayClass(level.class))} `
+          + `<span class="muted">${props.length} properties${ivars.length ? `, ${ivars.length} ivars` : ""}</span></summary>${table(body)}</details>`;
+      }).join("");
+      if (hidden) {
+        html += `<p class="muted">${hidden} UIKit / Foundation level${hidden === 1 ? " is" : "s are"} hidden. `
+          + `<button type="button" class="btn ghost" data-show-system>Show them</button></p>`;
+      }
+      return html || `<p class="muted">No readable fields.</p>`;
+    },
+
+    methodsHtml(methods) {
+      if (!methods.length) return `<p class="muted">No methods listed.</p>`;
+      const sorted = [...methods].sort((left, right) => Number(right.callable) - Number(left.callable) || left.selector.localeCompare(right.selector));
+      return `<p class="muted">Call runs a method that takes no arguments, after you confirm.</p>`
+        + `<table class="plist-table explorer-table"><tbody>${sorted.map((method) => {
+          const call = method.callable
+            ? `<button type="button" class="btn ghost" data-call="${escapeHtml(method.selector)}">Call</button>`
+            : "";
+          return `<tr data-filter="${escapeHtml(method.selector.toLowerCase())}"><th class="mono">-${escapeHtml(method.selector)}</th>`
+            + `<td class="plist-type">${escapeHtml(method.returns)}</td><td class="explorer-actions">${call}</td></tr>`;
+        }).join("")}</tbody></table>`;
+    },
+
+    elementsHtml(collection) {
+      return `<table class="plist-table explorer-table"><tbody>${(collection.items || []).map((item) =>
+        `<tr data-filter="${escapeHtml(String(item.key).toLowerCase())}"><th class="mono">${escapeHtml(item.key)}</th><td class="explorer-value">${valueHtml(item.value)}</td></tr>`
+      ).join("")}</tbody></table>`
+        + (collection.count > (collection.items || []).length ? `<p class="muted">Showing ${(collection.items || []).length} of ${collection.count}.</p>` : "");
+    },
+
+    renderObject(name, result, keepTab = false) {
       if (result.error) {
         if (name === "explorer.set") return state.notify(result.error);
         return this.renderError(result.error);
@@ -288,63 +419,62 @@
       if (name === "explorer.set" && result.updated) state.notify(`Set ${result.updated}`);
       const top = state.stack[state.stack.length - 1];
       if (!top || top.handle !== result.handle) {
-        state.stack.push({ handle: result.handle, label: result.class });
+        state.stack.push({ handle: result.handle, label: displayClass(result.class) });
         if (state.stack.length > 30) state.stack.shift();
+        if (!keepTab && name === "explorer.object") state.tab = result.collection ? "elements" : "fields";
       }
+      state.lastObject = result;
       const rows = new Map();
-      const section = (title, items, kind) => {
-        if (!items.length) return "";
-        const body = items.map((row) => {
-          const key = `${kind}:${row.name}`;
-          rows.set(row.name, row);
-          const edit = row.writable
-            ? `<button type="button" class="btn ghost" data-edit-key="${escapeHtml(row.name)}">Edit</button>`
-            : "";
-          return `<tr data-filter="${escapeHtml(`${row.name} ${row.type}`.toLowerCase())}" data-row="${escapeHtml(key)}">`
-            + `<th class="mono">${escapeHtml(row.name)}</th><td class="plist-type">${escapeHtml(row.type)}</td>`
-            + `<td class="explorer-value">${valueHtml(row.value)}</td><td class="explorer-actions">${edit}</td></tr>`;
-        }).join("");
-        return `<details class="explorer-section" open><summary>${escapeHtml(title)} <span class="muted">${items.length}</span></summary>`
-          + `<table class="plist-table explorer-table"><tbody>${body}</tbody></table></details>`;
-      };
-      const levels = (result.levels || []).map((level) =>
-        section(`${level.class} properties`, level.properties || [], "p")
-        + section(`${level.class} ivars`, level.ivars || [], "i")
-      ).join("");
+      const fields = this.fieldsHtml(result, rows);
       const methods = result.methods || [];
-      const methodBody = methods.map((method) => {
-        const call = method.callable
-          ? `<button type="button" class="btn ghost" data-call="${escapeHtml(method.selector)}">Call</button>`
-          : "";
-        return `<tr data-filter="${escapeHtml(method.selector.toLowerCase())}"><th class="mono">-${escapeHtml(method.selector)}</th>`
-          + `<td class="plist-type">${escapeHtml(method.returns)}</td><td class="explorer-actions">${call}</td></tr>`;
-      }).join("");
-      const collection = result.collection
-        ? `<details class="explorer-section" open><summary>Elements <span class="muted">${result.collection.count}</span></summary>`
-          + `<table class="plist-table explorer-table"><tbody>${(result.collection.items || []).map((item) =>
-            `<tr data-filter="${escapeHtml(String(item.key).toLowerCase())}"><th class="mono">${escapeHtml(item.key)}</th><td class="explorer-value">${valueHtml(item.value)}</td></tr>`
-          ).join("")}</tbody></table></details>`
-        : "";
       state.current = { handle: result.handle, rows };
+      state.counts = {
+        fields: rows.size,
+        methods: methods.length,
+        elements: result.collection ? result.collection.count : null,
+      };
+      if (state.tab === "elements" && !result.collection) state.tab = "fields";
       const chain = (result.superclasses || []).map((cls) =>
-        `<button type="button" class="btn ghost explorer-chip" data-describe-class="${escapeHtml(cls)}">${escapeHtml(cls)}</button>`
-      ).join("");
+        `<button type="button" class="btn ghost explorer-chip" data-describe-class="${escapeHtml(cls)}" title="Open ${escapeHtml(cls)} in the runtime browser">${escapeHtml(displayClass(cls))}</button>`
+      ).join(`<span class="muted" aria-hidden="true">›</span>`);
       const module = String(result.module || "").split("/").pop();
+      const description = String(result.description || "");
+      const firstLine = description.split("\n")[0].slice(0, 160);
       $("explorer-result").innerHTML = `<header class="explorer-head">
-          <h3 class="mono">${escapeHtml(result.class)}</h3>
-          <span class="muted">${escapeHtml(module)}</span>
+          <h3 class="mono" title="${escapeHtml(result.class)}">${escapeHtml(displayClass(result.class))}</h3>
+          ${module ? `<span class="muted">${escapeHtml(module)}</span>` : ""}
           <button type="button" class="btn ghost" data-explore-class="${escapeHtml(result.class)}">All instances</button>
           <button type="button" class="btn ghost" data-describe-class="${escapeHtml(result.class)}">Class info</button>
         </header>
-        <div class="explorer-chain">${chain}</div>
-        <pre class="explorer-description">${escapeHtml(result.description)}</pre>
-        ${collection}
-        ${section("Swift fields", result.swift || [], "s")}
-        ${levels}
-        ${methods.length ? `<details class="explorer-section"><summary>Methods <span class="muted">${methods.length}</span></summary><table class="plist-table explorer-table"><tbody>${methodBody}</tbody></table></details>` : ""}`;
+        ${chain ? `<div class="explorer-chain"><span class="muted">Inherits</span>${chain}</div>` : ""}
+        ${description ? `<details class="explorer-description-wrap"><summary class="mono">${escapeHtml(firstLine)}</summary><pre class="explorer-description">${escapeHtml(description)}</pre></details>` : ""}
+        <div data-pane="fields">${fields}</div>
+        <div data-pane="methods">${this.methodsHtml(methods)}</div>
+        ${result.collection ? `<div data-pane="elements">${this.elementsHtml(result.collection)}</div>` : ""}`;
+      $("explorer-toolbar").hidden = false;
+      this.paintTabs();
       this.renderCrumb();
-      this.applyFilter();
+      this.paintBack();
       if (name === "explorer.object") $("explorer-call").hidden = true;
+    },
+
+    paintTabs() {
+      const counts = state.counts || {};
+      const tabs = [["fields", "Fields", counts.fields], ["methods", "Methods", counts.methods]];
+      if (counts.elements != null) tabs.unshift(["elements", "Elements", counts.elements]);
+      $("explorer-tabs").innerHTML = tabs.map(([id, label, count]) =>
+        `<button type="button" role="tab" data-explorer-tab="${id}" aria-selected="${state.tab === id}" class="${state.tab === id ? "active" : ""}">${label} <span class="muted">${count ?? 0}</span></button>`).join("");
+      document.querySelectorAll("#explorer-result [data-pane]").forEach((pane) => {
+        pane.hidden = pane.dataset.pane !== state.tab;
+      });
+      const system = $("explorer-system")?.closest(".ui-check");
+      if (system) system.hidden = state.tab !== "fields";
+      this.applyFilter();
+    },
+
+    paintBack() {
+      const back = $("explorer-back");
+      if (back) back.disabled = state.stack.length < 2;
     },
 
     renderCrumb() {
@@ -352,79 +482,17 @@
         index === state.stack.length - 1
           ? `<span>${escapeHtml(entry.label)}</span>`
           : `<button type="button" data-crumb="${index}">${escapeHtml(entry.label)}</button>`
-      ).join(`<span class="muted">/</span>`);
+      ).join(`<span class="muted">›</span>`);
     },
 
     applyFilter() {
       const needle = state.filter;
-      document.querySelectorAll("#explorer-result [data-filter]").forEach((row) => {
+      const pane = document.querySelector(`#explorer-result [data-pane="${CSS.escape(state.tab)}"]`);
+      if (!pane) return;
+      pane.querySelectorAll("[data-filter]").forEach((row) => {
         row.hidden = Boolean(needle) && !row.dataset.filter.includes(needle);
       });
-    },
-
-    renderLibraries(result) {
-      state.libraries = result.images || [];
-      const target = $("runtime-result");
-      target.innerHTML = `<div class="defaults-bar"><input type="search" id="library-filter" placeholder="Filter ${state.libraries.length} images" autocomplete="off" aria-label="Filter loaded libraries"><span class="muted" id="library-count"></span></div>`
-        + `<table class="debug-table"><thead><tr><th scope="col">Image</th><th scope="col">Classes</th><th scope="col">Path</th></tr></thead><tbody id="library-rows"></tbody></table>`;
-      const paint = () => {
-        const needle = state.libraryFilter;
-        const shown = state.libraries.filter((row) => !needle || row.path.toLowerCase().includes(needle));
-        $("library-count").textContent = `${shown.length} of ${state.libraries.length}`;
-        $("library-rows").innerHTML = shown.map((row) => `<tr>
-            <td>${escapeHtml(row.name)}${row.app ? ` <span class="capability available">app</span>` : ""}</td>
-            <td>${row.classes ? `<button type="button" class="btn ghost" data-image-classes="${escapeHtml(row.path)}">${row.classes}</button>` : `<span class="muted">0</span>`}</td>
-            <td class="mono muted">${escapeHtml(row.path)}</td>
-          </tr>`).join("");
-      };
-      $("library-filter").addEventListener("input", (event) => {
-        state.libraryFilter = event.target.value.trim().toLowerCase();
-        paint();
-      });
-      state.libraryFilter = "";
-      paint();
-    },
-
-    renderImageClasses(result) {
-      const classes = result.classes || [];
-      const name = String(result.image || "").split("/").pop();
-      $("runtime-result").innerHTML = `<p><button type="button" class="btn ghost" data-command="runtime.libraries">All libraries</button> `
-        + `<strong>${escapeHtml(name)}</strong> <span class="muted">${classes.length} classes${result.truncated ? ", truncated" : ""}</span></p>`
-        + classes.map((cls) => `<button type="button" class="btn ghost runtime-class" data-describe-class="${escapeHtml(cls)}">${escapeHtml(cls)}</button>`).join(" ");
-    },
-
-    renderDescribe(result) {
-      const target = $("runtime-result");
-      if (result.error) {
-        target.innerHTML = `<p class="warn-text">${escapeHtml(result.error)}</p>`;
-        return;
-      }
-      const table = (title, rows, columns) => rows.length
-        ? `<details class="explorer-section" open><summary>${escapeHtml(title)} <span class="muted">${rows.length}</span></summary><table class="plist-table explorer-table"><tbody>${rows.map((row) =>
-          `<tr>${columns.map((column, index) => index === 0
-            ? `<th class="mono">${escapeHtml(row[column])}</th>`
-            : `<td class="plist-type">${escapeHtml(typeof row[column] === "boolean" ? (row[column] ? column : "") : row[column])}</td>`).join("")}</tr>`
-        ).join("")}</tbody></table></details>`
-        : "";
-      const chain = (result.superclasses || []).map((cls) =>
-        `<button type="button" class="btn ghost explorer-chip" data-describe-class="${escapeHtml(cls)}">${escapeHtml(cls)}</button>`
-      ).join("");
-      this.showRuntimeTab();
-      target.innerHTML = `<header class="explorer-head"><h3 class="mono">${escapeHtml(result.class)}</h3>`
-        + `<span class="muted">${escapeHtml(String(result.image || "").split("/").pop())} · ${result.instance_size || 0} bytes</span>`
-        + `<button type="button" class="btn ghost" data-explore-class="${escapeHtml(result.class)}">Live instances</button></header>`
-        + `<div class="explorer-chain">${chain}</div>`
-        + ((result.protocols || []).length ? `<p class="muted">Conforms to ${escapeHtml(result.protocols.join(", "))}</p>` : "")
-        + table("Properties", result.properties || [], ["name", "type", "readonly", "weak"])
-        + table("Ivars", result.ivars || [], ["name", "type", "offset"])
-        + table("Instance methods", result.methods || [], ["selector", "returns"])
-        + table("Class methods", result.class_methods || [], ["selector", "returns"])
-        + window.ViewliftNetwork.copyBlockHtml(JSON.stringify(result, null, 2), "Copy JSON");
-    },
-
-    showRuntimeTab() {
-      const tab = document.querySelector('[data-debug-tab="runtime"]');
-      if (tab && !tab.classList.contains("active")) tab.click();
+      if (needle) pane.querySelectorAll("details").forEach((section) => { section.open = true; });
     },
 
     renderCookies(name, result) {

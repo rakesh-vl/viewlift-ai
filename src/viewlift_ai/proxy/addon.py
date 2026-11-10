@@ -10,35 +10,24 @@ from mitmproxy import http, tls
 
 from viewlift_ai.models.flow import FlowTiming, WebSocketMessageRecord
 from viewlift_ai.proxy.allowlist import HostAllowlist
-from viewlift_ai.proxy.breakpoints import BreakpointRegistry
-from viewlift_ai.proxy.rules import (
-    apply_request_rules,
-    apply_response_rules,
-    flow_error_with_breakpoint_mark,
-)
 from viewlift_ai.services.capture import CaptureService, HttpCaptureSnapshot
 from viewlift_ai.services.proxy_clients import ProxyClientRegistry
-from viewlift_ai.services.rule_engine import RuleEngine
 
 logger = logging.getLogger(__name__)
 
 
 class ViewliftCaptureAddon:
-    """Allowlist tunnel vs decrypt; rules; capture allowlisted HTTP/WebSocket only."""
+    """Allowlist tunnel vs decrypt; capture allowlisted HTTP/WebSocket only."""
 
     def __init__(
         self,
         allowlist: HostAllowlist,
         capture: CaptureService,
-        rule_engine: RuleEngine | None = None,
-        breakpoints: BreakpointRegistry | None = None,
         proxy_clients: ProxyClientRegistry | None = None,
     ) -> None:
         self._proxy_clients = proxy_clients
         self._allowlist = allowlist
         self._capture = capture
-        self._rules = rule_engine
-        self._breakpoints = breakpoints
         self._tls_failure_ids: dict[str, str] = {}
 
     def tls_clienthello(self, data: tls.ClientHelloData) -> None:
@@ -57,24 +46,10 @@ class ViewliftCaptureAddon:
         self._observe_client(flow)
 
     async def request(self, flow: http.HTTPFlow) -> None:
-        """Throttle → map local → map remote → request breakpoint (before forward)."""
         self._observe_client(flow)
-        if self._rules is None:
-            return
-        await apply_request_rules(
-            self._rules,
-            flow,
-            breakpoints=self._breakpoints,
-        )
 
     async def response(self, flow: http.HTTPFlow) -> None:
         host = _flow_host(flow)
-        if self._rules is not None:
-            await apply_response_rules(
-                self._rules,
-                flow,
-                breakpoints=self._breakpoints,
-            )
         if not self._allowlist.allows(host):
             return
         self._persist_http(flow, record_bodies=True)
@@ -289,7 +264,6 @@ def _to_snapshot(flow: http.HTTPFlow, *, record_bodies: bool) -> HttpCaptureSnap
             resp_body = bytes(response.raw_content or b"")
 
     error = flow.error.msg if flow.error else None
-    error = flow_error_with_breakpoint_mark(flow, error)
     tls_failed = bool(error and _looks_like_tls_failure(error))
     req_headers = _headers_to_dict(request.headers)
 

@@ -1,4 +1,4 @@
-"""WebSocket live flow, log, and breakpoint updates via event buses."""
+"""WebSocket live flow and log updates via event buses."""
 
 from __future__ import annotations
 
@@ -13,7 +13,6 @@ from fastapi import APIRouter, Request, WebSocket, WebSocketDisconnect
 
 from viewlift_ai import defaults
 from viewlift_ai.api.scope import app_tag
-from viewlift_ai.models.breakpoints import pending_to_dict
 from viewlift_ai.services.flow_present import flow_summary
 from viewlift_ai.services.log_present import log_summary
 
@@ -91,7 +90,6 @@ async def flows_ws(websocket: WebSocket) -> None:
     await websocket.accept()
     scope = _scope(websocket)
     bus = websocket.app.state.event_bus
-    breakpoints = getattr(websocket.app.state, "breakpoints", None)
 
     async def flows(outlet: _Outlet) -> None:
         async for flow in bus.subscribe():
@@ -105,20 +103,7 @@ async def flows_ws(websocket: WebSocket) -> None:
                 }
             )
 
-    async def paused(outlet: _Outlet) -> None:
-        async for event in breakpoints.subscribe():
-            await outlet.send(
-                {
-                    "type": "breakpoint",
-                    "kind": str(event.kind),
-                    "pending": pending_to_dict(event.pending) if event.pending else None,
-                }
-            )
-
-    pumps: list[Pump] = [flows]
-    if breakpoints is not None:
-        pumps.append(paused)
-    await _serve(websocket, "flow", *pumps)
+    await _serve(websocket, "flow", flows)
 
 
 @ws_router.websocket("/ws/logs")

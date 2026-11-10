@@ -115,6 +115,22 @@ def test_playback_digest_is_not_stored(tmp_path: Path) -> None:
     assert store.list_debug_events(client_id=client, module="playback") == []
 
 
+def test_playback_events_stay_stored(tmp_path: Path) -> None:
+    service, store = _service(tmp_path)
+    client = _register(service)
+    service.ingest_event(
+        client,
+        {
+            "module": "playback",
+            "kind": "event",
+            "payload": {"kind": "stall", "count": 1},
+        },
+    )
+    rows = store.list_debug_events(client_id=client, module="playback")
+    assert [row["kind"] for row in rows] == ["event"]
+    assert rows[0]["payload"]["kind"] == "stall"
+
+
 def test_activity_live_events_are_ephemeral_and_allowed(tmp_path: Path) -> None:
     service, store = _service(tmp_path)
     client = _register(service)

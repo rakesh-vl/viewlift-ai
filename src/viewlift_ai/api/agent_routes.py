@@ -22,11 +22,6 @@ TEMPLATES = Jinja2Templates(directory=str(WEB_ROOT / "templates"))
 router = APIRouter()
 
 
-def _mutating(request: Request) -> bool:
-    engine = getattr(request.app.state, "rule_engine", None)
-    return bool(engine and engine.any_mutating_enabled())
-
-
 def _mcp_status() -> dict[str, object]:
     port = http_port()
     return {
@@ -68,7 +63,6 @@ async def agent_page(request: Request) -> HTMLResponse:
         {
             "title": "Agent",
             "active_nav": "agent",
-            "mutating_enabled": _mutating(request),
             "mcp": _mcp_status(),
             "console_url": str(request.base_url).rstrip("/"),
             "tool_groups": TOOL_GROUPS,

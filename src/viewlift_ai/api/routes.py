@@ -52,13 +52,6 @@ def _kind_filter(kind: str | None) -> str | None:
     return value
 
 
-def _mutating_enabled(request: Request) -> bool:
-    engine = getattr(request.app.state, "rule_engine", None)
-    if engine is None:
-        return False
-    return bool(engine.any_mutating_enabled())
-
-
 @router.get("/", response_class=HTMLResponse)
 async def dashboard(request: Request) -> HTMLResponse:
     return TEMPLATES.TemplateResponse(
@@ -67,7 +60,6 @@ async def dashboard(request: Request) -> HTMLResponse:
         {
             "title": "Network",
             "active_nav": "network",
-            "mutating_enabled": _mutating_enabled(request),
         },
     )
 
@@ -85,7 +77,6 @@ async def flow_detail_page(request: Request, flow_id: str) -> HTMLResponse:
             "flow_id": flow_id,
             "flow": flow_detail(flow, redaction=_redaction(request)),
             "active_nav": "network",
-            "mutating_enabled": _mutating_enabled(request),
         },
     )
 

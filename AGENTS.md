@@ -35,7 +35,7 @@ Then enable **viewlift-ai** in Cursor Settings → MCP. The console must be runn
 - Name a `client_id` from `list_apps`. One device can host several apps.
 - Start with `triage_app`, `network_summary`, `failed_requests`, or `summarize_logs`. Open one flow or log after that.
 - `app_inspect` is read-only. `app_mutate`, `set_network_profile`, `open_deeplink`, `set_location`, and `replay_flow` change state and require `confirm: true`. Say what will change first.
-- Do not enable proxy rewrite. Do not unlock reveal. Do not ask the user to paste tokens. Masked values stay `[REDACTED]`.
+- Do not unlock reveal. Do not ask the user to paste tokens. Masked values stay `[REDACTED]`.
 - SDK `start()` belongs in Debug only.
 
 ## Fix a crash

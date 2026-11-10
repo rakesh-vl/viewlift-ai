@@ -1,4 +1,4 @@
-"""Rules REST API validation, toggles, banner flag, Rules page."""
+"""Allowlist API. The Rules page is gone; Setup edits the list."""
 
 from __future__ import annotations
 
@@ -28,136 +28,33 @@ def _client(tmp_path: Path) -> TestClient:
     return TestClient(create_app(cfg))
 
 
-def test_rules_defaults_and_page(tmp_path: Path) -> None:
+def test_allowlist_defaults_and_rules_page_gone(tmp_path: Path) -> None:
     with _client(tmp_path) as client:
         res = client.get("/api/rules")
         assert res.status_code == 200
-        body = res.json()
-        assert body["allowlist"] == []
-        assert body["map_local"] == []
-        assert body["breakpoints"] == []
-        assert body["mutating_enabled"] is False
-
-        page = client.get("/rules")
+        assert res.json() == {"allowlist": []}
+        assert client.get("/rules").status_code == 404
+        page = client.get("/setup")
         assert page.status_code == 200
-        assert b"Map local" in page.content
-        assert b"Breakpoints" in page.content
-        assert b"mutating-banner" in page.content
-        # Banner not shown by default
-        assert b'mutating-banner show' not in page.content.replace(b"\n", b" ")
+        assert b"Allowlist" in page.content
+        assert b'href="/rules"' not in page.content
 
 
-def test_allowlist_and_map_remote_validation(tmp_path: Path) -> None:
+def test_allowlist_replace(tmp_path: Path) -> None:
     with _client(tmp_path) as client:
         bad = client.put("/api/rules/allowlist", json={"patterns": "nope"})
         assert bad.status_code == 400
-
-        ok = client.put("/api/rules/allowlist", json={"patterns": ["*.example.com"]})
+        ok = client.put("/api/rules/allowlist", json={"patterns": ["*.example.com", ""]})
         assert ok.status_code == 200
         assert ok.json()["allowlist"] == ["*.example.com"]
-
-        rejected = client.post(
-            "/api/rules/map-remote",
-            json={
-                "match": {"method": "*", "host": "a.com", "path": "*"},
-                "target_url": "ftp://evil/",
-            },
-        )
-        assert rejected.status_code == 400
-
-        created = client.post(
-            "/api/rules/map-remote",
-            json={
-                "match": {"method": "GET", "host": "a.com", "path": "/x"},
-                "target_url": "https://b.com/y",
-            },
-        )
-        assert created.status_code == 200
-        assert created.json()["enabled"] is False
-        rule_id = created.json()["id"]
-
-        toggled = client.post(
-            f"/api/rules/map-remote/{rule_id}/toggle",
-            params={"enabled": True},
-        )
-        assert toggled.status_code == 200
-        assert toggled.json()["enabled"] is True
-
-        status = client.get("/api/rules/status")
-        assert status.json()["mutating_enabled"] is True
-
-        page = client.get("/rules")
-        assert b'class="mutating-banner show"' in page.content
+        assert client.get("/api/rules").json()["allowlist"] == ["*.example.com"]
 
 
-def test_map_local_relative_validation(tmp_path: Path) -> None:
+def test_health_reports_allowlist(tmp_path: Path) -> None:
     with _client(tmp_path) as client:
-        bad = client.post(
-            "/api/rules/map-local",
-            json={
-                "match": {"method": "*", "host": "*", "path": "*"},
-                "relative_path": "../secret",
-            },
-        )
-        assert bad.status_code == 400
-
-        root = client.put(
-            "/api/rules/map-local/root",
-            json={"map_local_root": str(tmp_path / "fixtures")},
-        )
-        assert root.status_code == 200
-
-
-def test_rewrite_replacement_cap_api(tmp_path: Path) -> None:
-    with _client(tmp_path) as client:
-        huge = "x" * (256 * 1024 + 1)
-        res = client.post(
-            "/api/rules/rewrite",
-            json={
-                "match": {"method": "*", "host": "*", "path": "*"},
-                "actions": [
-                    {
-                        "kind": "replace_body_literal",
-                        "find": "a",
-                        "replace": huge,
-                    }
-                ],
-            },
-        )
-        assert res.status_code == 400
-
-
-def test_throttle_crud(tmp_path: Path) -> None:
-    with _client(tmp_path) as client:
-        created = client.post(
-            "/api/rules/throttle",
-            json={
-                "host": "*.cdn.com",
-                "latency_ms": 50,
-                "upload_kbps": 128,
-                "download_kbps": 256,
-                "offline": False,
-            },
-        )
-        assert created.status_code == 200
-        assert created.json()["enabled"] is False
-        rule_id = created.json()["id"]
-
-        patched = client.patch(
-            f"/api/rules/throttle/{rule_id}",
-            json={"latency_ms": 100, "enabled": False},
-        )
-        assert patched.status_code == 200
-        assert patched.json()["latency_ms"] == 100
-
-        deleted = client.delete(f"/api/rules/throttle/{rule_id}")
-        assert deleted.status_code == 200
-        listing = client.get("/api/rules")
-        assert listing.json()["throttle"] == []
-
-
-def test_health_includes_mutating_flag(tmp_path: Path) -> None:
-    with _client(tmp_path) as client:
+        client.put("/api/rules/allowlist", json={"patterns": ["api.example.com"]})
         health = client.get("/health")
         assert health.status_code == 200
-        assert health.json()["mutating_rules_enabled"] is False
+        body = health.json()
+        assert body["allowlist"] == ["api.example.com"]
+        assert "mutating_rules_enabled" not in body

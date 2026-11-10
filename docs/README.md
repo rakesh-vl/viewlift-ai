@@ -19,7 +19,6 @@ Everything binds to loopback by default, sensitive data is encrypted at rest, an
 | Change settings or environment variables | [Configuration](configuration.md) |
 | Call the console from scripts or the UI | [API reference](api-reference.md) |
 | Understand what is protected and what is not | [Security model](security-model.md) |
-| Use map local, rewrite, throttle or breakpoints | [Rules and breakpoints](rules-and-breakpoints.md) |
 | Debug several apps on one device | [Multi-app and scope](multi-app-and-scope.md) |
 | Connect Cursor or another agent | [MCP server and tools](mcp-server.md), then [AGENTS.md](../AGENTS.md) |
 | Wire an iOS/tvOS app and its MCP config | [AGENTS.md](../AGENTS.md), prompt in [Connect any app](connect-app-prompt.md) |
@@ -37,14 +36,13 @@ Everything binds to loopback by default, sensitive data is encrypted at rest, an
 4. [Configuration](configuration.md)
 5. [API reference](api-reference.md)
 6. [Security model](security-model.md)
-7. [Rules and breakpoints](rules-and-breakpoints.md)
-8. [Multi-app and scope](multi-app-and-scope.md)
-9. [MCP server and tools](mcp-server.md)
-10. [Web UI](web-ui.md)
-11. [iOS SDK guide](ios-sdk.md)
-12. [iOS SDK internals](ios-sdk-internals.md)
-13. [AppCMS integration](appcms-integration.md)
-14. [Contributing](contributing.md)
+7. [Multi-app and scope](multi-app-and-scope.md)
+8. [MCP server and tools](mcp-server.md)
+9. [Web UI](web-ui.md)
+10. [iOS SDK guide](ios-sdk.md)
+11. [iOS SDK internals](ios-sdk-internals.md)
+12. [AppCMS integration](appcms-integration.md)
+13. [Contributing](contributing.md)
 
 ## Glossary
 

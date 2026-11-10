@@ -1,0 +1,75 @@
+{% extends "base.html" %}
+{% block title %}GraphQL · Viewlift AI{% endblock %}
+{% block content %}
+<link rel="stylesheet" href="/static/css/graphql.css?v=5">
+<section class="gql-page">
+  <div class="pane-head">
+    <span>GraphQL</span>
+    <span class="muted">Runs from this Mac. Passwords stay on Setup.</span>
+  </div>
+
+  <div class="gql-bar">
+    <label>Endpoint
+      <select id="gql-endpoint" aria-describedby="gql-note"></select>
+    </label>
+    <label class="gql-url">URL
+      <input id="gql-url" type="text" autocomplete="off" spellcheck="false" placeholder="https://myoutdoortv.staging.api.viewlift.com/graphql">
+    </label>
+    <a id="gql-hosted" class="btn ghost" target="_blank" rel="noopener noreferrer" hidden>Open hosted playground</a>
+    <button type="button" class="btn" id="gql-run">Run</button>
+    <button type="button" class="btn ghost" id="gql-schema" aria-pressed="false" aria-controls="gql-schema-panel">Schema</button>
+    <button type="button" class="btn ghost" id="gql-pretty">Prettify</button>
+  </div>
+
+  <div class="gql-ops">
+    <label>Saved
+      <select id="gql-saved" aria-label="Saved operations">
+        <option value="">Saved operations</option>
+      </select>
+    </label>
+    <label>Save as
+      <input id="gql-save-name" type="text" autocomplete="off" spellcheck="false" placeholder="Name">
+    </label>
+    <label>Operation name
+      <input id="gql-operation" type="text" autocomplete="off" spellcheck="false" placeholder="Optional">
+    </label>
+    <button type="button" class="btn ghost" id="gql-save">Save</button>
+    <button type="button" class="btn ghost" id="gql-delete">Delete</button>
+  </div>
+
+  <div class="gql-split">
+    <div class="gql-editors">
+      <div class="gql-tabs" role="tablist" aria-label="Request">
+        <button type="button" id="gql-tab-query" role="tab" aria-selected="true" aria-controls="gql-query">Query</button>
+        <button type="button" id="gql-tab-variables" role="tab" aria-selected="false" aria-controls="gql-variables">Variables</button>
+        <button type="button" id="gql-tab-headers" role="tab" aria-selected="false" aria-controls="gql-headers">Headers</button>
+      </div>
+      <textarea id="gql-query" class="gql-editor" spellcheck="false" aria-label="Query" placeholder="query { __typename }"></textarea>
+      <textarea id="gql-variables" class="gql-editor" spellcheck="false" aria-label="Variables" hidden>{}</textarea>
+      <p id="gql-header-note" class="muted" hidden>An Authorization header here is sent as-is. Saved basic auth is not added.</p>
+      <textarea id="gql-headers" class="gql-editor" spellcheck="false" aria-label="Headers" placeholder="x-api-key: ..." hidden></textarea>
+    </div>
+    <div class="gql-result">
+      <div class="gql-result-head">
+        <span id="gql-status" class="gql-status">Response</span>
+        <span id="gql-time" class="muted"></span>
+        <button type="button" class="btn ghost" id="gql-schema-reload" hidden>Reload schema</button>
+      </div>
+      <div id="gql-output">Run a query to see the response.</div>
+      <div id="gql-schema-panel" hidden>
+        <label class="gql-search">
+          <input id="gql-schema-search" type="search" placeholder="Search schema" autocomplete="off" aria-label="Search schema">
+        </label>
+        <div id="gql-schema-body" class="gql-schema-body">
+          <p class="muted">Schema loads from introspection when you open this panel.</p>
+        </div>
+      </div>
+    </div>
+  </div>
+  <p id="gql-note" class="muted"></p>
+</section>
+{% endblock %}
+{% block scripts %}
+<script src="/static/js/toolkit/core.js?v=1"></script>
+<script src="/static/js/graphql.js?v=5"></script>
+{% endblock %}

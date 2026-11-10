@@ -8,7 +8,6 @@ Four paths bring data into the console. All end in the encrypted store and an ev
 sequenceDiagram
     participant Dev as Device
     participant Addon as ViewliftCaptureAddon
-    participant Rules as RuleEngine
     participant Cap as CaptureService
     participant Rev as RevealSession
     participant Store as EncryptedSqliteStore
@@ -19,9 +18,7 @@ sequenceDiagram
     alt host not allowlisted
         Addon-->>Dev: tunnel raw, no decrypt, no capture
     else allowlisted
-        Dev->>Addon: request
-        Addon->>Rules: throttle, map local, map remote, request breakpoint
-        Addon->>Rules: response: throttle, response breakpoint, rewrite
+        Dev->>Addon: request and response
         Addon->>Cap: persist_http(snapshot)
         Cap->>Rev: remember raw headers and bodies (memory only)
         Cap->>Cap: redact headers, bodies, text frames
@@ -34,7 +31,7 @@ sequenceDiagram
 Details:
 
 - `tls_clienthello` checks the SNI (or server IP) with `HostAllowlist.allows`. On a miss it sets `ignore_connection`, so traffic is passed through encrypted.
-- Plain HTTP to a non-allowlisted host is not captured, but request rules still run on it because the request hook runs before the allowlist check.
+- Plain HTTP to a non-allowlisted host is not captured. The request hook still records the client, then the response hook skips storage.
 - TLS handshake failures become a `CONNECT` row marked `TLS failed (likely certificate pinning)`, de-duplicated per host.
 - Each WebSocket message re-saves the whole flow (same id), so the frames list grows in place.
 - `request_id` is taken from `x-request-id`, `request-id` or `x-correlation-id`.

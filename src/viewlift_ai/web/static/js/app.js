@@ -33,9 +33,7 @@
 
   const ViewliftNetwork = {
     selectedId: null,
-    selectedPendingId: null,
     flows: [],
-    pending: [],
     ws: null,
     revealUnlocked: false,
     flowView: "list",
@@ -106,7 +104,6 @@
       document.addEventListener("vl:apps-change", () => this.renderRows());
       this.syncFlowFilterButtons();
       this.reloadFlows();
-      this.reloadPending();
       this.pollCaptureStatus();
       this.connectWs();
     },
@@ -152,7 +149,7 @@
 
     async deleteFlows() {
       const ok = window.confirm(
-        "Delete every captured network request on this Mac? Device logs, debug events, and rules stay."
+        "Delete every captured network request on this Mac? Device logs and debug events stay. The proxy allowlist stays."
       );
       if (!ok) return;
       const res = await fetch("/api/flows/delete", { method: "POST" });
@@ -200,23 +197,6 @@
       }
     },
 
-    async reloadPending() {
-      const res = await fetch("/api/breakpoints/pending");
-      if (!res.ok) return;
-      const data = await res.json();
-      this.pending = data.pending || [];
-      this.renderRows();
-      if (this.selectedPendingId) {
-        const still = this.pending.some((p) => p.id === this.selectedPendingId);
-        if (still) this.selectPending(this.selectedPendingId);
-        else {
-          this.selectedPendingId = null;
-          document.getElementById("detail-body").innerHTML =
-            `<p class="muted empty">Select a request to inspect its headers, body, and timing.</p>`;
-        }
-      }
-    },
-
     restoreUiMemory() {
       try {
         const view = localStorage.getItem("vl-flow-view");
@@ -260,7 +240,7 @@
     collectUrlGroups() {
       const map = new Map();
       const order = [];
-      const ensure = (item, pending) => {
+      const ensure = (item) => {
         const key = this.baseUrlKey(item);
         let group = map.get(key);
         if (!group) {
@@ -273,29 +253,20 @@
             methodSet: new Set(),
             status: null,
             sawFlow: false,
-            paused: false,
           };
           map.set(key, group);
           order.push(group);
         }
         group.count += 1;
         if (item.method) group.methodSet.add(String(item.method).toUpperCase());
-        if (pending) group.paused = true;
-        else if (!group.sawFlow) {
+        if (!group.sawFlow) {
           group.sawFlow = true;
           group.status = item.status;
         }
         return group;
       };
-      for (const flow of this.flows) ensure(flow, false);
-      const pendingOnly = [];
-      for (const item of this.pending) {
-        const existed = map.has(this.baseUrlKey(item));
-        const group = ensure(item, true);
-        if (!existed) pendingOnly.push(group);
-      }
-      const pendingKeys = new Set(pendingOnly.map((group) => group.key));
-      const groups = [...pendingOnly, ...order.filter((group) => !pendingKeys.has(group.key))];
+      for (const flow of this.flows) ensure(flow);
+      const groups = order;
       const rank = ["GET", "POST", "PUT", "PATCH", "DELETE", "HEAD", "OPTIONS"];
       for (const group of groups) {
         const methods = [...group.methodSet];
@@ -363,9 +334,8 @@
       for (const group of groups) {
         const tr = document.createElement("tr");
         tr.dataset.groupKey = group.key;
-        if (group.paused && group.status == null) tr.classList.add("paused");
         const statusClass = group.status == null ? "" : `status-${String(group.status)[0]}`;
-        const statusText = group.status == null ? (group.paused ? "PAUSED" : "—") : String(group.status);
+        const statusText = group.status == null ? "—" : String(group.status);
         tr.innerHTML = `
           <td title="${escapeAttr(group.label)}"><span class="url-host">${escapeHtml(group.label)}</span></td>
           <td class="col-count">${group.count}</td>
@@ -389,44 +359,21 @@
       const tbody = document.getElementById("flow-rows");
       if (!tbody) return;
       const match = (item) => !drilling || this.baseUrlKey(item) === this.openGroupKey;
-      const pending = drilling ? this.pending.filter(match) : this.pending;
       const flows = drilling ? this.flows.filter(match) : this.flows;
       const count = document.getElementById("flow-count");
-      if (count) count.textContent = String(pending.length + flows.length);
+      if (count) count.textContent = String(flows.length);
       tbody.replaceChildren();
-      if (drilling && !pending.length && !flows.length) {
+      if (drilling && !flows.length) {
         const tr = document.createElement("tr");
         tr.className = "static-row";
-        tr.innerHTML = `<td colspan="8" class="muted">No requests for this URL.</td>`;
+        tr.innerHTML = `<td colspan="7" class="muted">No requests for this URL.</td>`;
         tbody.appendChild(tr);
         return;
-      }
-      for (const item of pending) {
-        const tr = document.createElement("tr");
-        tr.dataset.pendingId = item.id;
-        tr.classList.add("paused");
-        if (item.id === this.selectedPendingId) tr.classList.add("active");
-        tr.innerHTML = `
-          <td class="col-method method ${escapeAttr(item.method)}">${escapeHtml(item.method)}</td>
-          <td>${escapeHtml(item.host)}</td>
-          <td title="${escapeAttr(item.path)}">${escapeHtml(item.path)}</td>
-          <td class="col-status">${item.status == null ? "PAUSED" : escapeHtml(String(item.status))}</td>
-          <td class="col-type">paused</td>
-          <td class="col-time">—</td>
-          <td class="col-size">${fmtBytes(item.body_bytes)}</td>
-          <td class="col-stage"><span class="stage-badge ${escapeAttr(item.stage)}">${escapeHtml(item.stage)}</span></td>
-        `;
-        tr.addEventListener("click", () => {
-          this.setFollowLatest(false);
-          this.selectPending(item.id);
-        });
-        tbody.appendChild(tr);
       }
       for (const flow of flows) {
         const tr = document.createElement("tr");
         tr.dataset.id = flow.id;
         if (flow.id === this.selectedId) tr.classList.add("active");
-        if (flow.error === "breakpoint timed out") tr.classList.add("bp-timeout");
         const statusClass = flow.status == null ? "" : `status-${String(flow.status)[0]}`;
         tr.innerHTML = `
           <td class="col-method method ${escapeAttr(flow.method)}">${escapeHtml(flow.method)}</td>
@@ -436,7 +383,6 @@
           <td class="col-type">${escapeHtml(flow.graphql ? "graphql" : shortType(flow.content_type))}</td>
           <td class="col-time">${fmtMs(flow.duration_ms)}</td>
           <td class="col-size">${fmtBytes(flow.size_bytes)}</td>
-          <td class="col-stage muted">${flow.error === "breakpoint timed out" ? "timeout" : "—"}</td>
         `;
         tr.addEventListener("click", () => {
           this.setFollowLatest(false);
@@ -444,98 +390,6 @@
         });
         tbody.appendChild(tr);
       }
-    },
-
-    selectPending(id) {
-      this.selectedPendingId = id;
-      this.selectedId = null;
-      this.renderRows();
-      document.getElementById("btn-curl").disabled = true;
-      document.getElementById("btn-har-one").disabled = true;
-      const open = document.getElementById("btn-open");
-      open.href = "#";
-      open.classList.add("disabled");
-      const item = this.pending.find((p) => p.id === id);
-      if (!item) return;
-      document.getElementById("detail-title").textContent =
-        `Paused ${item.stage}: ${item.method} ${item.host}${item.path}`;
-      this.renderPendingDetail(item, document.getElementById("detail-body"));
-    },
-
-    renderPendingDetail(item, root) {
-      const headersText = Object.entries(item.headers || {})
-        .map(([k, v]) => `${k}: ${v}`)
-        .join("\n");
-      const statusBlock =
-        item.stage === "response"
-          ? `<label>Status <input id="bp-edit-status" type="number" value="${item.status == null ? "" : escapeAttr(String(item.status))}"></label>`
-          : `<p class="muted">Request stage: status edit disabled</p>`;
-      root.innerHTML = `
-        <div class="bp-editor">
-          <p><span class="stage-badge ${escapeAttr(item.stage)}">${escapeHtml(item.stage)}</span>
-             pause id <code>${escapeHtml(item.id)}</code></p>
-          ${statusBlock}
-          <label>Headers (Name: value per line)
-            <textarea id="bp-edit-headers" class="rules-textarea" rows="8">${escapeHtml(headersText)}</textarea>
-          </label>
-          <label>Body
-            <textarea id="bp-edit-body" class="rules-textarea mono" rows="10">${escapeHtml(item.body || "")}</textarea>
-          </label>
-          <div class="row-actions">
-            <button type="button" class="btn" id="bp-resume">Resume</button>
-            <button type="button" class="btn ghost" id="bp-drop">Drop</button>
-          </div>
-        </div>
-      `;
-      document.getElementById("bp-resume").addEventListener("click", () => this.resumePending(item.id));
-      document.getElementById("bp-drop").addEventListener("click", () => this.dropPending(item.id));
-    },
-
-    parseHeadersText(text) {
-      const headers = {};
-      for (const line of String(text || "").split("\n")) {
-        const trimmed = line.trim();
-        if (!trimmed) continue;
-        const idx = trimmed.indexOf(":");
-        if (idx < 0) continue;
-        headers[trimmed.slice(0, idx).trim()] = trimmed.slice(idx + 1).trim();
-      }
-      return headers;
-    },
-
-    async resumePending(id) {
-      const body = {
-        headers: this.parseHeadersText(document.getElementById("bp-edit-headers").value),
-        body: document.getElementById("bp-edit-body").value,
-      };
-      const statusEl = document.getElementById("bp-edit-status");
-      if (statusEl && statusEl.value !== "") body.status = Number(statusEl.value);
-      const res = await fetch(`/api/breakpoints/${encodeURIComponent(id)}/resume`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(body),
-      });
-      if (!res.ok) {
-        toast((await res.json()).detail || "Resume failed");
-        return;
-      }
-      toast("Resumed");
-      this.selectedPendingId = null;
-      await this.reloadPending();
-      await this.reloadFlows();
-    },
-
-    async dropPending(id) {
-      const res = await fetch(`/api/breakpoints/${encodeURIComponent(id)}/drop`, {
-        method: "POST",
-      });
-      if (!res.ok) {
-        toast((await res.json()).detail || "Drop failed");
-        return;
-      }
-      toast("Dropped");
-      this.selectedPendingId = null;
-      await this.reloadPending();
     },
 
     async refreshRevealStatus() {
@@ -581,7 +435,6 @@
     async selectFlow(id, fetchDetail) {
       const gen = (this.detailGen = (this.detailGen || 0) + 1);
       this.selectedId = id;
-      this.selectedPendingId = null;
       this.renderRows();
       this.scrollFlowRow(id);
       document.getElementById("btn-curl").disabled = false;
@@ -726,41 +579,11 @@
       this.ws = window.VLLive.connect("/ws/flows", {
         onResync: () => {
           this.reloadFlows();
-          this.reloadPending();
         },
         onMessage: (msg) => {
-          if (msg.type === "flow" && msg.flow) {
-            this.upsertFlow(msg.flow);
-            return;
-          }
-          if (msg.type === "breakpoint") this.onBreakpointEvent(msg);
+          if (msg.type === "flow" && msg.flow) this.upsertFlow(msg.flow);
         },
       });
-    },
-
-    onBreakpointEvent(msg) {
-      const kind = msg.kind;
-      const pending = msg.pending;
-      if (kind === "paused" && pending) {
-        const idx = this.pending.findIndex((p) => p.id === pending.id);
-        if (idx >= 0) this.pending[idx] = pending;
-        else this.pending.unshift(pending);
-        this.renderRows();
-        return;
-      }
-      if (
-        (kind === "resumed" || kind === "dropped" || kind === "timed_out" || kind === "cleared") &&
-        pending
-      ) {
-        this.pending = this.pending.filter((p) => p.id !== pending.id);
-        if (this.selectedPendingId === pending.id) {
-          this.selectedPendingId = null;
-          document.getElementById("detail-body").innerHTML =
-            `<p class="muted empty">Select a request to inspect its headers, body, and timing.</p>`;
-        }
-        this.renderRows();
-        if (kind === "timed_out") this.reloadFlows();
-      }
     },
 
     upsertFlow(flow) {
@@ -872,6 +695,7 @@
         ${fields}
         <div class="edit-actions">
           <button type="button" id="edit-copy" class="btn ghost">Copy cURL</button>
+          ${model.mode === "graphql" ? `<button type="button" id="edit-playground" class="btn ghost">Open in GraphQL</button>` : ""}
           <button type="button" id="edit-send" class="btn">Send</button>
         </div>
       </form>
@@ -949,6 +773,35 @@
       }
     });
     form.querySelector("#edit-send")?.addEventListener("click", () => sendEdited(form, model.extras));
+    form.querySelector("#edit-playground")?.addEventListener("click", () => openInGraphql(form, model.extras));
+  }
+
+  function openInGraphql(form, extras) {
+    let request;
+    try {
+      request = editedRequest(form, extras);
+    } catch (err) {
+      toast(err.message || "Could not open GraphQL");
+      return;
+    }
+    const headers = request.headers
+      .filter(([key]) => !EDIT_SKIP_HEADERS.has(String(key).toLowerCase()))
+      .map(([key, value]) => `${key}: ${value}`)
+      .join("\n");
+    const payload = {
+      url: request.url,
+      query: form.querySelector("#edit-query")?.value || "",
+      variables: form.querySelector("#edit-variables")?.value || "{}",
+      headers,
+      operation: form.querySelector("#edit-operation")?.value || "",
+    };
+    try {
+      sessionStorage.setItem("vl-graphql-prefill", JSON.stringify(payload));
+    } catch (err) {
+      toast("Could not store this request for the GraphQL page");
+      return;
+    }
+    window.location.href = "/graphql";
   }
 
   function headerLines(headers) {
@@ -1121,9 +974,13 @@
 
   function copyBlockHtml(text, label, title) {
     const heading = title ? `<h4 class="muted">${escapeHtml(title)}</h4>` : "";
+    const tree = window.VLJsonTree ? window.VLJsonTree.html(text, { toolbar: true, openDepth: 2 }) : "";
+    const view = tree
+      ? `${tree}<pre class="pre json-raw" hidden>${escapeHtml(text)}</pre>`
+      : `<pre class="pre">${escapeHtml(text)}</pre>`;
     return `<div class="copy-block">
       <div class="copy-block-bar">${heading}<button type="button" class="btn ghost" data-copy-text data-copy-label="${escapeAttr(label)}">${escapeHtml(label)}</button></div>
-      <pre class="pre">${escapeHtml(text)}</pre>
+      ${view}
     </div>`;
   }
 
@@ -1163,6 +1020,8 @@
       `;
     }
     if (body.kind === "json" && body.pretty) {
+      const tree = window.VLJsonTree ? window.VLJsonTree.html(body.pretty, { toolbar: true, openDepth: 2 }) : "";
+      if (tree) return tree;
       return `<pre class="pre">${escapeHtml(body.pretty)}</pre>`;
     }
     if (body.raw != null) {
@@ -1305,286 +1164,6 @@
     el.classList.add("show");
     setTimeout(() => el.classList.remove("show"), 1600);
   }
-
-  ViewliftNetwork.setMutatingBanner = function setMutatingBanner(on) {
-    const banner = document.getElementById("mutating-banner");
-    const main = document.querySelector("main.main");
-    if (!banner) return;
-    banner.classList.toggle("show", !!on);
-    if (main) main.classList.toggle("with-banner", !!on);
-  };
-
-  ViewliftNetwork.initRules = function initRules() {
-    const reload = () => this.reloadRules();
-    document.getElementById("btn-save-allowlist").addEventListener("click", async () => {
-      const text = document.getElementById("allowlist-text").value;
-      const patterns = text.split(/\n+/).map((s) => s.trim()).filter(Boolean);
-      const res = await fetch("/api/rules/allowlist", {
-        method: "PUT",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ patterns }),
-      });
-      if (!res.ok) {
-        toast("Allowlist save failed");
-        return;
-      }
-      toast("Allowlist saved");
-      reload();
-    });
-    document.getElementById("btn-save-root").addEventListener("click", async () => {
-      const root = document.getElementById("map-root").value.trim();
-      const res = await fetch("/api/rules/map-local/root", {
-        method: "PUT",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ map_local_root: root }),
-      });
-      if (!res.ok) {
-        toast("Root save failed");
-        return;
-      }
-      toast("Map local root saved");
-      reload();
-    });
-    document.getElementById("btn-add-ml").addEventListener("click", async () => {
-      const body = {
-        enabled: false,
-        match: {
-          method: document.getElementById("ml-method").value.trim() || "*",
-          host: document.getElementById("ml-host").value.trim() || "*",
-          path: document.getElementById("ml-path").value.trim() || "*",
-        },
-        relative_path: document.getElementById("ml-rel").value.trim(),
-      };
-      const res = await fetch("/api/rules/map-local", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(body),
-      });
-      if (!res.ok) {
-        toast((await res.json()).detail || "Add failed");
-        return;
-      }
-      document.getElementById("ml-rel").value = "";
-      reload();
-    });
-    document.getElementById("btn-add-mr").addEventListener("click", async () => {
-      const body = {
-        enabled: false,
-        match: {
-          method: document.getElementById("mr-method").value.trim() || "*",
-          host: document.getElementById("mr-host").value.trim() || "*",
-          path: document.getElementById("mr-path").value.trim() || "*",
-        },
-        target_url: document.getElementById("mr-target").value.trim(),
-      };
-      const res = await fetch("/api/rules/map-remote", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(body),
-      });
-      if (!res.ok) {
-        toast((await res.json()).detail || "Add failed");
-        return;
-      }
-      document.getElementById("mr-target").value = "";
-      reload();
-    });
-    document.getElementById("btn-add-rw").addEventListener("click", async () => {
-      const kind = document.getElementById("rw-kind").value;
-      const a = document.getElementById("rw-a").value;
-      const b = document.getElementById("rw-b").value;
-      const action = { kind };
-      if (kind === "set_header") {
-        action.header_name = a;
-        action.header_value = b;
-      } else if (kind === "remove_header") {
-        action.header_name = a;
-      } else if (kind === "set_status") {
-        action.status = Number(a);
-      } else {
-        action.find = a;
-        action.replace = b;
-      }
-      const body = {
-        enabled: false,
-        match: {
-          method: document.getElementById("rw-method").value.trim() || "*",
-          host: document.getElementById("rw-host").value.trim() || "*",
-          path: document.getElementById("rw-path").value.trim() || "*",
-        },
-        actions: [action],
-      };
-      const res = await fetch("/api/rules/rewrite", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(body),
-      });
-      if (!res.ok) {
-        toast((await res.json()).detail || "Add failed");
-        return;
-      }
-      reload();
-    });
-    document.getElementById("btn-add-th").addEventListener("click", async () => {
-      const up = document.getElementById("th-up").value;
-      const down = document.getElementById("th-down").value;
-      const body = {
-        enabled: false,
-        host: document.getElementById("th-host").value.trim() || "*",
-        latency_ms: Number(document.getElementById("th-latency").value || 0),
-        upload_kbps: up === "" ? null : Number(up),
-        download_kbps: down === "" ? null : Number(down),
-        offline: document.getElementById("th-offline").checked,
-      };
-      const res = await fetch("/api/rules/throttle", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(body),
-      });
-      if (!res.ok) {
-        toast((await res.json()).detail || "Add failed");
-        return;
-      }
-      reload();
-    });
-    document.getElementById("btn-add-bp").addEventListener("click", async () => {
-      const body = {
-        enabled: false,
-        match: {
-          method: document.getElementById("bp-method").value.trim() || "*",
-          host: document.getElementById("bp-host").value.trim() || "*",
-          path: document.getElementById("bp-path").value.trim() || "*",
-        },
-        request_enabled: document.getElementById("bp-req").checked,
-        response_enabled: document.getElementById("bp-res").checked,
-      };
-      const res = await fetch("/api/rules/breakpoints", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(body),
-      });
-      if (!res.ok) {
-        toast((await res.json()).detail || "Add failed");
-        return;
-      }
-      reload();
-    });
-    this.reloadRules();
-  };
-
-  ViewliftNetwork.reloadRules = async function reloadRules() {
-    const res = await fetch("/api/rules");
-    if (!res.ok) return;
-    const data = await res.json();
-    this.setMutatingBanner(data.mutating_enabled);
-    document.getElementById("allowlist-text").value = (data.allowlist || []).join("\n");
-    document.getElementById("map-root").value = data.map_local_root || "";
-
-    const matchLabel = (m) => `${m.method} ${m.host}${m.path}`;
-
-    const mlBody = document.getElementById("ml-rows");
-    mlBody.innerHTML = (data.map_local || [])
-      .map(
-        (r) => `<tr>
-        <td><input type="checkbox" data-toggle="map-local" data-id="${escapeAttr(r.id)}" ${r.enabled ? "checked" : ""}></td>
-        <td>${r.order}</td>
-        <td>${escapeHtml(matchLabel(r.match))}</td>
-        <td>${escapeHtml(r.relative_path)}</td>
-        <td><button type="button" class="btn ghost" data-del="map-local" data-id="${escapeAttr(r.id)}">Del</button></td>
-      </tr>`
-      )
-      .join("");
-
-    const mrBody = document.getElementById("mr-rows");
-    mrBody.innerHTML = (data.map_remote || [])
-      .map(
-        (r) => `<tr>
-        <td><input type="checkbox" data-toggle="map-remote" data-id="${escapeAttr(r.id)}" ${r.enabled ? "checked" : ""}></td>
-        <td>${r.order}</td>
-        <td>${escapeHtml(matchLabel(r.match))}</td>
-        <td>${escapeHtml(r.target_url)}</td>
-        <td><button type="button" class="btn ghost" data-del="map-remote" data-id="${escapeAttr(r.id)}">Del</button></td>
-      </tr>`
-      )
-      .join("");
-
-    const rwBody = document.getElementById("rw-rows");
-    rwBody.innerHTML = (data.rewrite || [])
-      .map((r) => {
-        const acts = (r.actions || []).map((a) => a.kind).join(", ");
-        return `<tr>
-        <td><input type="checkbox" data-toggle="rewrite" data-id="${escapeAttr(r.id)}" ${r.enabled ? "checked" : ""}></td>
-        <td>${r.order}</td>
-        <td>${escapeHtml(matchLabel(r.match))}</td>
-        <td>${escapeHtml(acts)}</td>
-        <td><button type="button" class="btn ghost" data-del="rewrite" data-id="${escapeAttr(r.id)}">Del</button></td>
-      </tr>`;
-      })
-      .join("");
-
-    const thBody = document.getElementById("th-rows");
-    thBody.innerHTML = (data.throttle || [])
-      .map((r) => {
-        const limits = [
-          r.latency_ms ? `${r.latency_ms}ms` : null,
-          r.upload_kbps != null ? `↑${r.upload_kbps}` : null,
-          r.download_kbps != null ? `↓${r.download_kbps}` : null,
-          r.offline ? "offline" : null,
-        ]
-          .filter(Boolean)
-          .join(" ");
-        return `<tr>
-        <td><input type="checkbox" data-toggle="throttle" data-id="${escapeAttr(r.id)}" ${r.enabled ? "checked" : ""}></td>
-        <td>${r.order}</td>
-        <td>${escapeHtml(r.host)}</td>
-        <td>${escapeHtml(limits || "—")}</td>
-        <td><button type="button" class="btn ghost" data-del="throttle" data-id="${escapeAttr(r.id)}">Del</button></td>
-      </tr>`;
-      })
-      .join("");
-
-    const bpBody = document.getElementById("bp-rows");
-    if (bpBody) {
-      bpBody.innerHTML = (data.breakpoints || [])
-        .map((r) => {
-          const stages = [
-            r.request_enabled ? "request" : null,
-            r.response_enabled ? "response" : null,
-          ]
-            .filter(Boolean)
-            .join("+");
-          return `<tr>
-          <td><input type="checkbox" data-toggle="breakpoints" data-id="${escapeAttr(r.id)}" ${r.enabled ? "checked" : ""}></td>
-          <td>${r.order}</td>
-          <td>${escapeHtml(matchLabel(r.match))}</td>
-          <td>${escapeHtml(stages || "—")}</td>
-          <td><button type="button" class="btn ghost" data-del="breakpoints" data-id="${escapeAttr(r.id)}">Del</button></td>
-        </tr>`;
-        })
-        .join("");
-    }
-
-    document.querySelectorAll("[data-toggle]").forEach((el) => {
-      el.addEventListener("change", async () => {
-        const kind = el.getAttribute("data-toggle");
-        const id = el.getAttribute("data-id");
-        const q = new URLSearchParams({ enabled: String(el.checked) });
-        await fetch(
-          `/api/rules/${kind}/${encodeURIComponent(id)}/toggle?${q}`,
-          { method: "POST" }
-        );
-        this.reloadRules();
-      });
-    });
-    document.querySelectorAll("[data-del]").forEach((el) => {
-      el.addEventListener("click", async () => {
-        const kind = el.getAttribute("data-del");
-        const id = el.getAttribute("data-id");
-        await fetch(`/api/rules/${kind}/${encodeURIComponent(id)}`, { method: "DELETE" });
-        this.reloadRules();
-      });
-    });
-  };
 
   const LOG_ROW_CAP = 500;
   const LOG_PENDING_CAP = 5000;
@@ -1998,8 +1577,39 @@
     });
   };
 
+  ViewliftNetwork.loadAllowlist = async function loadAllowlist() {
+    const box = document.getElementById("allowlist-text");
+    if (!box) return;
+    const res = await fetch("/api/rules");
+    if (!res.ok) return;
+    const data = await res.json();
+    box.value = (data.allowlist || []).join("\n");
+  };
+
+  ViewliftNetwork.saveAllowlist = async function saveAllowlist() {
+    const box = document.getElementById("allowlist-text");
+    if (!box) return;
+    const patterns = box.value.split(/\n+/).map((line) => line.trim()).filter(Boolean);
+    const res = await fetch("/api/rules/allowlist", {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ patterns }),
+    });
+    if (!res.ok) {
+      toast("Allowlist save failed");
+      return;
+    }
+    toast("Allowlist saved");
+    await this.loadAllowlist();
+  };
+
   ViewliftNetwork.initSetup = function initSetup() {
     document.getElementById("btn-ensure-ca").addEventListener("click", () => this.ensureCa());
+    const saveAllow = document.getElementById("btn-save-allowlist");
+    if (saveAllow) {
+      saveAllow.addEventListener("click", () => this.saveAllowlist());
+      this.loadAllowlist();
+    }
     document.getElementById("btn-dl-ca").addEventListener("click", () => this.downloadCa());
     document.getElementById("btn-dl-mobileconfig").addEventListener("click", () => this.downloadMobileconfig());
     document.getElementById("btn-apply-proxy").addEventListener("click", () => this.applyProxyBind());
@@ -2026,8 +1636,212 @@
       document.getElementById("btn-sdk-disable").addEventListener("click", () => this.disableSdkReceiver());
       document.getElementById("btn-sdk-token").addEventListener("click", () => this.mintSdkPairingToken());
     }
+    const addGraphql = document.getElementById("gql-setup-add");
+    if (addGraphql) {
+      addGraphql.addEventListener("click", () => this.addGraphqlEndpoint());
+      document.getElementById("gql-setup-save").addEventListener("click", () => this.saveGraphqlEndpoints());
+      document.getElementById("gql-setup-list")?.addEventListener("input", (event) => {
+        const card = event.target.closest(".gql-setup-card");
+        if (card && event.target.matches("[data-gql-base]")) updateGraphqlDerived(card);
+      });
+      document.getElementById("gql-seen")?.addEventListener("change", (event) => {
+        const base = event.target.value;
+        if (base) this.useDetectedGraphqlBase(base);
+        event.target.value = "";
+      });
+      document.getElementById("scope-select")?.addEventListener("change", () => this.loadGraphqlBases());
+      this.loadGraphqlEndpoints();
+      this.loadGraphqlBases();
+    }
     this.reloadSetup();
   };
+
+  ViewliftNetwork.loadGraphqlEndpoints = async function loadGraphqlEndpoints() {
+    const list = document.getElementById("gql-setup-list");
+    if (!list) return;
+    const res = await fetch("/api/graphql/endpoints");
+    const data = await res.json();
+    if (!res.ok) {
+      const msg = document.getElementById("gql-setup-msg");
+      if (msg) msg.textContent = data.detail || "Could not load GraphQL endpoints";
+      return;
+    }
+    this.renderGraphqlEndpoints(data.endpoints || []);
+  };
+
+  ViewliftNetwork.loadGraphqlBases = async function loadGraphqlBases() {
+    const select = document.getElementById("gql-seen");
+    if (!select) return;
+    const params = new URLSearchParams();
+    if (window.VLScope) window.VLScope.applyTo(params);
+    const query = params.toString();
+    const res = await fetch(query ? `/api/graphql/bases?${query}` : "/api/graphql/bases");
+    const data = await res.json();
+    const bases = res.ok && Array.isArray(data.bases) ? data.bases : [];
+    const options = [`<option value="">Seen in traffic</option>`];
+    if (!bases.length) {
+      options.push(`<option value="" disabled>No captured GraphQL host yet</option>`);
+    }
+    for (const item of bases) {
+      const base = String(item.base || "");
+      if (!base) continue;
+      const count = Number(item.count) || 0;
+      const label = count === 1 ? base : `${base} · ${count}`;
+      options.push(`<option value="${escapeAttr(base)}">${escapeHtml(label)}</option>`);
+    }
+    select.innerHTML = options.join("");
+  };
+
+  ViewliftNetwork.useDetectedGraphqlBase = function useDetectedGraphqlBase(base) {
+    const list = document.getElementById("gql-setup-list");
+    if (!list || !base) return;
+    let card = [...list.querySelectorAll(".gql-setup-card")].find((item) => {
+      return !item.querySelector("[data-gql-base]").value.trim();
+    });
+    if (!card) {
+      this.addGraphqlEndpoint();
+      card = list.querySelector(".gql-setup-card:last-child");
+    }
+    if (!card) return;
+    const input = card.querySelector("[data-gql-base]");
+    const name = card.querySelector("[data-gql-name]");
+    if (input) input.value = base;
+    if (name && !name.value.trim()) {
+      try {
+        name.value = new URL(base).hostname;
+      } catch {
+        name.value = base;
+      }
+    }
+    updateGraphqlDerived(card);
+  };
+
+  ViewliftNetwork.renderGraphqlEndpoints = function renderGraphqlEndpoints(endpoints) {
+    const list = document.getElementById("gql-setup-list");
+    if (!list) return;
+    if (!endpoints.length) {
+      list.innerHTML = `<p class="muted gql-setup-empty">No saved endpoints yet.</p>`;
+      return;
+    }
+    list.innerHTML = endpoints.map((item) => graphqlEndpointCard(item)).join("");
+    list.querySelectorAll(".gql-setup-card").forEach((card) => updateGraphqlDerived(card));
+    list.querySelectorAll("[data-gql-remove]").forEach((button) => {
+      button.addEventListener("click", () => {
+        button.closest(".gql-setup-card")?.remove();
+        if (!list.querySelector(".gql-setup-card")) {
+          list.innerHTML = `<p class="muted gql-setup-empty">No saved endpoints yet. Save to keep this empty list.</p>`;
+        }
+      });
+    });
+  };
+
+  ViewliftNetwork.addGraphqlEndpoint = function addGraphqlEndpoint() {
+    const list = document.getElementById("gql-setup-list");
+    if (!list) return;
+    list.querySelector(".gql-setup-empty")?.remove();
+    const id = (crypto.randomUUID ? crypto.randomUUID() : String(Date.now())).replace(/-/g, "");
+    const wrap = document.createElement("div");
+    wrap.innerHTML = graphqlEndpointCard({
+      id,
+      name: "",
+      url: "",
+      playground_url: "",
+      username: "",
+      has_password: false,
+    });
+    const card = wrap.firstElementChild;
+    if (card) {
+      list.appendChild(card);
+      updateGraphqlDerived(card);
+    }
+    card?.querySelector("[data-gql-remove]")?.addEventListener("click", () => {
+      card.remove();
+      if (!list.querySelector(".gql-setup-card")) {
+        list.innerHTML = `<p class="muted gql-setup-empty">No saved endpoints yet.</p>`;
+      }
+    });
+    card?.querySelector("[data-gql-name]")?.focus();
+  };
+
+  ViewliftNetwork.saveGraphqlEndpoints = async function saveGraphqlEndpoints() {
+    const msg = document.getElementById("gql-setup-msg");
+    const endpoints = [];
+    document.querySelectorAll(".gql-setup-card").forEach((card) => {
+      const password = card.querySelector("[data-gql-password]").value;
+      const row = {
+        id: card.dataset.id,
+        name: card.querySelector("[data-gql-name]").value,
+        base: card.querySelector("[data-gql-base]").value,
+        username: card.querySelector("[data-gql-username]").value,
+        clear_password: !!card.querySelector("[data-gql-clear]")?.checked,
+      };
+      if (password) row.password = password;
+      endpoints.push(row);
+    });
+    const res = await fetch("/api/graphql/endpoints", {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ endpoints }),
+    });
+    const data = await res.json();
+    if (!res.ok) {
+      if (msg) msg.textContent = data.detail || "Save failed";
+      return;
+    }
+    this.renderGraphqlEndpoints(data.endpoints || []);
+    if (msg) {
+      const count = (data.endpoints || []).length;
+      msg.textContent = count === 1 ? "Saved 1 endpoint." : `Saved ${count} endpoints.`;
+    }
+  };
+
+  function graphqlBaseValue(item) {
+    const raw = String((item && (item.base || item.url || item.playground_url)) || "").trim();
+    if (!raw) return "";
+    const withScheme = raw.includes("://") ? raw : `https://${raw}`;
+    try {
+      const parsed = new URL(withScheme);
+      if (parsed.protocol !== "http:" && parsed.protocol !== "https:") return "";
+      if (parsed.username || parsed.password) return "";
+      return `${parsed.protocol}//${parsed.host}`;
+    } catch {
+      return "";
+    }
+  }
+
+  function updateGraphqlDerived(card) {
+    const line = card.querySelector("[data-gql-derived]");
+    const input = card.querySelector("[data-gql-base]");
+    if (!line || !input) return;
+    const base = graphqlBaseValue({ base: input.value.trim() });
+    line.textContent = base ? `${base}/graphql  ·  ${base}/playground` : "POST /graphql · playground /playground";
+  }
+
+  function graphqlEndpointCard(item) {
+    const clear = item.has_password
+      ? `<label class="check"><input type="checkbox" data-gql-clear> Remove saved password</label>`
+      : "";
+    return `
+      <div class="gql-setup-card" data-id="${escapeAttr(item.id || "")}" data-has-password="${item.has_password ? "true" : "false"}">
+        <label>Name
+          <input class="rules-input" data-gql-name type="text" autocomplete="off" spellcheck="false" value="${escapeAttr(item.name || "")}" placeholder="MOTV staging">
+        </label>
+        <label>Username
+          <input class="rules-input" data-gql-username type="text" autocomplete="off" spellcheck="false" value="${escapeAttr(item.username || "")}">
+        </label>
+        <label class="span-2">Base URL
+          <input class="rules-input" data-gql-base type="text" autocomplete="off" spellcheck="false" value="${escapeAttr(graphqlBaseValue(item))}" placeholder="https://myoutdoortv.staging.api.viewlift.com">
+        </label>
+        <p class="muted span-2" data-gql-derived></p>
+        <label>Password
+          <input class="rules-input" data-gql-password type="password" autocomplete="new-password" spellcheck="false" value="" placeholder="${item.has_password ? "Saved" : "Password"}">
+        </label>
+        <div class="gql-setup-actions">
+          ${clear}
+          <button type="button" class="btn ghost" data-gql-remove>Remove</button>
+        </div>
+      </div>`;
+  }
 
   ViewliftNetwork.reloadSetup = async function reloadSetup() {
     const res = await fetch("/api/setup/status");
@@ -2405,19 +2219,11 @@
     const bar = document.getElementById("profile-buttons");
     const names = (profiles.profiles || []).map((p) => p.id).concat(["off"]);
     bar.innerHTML = names.map((name) => `<button type="button" class="btn ghost" data-profile="${escapeAttr(name)}">${escapeHtml(name)}</button>`).join("");
-    bar.addEventListener("click", async (event) => {
+    bar.addEventListener("click", (event) => {
       const button = event.target.closest("[data-profile]");
       if (!button) return;
-      const res = await fetch("/api/debug/network-profile", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ profile: button.dataset.profile }),
-      });
-      const data = await res.json();
       const status = document.getElementById("profile-status");
-      status.textContent = res.ok
-        ? `${data.profile} applied. ${data.packet_loss || ""}`.trim()
-        : (data.detail || "Failed");
+      status.textContent = "Open Debug, choose an app in Scope, then use Network tools.";
     });
 
     const flows = await (await fetch("/api/flows?limit=80")).json();

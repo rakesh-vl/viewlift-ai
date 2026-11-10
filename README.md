@@ -29,28 +29,27 @@ Open `http://127.0.0.1:8741` after startup.
 
 - Live HTTP/HTTPS and WebSocket inspection through the local mitmproxy engine.
 - Request/response detail, filters, timing, redacted HAR, and redacted cURL export.
-- Breakpoints, map local/remote, rewrites, throttling, and offline mode.
+- HTTPS decryption only for hosts on the Setup allowlist.
 - iOS/tvOS simulator logs and paired physical-device syslog.
 - `ViewliftNetworkCapture` SPM for HTTP/HTTPS and logs without proxy or installed CA.
 - Guided iPhone, Apple TV, simulator, proxy CA, and SDK setup.
 
 Use the **Setup** page before exposing either listener to the LAN. Both listeners
-are off or loopback-only by default. HTTPS decryption is allowlist-only. Mutating
-rules remain disabled until explicitly enabled.
+are off or loopback-only by default. HTTPS decryption is allowlist-only. An empty
+allowlist decrypts nothing.
 
 ## Swift package
 
 The package lives at `ios/ViewliftNetworkCapture`. Add it as a local Swift package.
 See its README for SwiftUI/UIKit integration.
 
-SDK capture is inspection-only. Breakpoints, mapping, rewriting, and throttling use
-the proxy path. SDK mode does not capture WebSocket frames, `WKWebView`,
+SDK capture is inspection-only. SDK mode does not capture WebSocket frames, `WKWebView`,
 Network.framework, third-party sockets, or background `URLSession`.
 
 ## Documentation
 
 Developer guides live in [docs/](docs/README.md): getting started, architecture,
-data flows, configuration, API reference, security model, rules, multi-app scope,
+data flows, configuration, API reference, security model, multi-app scope,
 MCP server, web UI, the iOS/tvOS SDK, AppCMS integration and contributing.
 
 ## Layout
@@ -86,7 +85,7 @@ The `mcp` extra is the official Python SDK 1.22. MCP 2 cannot be installed next 
 project's mitmproxy pin.
 `uv run --extra mcp viewlift-ai-mcp` with no transport env stays on stdio for a manual Cursor command.
 Several apps on one device stay separate clients. Tools require `client_id`.
-Mutating tools require `confirm: true`. They do not enable proxy rewrite.
+Mutating tools require `confirm: true`. `set_network_profile` needs a `client_id` and shapes that app through the SDK.
 Raw flow bodies and replay work only when reveal is already unlocked in the console.
 
 ```json

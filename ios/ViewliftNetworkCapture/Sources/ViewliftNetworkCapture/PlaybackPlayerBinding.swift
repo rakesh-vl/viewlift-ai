@@ -22,6 +22,8 @@ final class PlaybackPlayerBinding: NSObject {
     private var lastLagAt = Date.distantPast
     private var lastErrorKey = ""
     private var sawExternal = false
+    private var boundAt = Date()
+    private var joined = false
 
     var current: AVPlayer? { player }
 
@@ -62,6 +64,8 @@ final class PlaybackPlayerBinding: NSObject {
         lastLagAt = .distantPast
         lastErrorKey = ""
         sawExternal = false
+        boundAt = Date()
+        joined = false
     }
 
     private func observePlayer(_ player: AVPlayer) {
@@ -180,6 +184,11 @@ final class PlaybackPlayerBinding: NSObject {
             stalled = false
             service?.update { $0.stalled = false }
             service?.record(kind: "stall_end", fields: [:])
+        }
+        if name == "playing", !joined {
+            joined = true
+            let elapsed = Date().timeIntervalSince(boundAt) * 1000
+            service?.record(kind: "join", fields: ["join_ms": .number(elapsed)])
         }
         guard name != lastStatus || reason != lastReason else { return }
         lastStatus = name

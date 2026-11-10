@@ -52,6 +52,7 @@ The console reads a small set of environment variables at startup. Everything el
 |---|---|
 | `viewlift.db` | SQLite store (flows, logs, debug events, clients, meta) |
 | `rules.json` | Rules configuration, mode `0600`, written atomically |
+| `graphql-endpoints.json` | GraphQL endpoints for the playground. URLs are plaintext. Username and password are encrypted with the console key. Mode `0600`. Not wiped with captured session data. |
 | `scratchpad/*.js` | User scratchpad scripts, mode `0600`. Built-ins are not stored here. |
 | `mitmproxy/` | Proxy CA; private key `0600` |
 | `ingest/ingest-cert.pem`, key | Receiver certificate and key (key `0600`) |
@@ -79,7 +80,7 @@ Independently of the mode, when the last dashboard tab closes the console waits 
 
 ## rules.json
 
-Managed by `RuleConfigStore` ([services/rule_store.py](../src/viewlift_ai/services/rule_store.py)). It holds the allowlist, the map-local root and lists of map-local, map-remote, rewrite, throttle and breakpoint rules. Edit it through the Rules page or `/api/rules/*`, not by hand. All mutating rules default to disabled. See [Rules and breakpoints](rules-and-breakpoints.md).
+Managed by `RuleConfigStore` ([services/rule_store.py](../src/viewlift_ai/services/rule_store.py)). It holds the HTTPS decryption allowlist. Edit it on the Setup page or with `PUT /api/rules/allowlist`. An empty list denies every host. Older files may still contain map, rewrite, throttle, or breakpoint keys; the next save keeps the allowlist and drops those keys.
 
 ## Key files
 

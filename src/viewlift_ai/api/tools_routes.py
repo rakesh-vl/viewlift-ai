@@ -72,12 +72,10 @@ def _guard(action):
 
 @router.get("/tools", response_class=HTMLResponse)
 async def tools_page(request: Request) -> HTMLResponse:
-    engine = getattr(request.app.state, "rule_engine", None)
-    mutating = bool(engine.any_mutating_enabled()) if engine is not None else False
     return TEMPLATES.TemplateResponse(
         request,
         "tools.html",
-        {"title": "Tools", "active_nav": "tools", "mutating_enabled": mutating},
+        {"title": "Tools", "active_nav": "tools"},
     )
 
 

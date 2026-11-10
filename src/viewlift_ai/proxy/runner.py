@@ -12,10 +12,8 @@ from mitmproxy.tools.dump import DumpMaster
 
 from viewlift_ai.proxy.addon import ViewliftCaptureAddon
 from viewlift_ai.proxy.allowlist import HostAllowlist
-from viewlift_ai.proxy.breakpoints import BreakpointRegistry
 from viewlift_ai.services.capture import CaptureService
 from viewlift_ai.services.proxy_clients import ProxyClientRegistry
-from viewlift_ai.services.rule_engine import RuleEngine
 
 logger = logging.getLogger(__name__)
 
@@ -41,8 +39,6 @@ class ProxyRunner:
         confdir: Path,
         allowlist: HostAllowlist,
         capture: CaptureService,
-        rule_engine: RuleEngine | None = None,
-        breakpoints: BreakpointRegistry | None = None,
         proxy_auth: tuple[str, str] | None = None,
         proxy_clients: ProxyClientRegistry | None = None,
     ) -> None:
@@ -52,8 +48,6 @@ class ProxyRunner:
         self._confdir = confdir
         self._allowlist = allowlist
         self._capture = capture
-        self._rule_engine = rule_engine
-        self._breakpoints = breakpoints
         self._proxy_auth = proxy_auth
         self._thread: threading.Thread | None = None
         self._master: DumpMaster | None = None
@@ -132,8 +126,6 @@ class ProxyRunner:
                 ViewliftCaptureAddon(
                     self._allowlist,
                     self._capture,
-                    rule_engine=self._rule_engine,
-                    breakpoints=self._breakpoints,
                     proxy_clients=self._proxy_clients,
                 ),
             )

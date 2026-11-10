@@ -45,6 +45,9 @@ def list_devices(ctx: HostContext) -> list[dict[str, Any]]:
         props = item.get("deviceProperties") or {}
         hardware = item.get("hardwareProperties") or {}
         connection = item.get("connectionProperties") or {}
+        # Xcode 26+ lists booted and shut-down simulators here too; simctl owns those.
+        if str(hardware.get("reality") or "").lower() == "simulated":
+            continue
         rows.append(
             {
                 "identifier": item.get("identifier"),

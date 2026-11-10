@@ -74,13 +74,13 @@ By default retention is per session: captured data is wiped when the console sto
 curl -s http://127.0.0.1:8741/health
 ```
 
-The response reports version, retention, whether the Keychain fallback is active, data directory, proxy state, allowlist, whether mutating rules are on, SDK receiver state, log tail state and reveal state.
+The response reports version, retention, whether the Keychain fallback is active, data directory, proxy state, allowlist, SDK receiver state, log tail state and reveal state.
 
 ## First capture
 
 Pick one path:
 
-- **Proxy path**: open **Setup**, install the CA on the simulator or device, add hosts to the allowlist on **Rules**, point the device's Wi-Fi proxy at the Mac. Works for any app, and supports rules and breakpoints.
+- **Proxy path**: open **Setup**, install the CA on the simulator or device, add hosts to the allowlist, point the device's Wi-Fi proxy at the Mac. Works for any app. Empty allowlist means no HTTPS decryption.
 - **SDK path**: open **Setup**, enable the SDK receiver, then add `ViewliftNetworkCapture` to the app. No proxy or CA needed. Inspection only. See the [iOS SDK guide](ios-sdk.md).
 
 When you finish, remove the Wi-Fi proxy and the debug CA from the device.

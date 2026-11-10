@@ -19,7 +19,7 @@ Full references: [docs/ios-sdk.md](../../../docs/ios-sdk.md), [docs/mcp-server.m
 - Debug builds only. Call `CaptureService.shared.start()` inside `#if DEBUG`. Never add it to Release, TestFlight, or App Store configs.
 - Do not commit pairing tokens, fingerprints, receiver URLs with credentials, or auth tokens.
 - Add `authorization`, `access_token`, and the app's token JSON keys to `extraRedactionKeys` when the app sends them.
-- Do not enable proxy rewrite rules. Do not unlock reveal. Mutating MCP tools need `confirm: true`, and the agent says what will change first.
+- Do not unlock reveal. Mutating MCP tools need `confirm: true`, and the agent says what will change first.
 - Several apps can share one device. Never assume the newest app. Call `list_apps` and pass that `client_id`.
 - If the target is AppCMS / ViewliftOne, follow [reapply-viewlift-network-capture](../reapply-viewlift-network-capture/SKILL.md) for the host files. Still do the MCP step in this skill.
 

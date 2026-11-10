@@ -17,6 +17,7 @@ from viewlift_ai.api.agent_routes import router as agent_router
 from viewlift_ai.api.appcms_routes import router as appcms_router
 from viewlift_ai.api.apps_routes import router as apps_router
 from viewlift_ai.api.debug_routes import router as debug_router
+from viewlift_ai.api.graphql_routes import router as graphql_router
 from viewlift_ai.api.host_routes import router as host_router
 from viewlift_ai.api.logs_routes import router as logs_router
 from viewlift_ai.api.routes import router as network_router
@@ -30,7 +31,6 @@ from viewlift_ai.config import AppConfig, load_config
 from viewlift_ai.crypto import SecretBoxCipher
 from viewlift_ai.models.flow import RetentionPolicy
 from viewlift_ai.proxy.allowlist import HostAllowlist
-from viewlift_ai.proxy.breakpoints import BreakpointRegistry
 from viewlift_ai.proxy.ca import ensure_ca
 from viewlift_ai.proxy.redact import RedactionService
 from viewlift_ai.proxy.runner import ProxyRunner
@@ -41,6 +41,7 @@ from viewlift_ai.services.debug_advertise import reap_stale_registrations
 from viewlift_ai.services.debug_session import DebugSessionService
 from viewlift_ai.services.encrypted_store import EncryptedSqliteStore
 from viewlift_ai.services.event_bus import EventBus, FlowEventBus, LogEventBus
+from viewlift_ai.services.graphql_client import SchemaCache
 from viewlift_ai.services.host.crash_diagnosis import make_diagnoser
 from viewlift_ai.services.host.crash_reports import CrashPipeline, CrashReportWatcher
 from viewlift_ai.services.host.runner import ProjectRoots
@@ -66,7 +67,6 @@ _log_tail: LogTailService | None = None
 _ingest: IngestService | None = None
 _redaction: RedactionService | None = None
 _rule_engine: RuleEngine | None = None
-_breakpoints: BreakpointRegistry | None = None
 _setup: SetupService | None = None
 _reveal: RevealSession | None = None
 _debug_sessions: DebugSessionService | None = None
@@ -211,13 +211,6 @@ def get_proxy_clients() -> ProxyClientRegistry:
     return _proxy_clients
 
 
-def get_breakpoints() -> BreakpointRegistry:
-    global _breakpoints
-    if _breakpoints is None:
-        _breakpoints = BreakpointRegistry()
-    return _breakpoints
-
-
 def get_setup() -> SetupService:
     global _setup
     if _setup is None:
@@ -248,7 +241,6 @@ def _bind_app_state(application: FastAPI) -> None:
     application.state.config = get_config()
     application.state.rule_engine = get_rule_engine()
     application.state.allowlist = get_allowlist()
-    application.state.breakpoints = get_breakpoints()
     application.state.setup = get_setup()
     application.state.log_tail = get_log_tail()
     application.state.log_capture = get_log_capture()
@@ -264,6 +256,8 @@ def _bind_app_state(application: FastAPI) -> None:
     application.state.browser_sessions = BrowserSessions()
     application.state.host_toolkit = None
     application.state.capture_wipe_delay = 2.5
+    application.state.graphql_schema_cache = SchemaCache()
+    application.state.graphql_opener = None
 
 
 async def reconfigure_proxy(
@@ -291,8 +285,6 @@ async def reconfigure_proxy(
         confdir=cfg.mitm_confdir,
         allowlist=get_allowlist(),
         capture=get_capture(),
-        rule_engine=get_rule_engine(),
-        breakpoints=get_breakpoints(),
         proxy_auth=proxy_auth,
         proxy_clients=get_proxy_clients(),
     )
@@ -356,8 +348,6 @@ async def lifespan(application: FastAPI) -> AsyncIterator[None]:
     log_bus.bind_loop(loop)
     get_debug_event_bus().bind_loop(loop)
     crash_watch = _start_crash_watch(application, loop)
-    breakpoints = get_breakpoints()
-    breakpoints.bind_loop(loop)
     runner: ProxyRunner | None = None
     if cfg.proxy_enabled:
         setup = get_setup()
@@ -368,8 +358,6 @@ async def lifespan(application: FastAPI) -> AsyncIterator[None]:
             confdir=cfg.mitm_confdir,
             allowlist=get_allowlist(),
             capture=get_capture(),
-            rule_engine=get_rule_engine(),
-            breakpoints=breakpoints,
             proxy_auth=(
                 (auth.username, auth.password) if auth is not None else None
             ),
@@ -383,7 +371,6 @@ async def lifespan(application: FastAPI) -> AsyncIterator[None]:
     finally:
         if crash_watch is not None:
             crash_watch.cancel()
-        await breakpoints.shutdown()
         get_log_tail().stop()
         get_ingest().stop_network_watch()
         get_ingest().stop()
@@ -403,6 +390,7 @@ app.include_router(setup_router)
 app.include_router(logs_router)
 app.include_router(session_router)
 app.include_router(debug_router)
+app.include_router(graphql_router)
 app.include_router(appcms_router)
 app.include_router(tools_router)
 app.include_router(host_router)
@@ -417,7 +405,6 @@ def health() -> dict[str, object]:
     cfg = get_config()
     get_store()
     runner = _proxy_runner
-    engine = get_rule_engine()
     ingest = get_ingest()
     reveal = get_reveal()
     return {
@@ -431,7 +418,6 @@ def health() -> dict[str, object]:
         "proxy_port": cfg.proxy_port,
         "proxy_running": bool(runner and runner.is_running),
         "allowlist": list(get_allowlist().patterns),
-        "mutating_rules_enabled": engine.any_mutating_enabled(),
         "sdk_receiver_enabled": ingest.enabled,
         "log_tail": get_log_tail().status(),
         "reveal": {
@@ -445,7 +431,7 @@ def create_app(config: AppConfig | None = None) -> FastAPI:
     """Test/DI hook: bind an explicit config before first request."""
     global _config, _store, _event_bus, _log_event_bus, _debug_event_bus
     global _proxy_runner, _allowlist, _capture
-    global _log_capture, _log_tail, _ingest, _redaction, _rule_engine, _breakpoints, _setup
+    global _log_capture, _log_tail, _ingest, _redaction, _rule_engine, _setup
     global _reveal, _debug_sessions, _proxy_clients
     if config is not None:
         if _ingest is not None:
@@ -467,14 +453,12 @@ def create_app(config: AppConfig | None = None) -> FastAPI:
         _ingest = None
         _redaction = None
         _rule_engine = None
-        _breakpoints = None
         _setup = None
         _reveal = None
         _debug_sessions = None
         _proxy_clients = None
     get_store()
     get_rule_engine()
-    get_breakpoints()
     get_setup()
     get_ingest()
     get_log_tail()

@@ -387,6 +387,13 @@
       actions.push(button("Download", () => kit.util.download(new Blob([value], { type: block.mime || "text/plain" }), block.download)));
     }
     wrap.append(blockHead(block, actions));
+    const tree = window.VLJsonTree && window.VLJsonTree.html(value, { toolbar: true, openDepth: 2 });
+    if (tree) {
+      const holder = el("div");
+      holder.innerHTML = tree;
+      wrap.append(holder.firstElementChild);
+      return wrap;
+    }
     const pre = el("pre", "kit-pre" + (block.wrap === false ? " nowrap" : ""), value || block.empty || "");
     if (!value && block.empty) pre.classList.add("muted");
     wrap.append(pre);

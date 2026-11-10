@@ -165,11 +165,6 @@ TOOL_GROUPS: tuple[ToolGroup, ...] = (
                 "Full text of one log line and the flow it links to.",
             ),
             ToolDoc(
-                "list_rules",
-                "",
-                "Proxy rules that may alter traffic, and paused breakpoints. Read-only.",
-            ),
-            ToolDoc(
                 "get_session_audit",
                 "limit?",
                 "Tool calls this MCP session made, with scrubbed arguments.",
@@ -246,8 +241,8 @@ TOOL_GROUPS: tuple[ToolGroup, ...] = (
             ),
             ToolDoc(
                 "set_network_profile",
-                "profile, client_id?, confirm",
-                "wifi, 4g, 3g, edge, gprs, offline, or off. One app with client_id, else proxy.",
+                "profile, client_id, confirm",
+                "wifi, 4g, 3g, edge, gprs, offline, or off. Shapes that app through the SDK.",
                 True,
             ),
             ToolDoc(
@@ -755,7 +750,10 @@ COMMAND_NOTES: dict[str, str] = {
     "ui.screenshot": "PNG of the key window",
     "swiftui.renders": "Re-render counts per tracked view",
     "assets.audit": "Images larger than their display size",
-    "accessibility.audit": "Missing labels and small touch targets",
+    "accessibility.audit": (
+        "Key-window audit with severity, fix, and frame per finding: missing labels, small "
+        "targets, low contrast, Dynamic Type, unreachable controls. Includes a JPEG screenshot"
+    ),
     "storage.defaults": "UserDefaults keys and values",
     "storage.keychain_metadata": "Keychain items without secret values",
     "storage.files": "Sandbox listing (payload: path)",
@@ -764,8 +762,9 @@ COMMAND_NOTES: dict[str, str] = {
     "storage.sqlite_query": "SELECT, PRAGMA, WITH, or EXPLAIN only",
     "runtime.search": "Objective-C classes (payload: query)",
     "runtime.describe": "Methods and properties (payload: class)",
-    "macro.list": "Recorded touch macros",
-    "bug.capture": "Screenshot plus performance and memory",
+    "macro.list": "Recorded taps, swipes, and remote presses with the element each one hit",
+    "push.status": "Notification permission, pending test notifications, and tapped actions",
+    "bug.capture": "JPEG screenshot plus screen, app, device, performance, and recent taps",
     "ott.snapshot": "User, plan, TVE, theme, modules, metadataMap",
     "ott.sections": "Host section names, action names, and provider (AppCMS) for this app",
     "ott.section": (
@@ -787,7 +786,7 @@ COMMAND_NOTES: dict[str, str] = {
     "playback.snapshot": "Playback timeline: stalls, bitrate, live edge, route. No stream URLs",
     "playback.drm": "FairPlay step timing and error codes. No SPC or CKC",
     "playback.waterfall": "HLS and DASH request metadata. No query string or body",
-    "ui.focus": "Focused view id, frame, and last focus rejection",
+    "ui.focus": "Focused view id, frame, last focus rejection, and recent focus moves",
     "ui.highlight": "Outline one view (payload: id)",
     "ui.edit": "Change a view property (payload: id plus fields)",
     "ui.visual": (
@@ -801,7 +800,12 @@ COMMAND_NOTES: dict[str, str] = {
     "macro.record_start": "Start recording touches",
     "macro.record_stop": "Stop and save the macro",
     "macro.replay": "Replay a recorded macro",
-    "push.local": "Schedule a local notification",
+    "push.local": (
+        "Schedule a local notification (payload: title, subtitle, body, delay, badge, sound, "
+        "image_url or image_base64 + image_type, actions [{title, destructive, foreground, input}], "
+        "thread_id, user_info). Asks for permission the first time"
+    ),
+    "push.clear": "Remove pending and delivered test notifications",
     "nav.open_url": "Open a URL inside the paired app (payload: url). Query is not echoed",
     "runtime.libraries": "Loaded dyld images with Objective-C class counts, app images first",
     "runtime.image_classes": "Classes defined in one image (payload: image path)",
