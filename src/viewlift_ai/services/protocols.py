@@ -28,6 +28,7 @@ class FlowStoreProtocol(Protocol):
         kind: str | None = None,
         operation: str | None = None,
         client_ids: Sequence[str] | None = None,
+        spans: Sequence[tuple[str, str, str | None]] | None = None,
     ) -> list[FlowRecord]: ...
 
     def delete_flows(self) -> int: ...
@@ -50,6 +51,7 @@ class LogStoreProtocol(Protocol):
         subsystem: str | None = None,
         text: str | None = None,
         client_ids: Sequence[str] | None = None,
+        spans: Sequence[tuple[str, str, str | None]] | None = None,
     ) -> list[LogRecord]: ...
 
     def logs_for_request(

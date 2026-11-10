@@ -1,8 +1,7 @@
 (() => {
   const MUTATING = new Set([
     "ui.highlight", "ui.edit", "ui.visual", "storage.defaults_set", "storage.file_write",
-    "storage.snapshot_create", "storage.snapshot_restore", "feature_flags.set",
-    "feature_flags.reset", "macro.record_start", "macro.record_stop", "macro.replay",
+    "storage.snapshot_create", "storage.snapshot_restore", "macro.record_start", "macro.record_stop", "macro.replay",
     "push.local", "nav.open_url", "explorer.set", "explorer.call", "storage.defaults_delete",
     "storage.file_rename", "storage.file_delete", "storage.cookie_delete", "settings.set",
   ]);
@@ -83,6 +82,33 @@
     .replaceAll("&", "&amp;").replaceAll("<", "&lt;")
     .replaceAll(">", "&gt;").replaceAll('"', "&quot;");
   const escapeAttr = (value) => escapeHtml(value).replaceAll("'", "&#39;");
+  const tableSort = new Map();
+  const SIZE_SORT_KEYS = new Set(["bytes", "estimated_memory_bytes"]);
+  const ASSET_COLUMNS = ["name", "type", "bytes", "estimated_memory_bytes", "width", "height", "bundle", "path"];
+  const assetAudit = { rows: [] };
+  const assetSort = { key: null, dir: "asc" };
+  const sizeMissing = (value) => value == null || value === "" || !Number.isFinite(Number(value));
+  const compareSortRows = (key, dir, left, right) => {
+    if (SIZE_SORT_KEYS.has(key)) {
+      const leftMissing = sizeMissing(left?.[key]);
+      const rightMissing = sizeMissing(right?.[key]);
+      if (leftMissing || rightMissing) {
+        if (leftMissing && rightMissing) return 0;
+        return leftMissing ? 1 : -1;
+      }
+      const delta = Number(left[key]) - Number(right[key]);
+      return dir === "desc" ? -delta : delta;
+    }
+    const delta = String(left?.[key] ?? "").localeCompare(String(right?.[key] ?? ""), undefined, {
+      numeric: true,
+      sensitivity: "base",
+    });
+    return dir === "desc" ? -delta : delta;
+  };
+  const sortedTableRows = (rows, key, dir) => rows
+    .map((row, index) => ({ row, index }))
+    .sort((left, right) => compareSortRows(key, dir, left.row, right.row) || left.index - right.index)
+    .map((item) => item.row);
   const formatMetric = (value) => {
     if (typeof value !== "number" || !Number.isFinite(value)) return value ?? "";
     if (Math.abs(value) >= 100) return String(Math.round(value));
@@ -481,7 +507,7 @@
         "playback-summary", "playback-timeline", "playback-drm", "playback-waterfall", "ui-focus",
         "hangs-result", "crashes-live", "performance-metrics", "ui-tree", "ui-path", "ui-properties",
         "swiftui-result", "assets-result", "accessibility-result", "storage-inspector",
-        "storage-files", "flags-result", "bug-result", "macro-result", "runtime-result", "push-result",
+        "storage-files", "bug-result", "macro-result", "runtime-result", "push-result",
       ];
       clearIds.forEach((id) => {
         const node = document.getElementById(id);
@@ -842,10 +868,9 @@
       }
       if (name.startsWith("activity.")) return window.ViewliftLive?.onResult(name, result);
       if (name === "swiftui.renders") return this.renderTable("swiftui-result", result.components || []);
-      if (name === "assets.audit") return this.renderTable("assets-result", result.assets || []);
+      if (name === "assets.audit") return this.renderAssets(result.assets || []);
       if (name === "accessibility.audit") return this.renderTable("accessibility-result", result.findings || []);
       if (name.startsWith("storage.")) return this.renderStorage(name, result);
-      if (name.startsWith("feature_flags.")) return this.renderFlags(result.flags || []);
       if (name.startsWith("macro.")) return this.renderMacro(result);
       if (name.startsWith("runtime.")) return this.renderRuntime(name, result);
       if (name === "bug.capture") return this.renderBug(result);
@@ -3754,18 +3779,6 @@
       return date.toLocaleString();
     },
 
-    renderFlags(flags) {
-      document.getElementById("flags-result").innerHTML = flags.map((flag) =>
-        `<label class="flag-row"><span class="grow"><strong>${escapeHtml(flag.title)}</strong><br><span class="muted">${escapeHtml(flag.key)} · ${escapeHtml(flag.group)}</span></span><input type="checkbox" data-flag="${escapeHtml(flag.key)}" ${flag.enabled ? "checked" : ""}></label>`
-      ).join("");
-      document.querySelectorAll("[data-flag]").forEach((input) => {
-        input.onchange = () => this.sendCommand("feature_flags.set", {
-          key: input.dataset.flag,
-          enabled: input.checked,
-        });
-      });
-    },
-
     renderMacro(result) {
       state.macro = { actions: result.actions || [] };
       this.renderTable("macro-result", result.actions || []);
@@ -3833,21 +3846,184 @@
       };
     },
 
-    renderTable(targetId, rows) {
+    bindAssets() {
+      const host = document.getElementById("assets-result");
+      const select = document.getElementById("assets-bundle");
+      if (host && !host.dataset.assetBound) {
+        host.dataset.assetBound = "1";
+        host.addEventListener("click", (event) => {
+          const sortButton = event.target.closest("[data-sort-key]");
+          if (sortButton && host.contains(sortButton)) {
+            this.sortAssets(sortButton.dataset.sortKey);
+            return;
+          }
+          const reveal = event.target.closest("[data-asset-reveal]");
+          if (reveal && host.contains(reveal)) this.revealAsset(reveal.dataset.assetReveal);
+        });
+      }
+      if (select && !select.dataset.assetBound) {
+        select.dataset.assetBound = "1";
+        select.addEventListener("change", () => this.paintAssets());
+      }
+    },
+
+    renderAssets(rows) {
+      this.bindAssets();
+      assetAudit.rows = rows;
+      const select = document.getElementById("assets-bundle");
+      if (select) {
+        const previous = select.value;
+        const bundles = [...new Set(rows.map((row) => String(row?.bundle || "")).filter(Boolean))]
+          .sort((left, right) => left.localeCompare(right));
+        const keep = previous && bundles.includes(previous) ? previous : "";
+        select.innerHTML = `<option value="">All bundles</option>${bundles.map((bundle) => `<option value="${escapeAttr(bundle)}">${escapeHtml(bundle)}</option>`).join("")}`;
+        select.value = keep;
+        select.disabled = !rows.length;
+      }
+      if (!rows.length) {
+        assetSort.key = null;
+        assetSort.dir = "asc";
+        document.getElementById("assets-result").innerHTML = `<p class="muted">No data.</p>`;
+        return;
+      }
+      this.paintAssets();
+    },
+
+    sortAssets(key) {
+      if (!SIZE_SORT_KEYS.has(key) && key !== "name") return;
+      if (assetSort.key === key) {
+        assetSort.dir = assetSort.dir === "asc" ? "desc" : "asc";
+      } else {
+        assetSort.key = key;
+        assetSort.dir = SIZE_SORT_KEYS.has(key) ? "desc" : "asc";
+      }
+      this.paintAssets();
+    },
+
+    paintAssets() {
+      const select = document.getElementById("assets-bundle");
+      const bundle = select ? select.value : "";
+      const rows = bundle
+        ? assetAudit.rows.filter((row) => String(row?.bundle || "") === bundle)
+        : assetAudit.rows.slice();
+      const target = document.getElementById("assets-result");
+      if (!rows.length) {
+        target.innerHTML = `<p class="muted">No assets in this bundle.</p>`;
+        return;
+      }
+      const view = assetSort.key ? sortedTableRows(rows, assetSort.key, assetSort.dir) : rows;
+      const present = new Set(assetAudit.rows.flatMap((row) => Object.keys(row || {})));
+      const columns = ASSET_COLUMNS.filter((key) => present.has(key));
+      const header = columns.map((key) => this.assetHeader(key)).join("");
+      const body = view.map((row) => `<tr>${columns.map((key) => this.assetCell(key, row)).join("")}</tr>`).join("");
+      target.innerHTML = `<table class="debug-table"><thead><tr>${header}</tr></thead><tbody>${body}</tbody></table>`;
+    },
+
+    assetHeader(key) {
+      if (key !== "name" && !SIZE_SORT_KEYS.has(key)) return `<th>${escapeHtml(key)}</th>`;
+      const active = assetSort.key === key;
+      const aria = active ? (assetSort.dir === "asc" ? "ascending" : "descending") : "none";
+      const mark = active
+        ? `<span class="sort-mark" aria-hidden="true">${assetSort.dir === "asc" ? "▲" : "▼"}</span>`
+        : "";
+      return `<th aria-sort="${aria}"><button type="button" class="sort-col" data-sort-key="${escapeAttr(key)}">${escapeHtml(key)}${mark}</button></th>`;
+    },
+
+    assetCell(key, row) {
+      const value = row?.[key];
+      if (key === "path") return this.assetPathCell(value);
+      if (SIZE_SORT_KEYS.has(key)) {
+        if (value == null || value === "" || !Number.isFinite(Number(value))) return "<td class=\"asset-size\"></td>";
+        const amount = Number(value);
+        return `<td class="asset-size" title="${escapeAttr(`${amount} bytes`)}">${escapeHtml(this.bytes(amount))}</td>`;
+      }
+      return `<td>${escapeHtml(typeof value === "object" ? JSON.stringify(value) : value)}</td>`;
+    },
+
+    assetPathCell(value) {
+      const path = String(value || "");
+      if (!path) return "<td class=\"asset-path\"></td>";
+      const onSimulator = path.includes("/Library/Developer/CoreSimulator/");
+      const finder = onSimulator
+        ? `<button type="button" class="btn ghost asset-finder" data-asset-reveal="${escapeAttr(path)}">Finder</button>`
+        : "";
+      return `<td class="asset-path"><span title="${escapeAttr(path)}">${escapeHtml(path)}</span>${finder}</td>`;
+    },
+
+    async revealAsset(path) {
+      if (!path) return;
+      let result = {};
+      let response;
+      try {
+        response = await fetch("/api/debug/reveal-asset", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ path }),
+        });
+        result = await response.json();
+      } catch (_) {
+        this.notify("Could not reach the console.");
+        return;
+      }
+      this.notify(response.ok ? "Shown in Finder." : (result.detail || "Could not show this file in Finder."));
+    },
+
+    renderTable(targetId, rows, options = {}) {
       const target = document.getElementById(targetId);
       if (!rows.length) {
+        tableSort.delete(targetId);
         target.innerHTML = `<p class="muted">No data.</p>`;
         return;
       }
+      const sortable = Array.isArray(options.sortable) ? options.sortable : null;
+      let sortKey = null;
+      let sortDir = "asc";
+      if (sortable) {
+        const prev = tableSort.get(targetId);
+        if (prev && sortable.includes(prev.sortKey)) {
+          sortKey = prev.sortKey;
+          sortDir = prev.sortDir === "desc" ? "desc" : "asc";
+        }
+        tableSort.set(targetId, { rows, sortable, sortKey, sortDir });
+      }
+      const view = sortKey ? sortedTableRows(rows, sortKey, sortDir) : rows;
       const columns = [...new Set(rows.flatMap((row) => Object.keys(row || {})))].slice(0, 12);
-      target.innerHTML = `<table class="debug-table"><thead><tr>${columns.map((key) => `<th>${escapeHtml(key)}</th>`).join("")}</tr></thead><tbody>${rows.map((row) => `<tr>${columns.map((key) => `<td>${escapeHtml(typeof row[key] === "object" ? JSON.stringify(row[key]) : row[key])}</td>`).join("")}</tr>`).join("")}</tbody></table>`;
+      const header = columns.map((key) => {
+        if (!sortable || !sortable.includes(key)) return `<th>${escapeHtml(key)}</th>`;
+        const active = sortKey === key;
+        const aria = active ? (sortDir === "asc" ? "ascending" : "descending") : "none";
+        const mark = active
+          ? `<span class="sort-mark" aria-hidden="true">${sortDir === "asc" ? "▲" : "▼"}</span>`
+          : "";
+        return `<th aria-sort="${aria}"><button type="button" class="sort-col" data-sort-key="${escapeAttr(key)}">${escapeHtml(key)}${mark}</button></th>`;
+      }).join("");
+      const body = view.map((row) => `<tr>${columns.map((key) => {
+        const value = row[key];
+        return `<td>${escapeHtml(typeof value === "object" ? JSON.stringify(value) : value)}</td>`;
+      }).join("")}</tr>`).join("");
+      target.innerHTML = `<table class="debug-table"><thead><tr>${header}</tr></thead><tbody>${body}</tbody></table>`;
+      if (!sortable) return;
+      target.querySelectorAll("[data-sort-key]").forEach((button) => {
+        button.addEventListener("click", () => {
+          const current = tableSort.get(targetId);
+          const key = button.dataset.sortKey;
+          if (!current || !current.sortable.includes(key)) return;
+          if (current.sortKey === key) {
+            current.sortDir = current.sortDir === "asc" ? "desc" : "asc";
+          } else {
+            current.sortKey = key;
+            current.sortDir = SIZE_SORT_KEYS.has(key) ? "desc" : "asc";
+          }
+          this.renderTable(targetId, current.rows, { sortable: current.sortable });
+        });
+      });
     },
 
     renderError(module, message) {
       const targets = {
         memory: "memory-status", ui: "ui-properties", swiftui: "swiftui-result",
         assets: "assets-result", accessibility: "accessibility-result", storage: "storage-inspector",
-        feature_flags: "flags-result", bug: "bug-result", macro: "macro-result",
+        bug: "bug-result", macro: "macro-result",
         runtime: "runtime-result", push: "push-result",
         ott: "ott-sections", hang: "hangs-result", crash: "hangs-result",
         playback: "playback-timeline", nav: "nav-status",

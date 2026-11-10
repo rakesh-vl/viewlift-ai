@@ -427,8 +427,8 @@ def test_invoke_rejects_mutate_without_flag(tmp_path: Path) -> None:
     with pytest.raises(PermissionError, match="mutate"):
         service.invoke(
             client_id=client,
-            name="feature_flags.set",
-            payload={"key": "a", "enabled": True},
+            name="storage.defaults_set",
+            payload={"key": "a", "value": True},
         )
     assert service.poll(client) == []
 
@@ -443,8 +443,8 @@ def test_invoke_with_mutate_flag_waits(tmp_path: Path) -> None:
     ).start()
     result = service.invoke(
         client_id=client,
-        name="feature_flags.set",
-        payload={"key": "a", "enabled": True},
+        name="storage.defaults_set",
+        payload={"key": "a", "value": True},
         mutate=True,
         timeout=2,
     )
@@ -548,8 +548,8 @@ def test_mutating_command_is_not_repeated_on_mid_command_register(tmp_path: Path
     with pytest.raises(DebugCommandInterrupted) as caught:
         service.invoke(
             client_id=client,
-            name="feature_flags.set",
-            payload={"key": "a", "enabled": True},
+            name="storage.defaults_set",
+            payload={"key": "a", "value": True},
             mutate=True,
             timeout=3,
         )

@@ -85,6 +85,33 @@ final class ClientIdentityTests: XCTestCase {
         XCTAssertEqual(json["sdk_version"] as? String, DeviceIdentity.sdkVersion)
     }
 
+    func testReportCaptureSessionDropsRawEmail() {
+        let raw = CaptureSessionIdentity(
+            authState: "logged_in",
+            userId: "user-1",
+            emailMask: "ada@viewlift.com"
+        )
+        XCTAssertEqual(raw.normalized().emailMask, "")
+        let masked = CaptureSessionIdentity(
+            authState: "logged_in",
+            userId: "user-1",
+            emailMask: "a***@viewlift.com",
+            profileId: "profile-1",
+            loginProvider: "apple"
+        )
+        XCTAssertEqual(masked.normalized(), masked)
+        let guest = CaptureSessionIdentity(authState: "guest", userId: "drop-me", anonymousId: "anon-1")
+        XCTAssertEqual(guest.normalized().userId, "")
+        XCTAssertEqual(guest.normalized().anonymousId, "anon-1")
+        reportCaptureSession(masked)
+        XCTAssertEqual(CaptureSessionStore.shared.currentIdentity(), masked)
+        XCTAssertEqual(CaptureSessionStore.shared.peekPending(), masked)
+        CaptureSessionStore.shared.ack(masked)
+        XCTAssertNil(CaptureSessionStore.shared.peekPending())
+        XCTAssertEqual(masked.eventPayload()["email_mask"], .string("a***@viewlift.com"))
+        XCTAssertEqual(raw.eventPayload()["email_mask"], .string(""))
+    }
+
     func testPairPayloadCarriesClientId() {
         let transport = PinnedHTTPSTransport(identity: FixedIdentity(clientId: "client-a"))
         let payload = transport.pairPayload(pairingToken: "token")

@@ -150,6 +150,7 @@ public final class DebugBridgeService: @unchecked Sendable {
                 try await tolerating("playback") { try await sendPlaybackEvents(config: config, transport: transport) }
                 try await tolerating("focus") { try await sendFocusEvents(config: config, transport: transport) }
                 try await tolerating("ott") { try await sendOTTChangeEvents(config: config, transport: transport) }
+                try await tolerating("session") { try await sendSessionEvents(transport: transport) }
                 await interruptibleSleep(milliseconds: Self.pollMilliseconds)
             } catch let error as TransportError where error.isWaitingForSession {
                 // Transport is still starting or re-pairing. Check again shortly instead of backing off.
@@ -285,7 +286,8 @@ public final class DebugBridgeService: @unchecked Sendable {
             executable: identity.executable,
             urlSchemes: identity.urlSchemes,
             frameworks: identity.frameworks,
-            device: device
+            device: device,
+            session: CaptureSessionStore.shared.currentIdentity()
         )
     }
 

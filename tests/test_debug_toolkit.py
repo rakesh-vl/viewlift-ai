@@ -11,6 +11,7 @@ from viewlift_ai.services.debug_toolkit import (
     apply_network_profile,
     open_deeplink,
     replay_http,
+    reveal_simulator_asset,
     set_device_location,
     validate_deeplink,
 )
@@ -111,3 +112,58 @@ def test_location_refuses_while_log_stream_is_running() -> None:
 def test_location_rejects_bad_coordinates() -> None:
     with pytest.raises(ValueError, match="Latitude"):
         set_device_location("00008120-001E558E21D1A01E", 120.0, 0.0, runner=lambda *a: None)
+
+
+def _finder_runner(seen: list[list[str]]):
+    def runner(argv, **kwargs):
+        seen.append(list(argv))
+
+        class Done:
+            returncode = 0
+            stderr = ""
+
+        return Done()
+
+    return runner
+
+
+def test_reveal_asset_opens_simulator_file(tmp_path: Path) -> None:
+    root = tmp_path / "CoreSimulator"
+    asset = root / "Devices" / "A" / "icon.png"
+    asset.parent.mkdir(parents=True)
+    asset.write_bytes(b"png")
+    seen: list[list[str]] = []
+    result = reveal_simulator_asset(str(asset), root=root, runner=_finder_runner(seen))
+    assert result["ok"] is True
+    assert seen == [["open", "-R", str(asset.resolve())]]
+
+
+def test_reveal_asset_refuses_paths_outside_the_simulator(tmp_path: Path) -> None:
+    root = tmp_path / "CoreSimulator"
+    root.mkdir()
+    secret = tmp_path / "secret.png"
+    secret.write_bytes(b"nope")
+    seen: list[list[str]] = []
+
+    def runner(argv, **kwargs):
+        seen.append(list(argv))
+        raise AssertionError("Finder should not open")
+
+    with pytest.raises(ValueError, match="simulator"):
+        reveal_simulator_asset(str(secret), root=root, runner=runner)
+    link = root / "link.png"
+    link.symlink_to(secret)
+    with pytest.raises(ValueError, match="simulator"):
+        reveal_simulator_asset(str(link), root=root, runner=runner)
+    with pytest.raises(ValueError, match="absolute"):
+        reveal_simulator_asset("icon.png", root=root, runner=runner)
+    assert seen == []
+
+
+def test_reveal_asset_refuses_other_file_types(tmp_path: Path) -> None:
+    root = tmp_path / "CoreSimulator"
+    notes = root / "notes.txt"
+    notes.parent.mkdir()
+    notes.write_text("secret", encoding="utf-8")
+    with pytest.raises(ValueError, match="file type"):
+        reveal_simulator_asset(str(notes), root=root, runner=lambda *args, **kwargs: None)

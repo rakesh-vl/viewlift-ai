@@ -59,7 +59,7 @@ Source: [api/routes.py](../src/viewlift_ai/api/routes.py)
 
 | Method and path | Loopback | Purpose |
 |---|---|---|
-| `GET /api/flows` | no | List flows. Query: `method`, `host`, `status`, `content-type`, `text`, `kind` (`graphql` or `http`), `operation` (operation-name substring), `limit` (1 to 1000, default 200), `client_id` (repeatable), `device_key`. Returns `{flows, count}`. Each flow includes `graphql`, `operation`, and `operation_type`. |
+| `GET /api/flows` | no | List flows. Query: `method`, `host`, `status`, `content-type`, `text`, `kind` (`graphql` or `http`), `operation` (operation-name substring), `limit` (1 to 1000, default 200), `client_id` (repeatable), `device_key`, `bundle_id`, `auth_state`, `user_id`, `profile_id`, `anonymous_id`. Account filters match the session span that covered `created_at`. Returns `{flows, count}`. Each flow includes `graphql`, `operation`, and `operation_type`. |
 | `POST /api/flows/delete` | no | Delete every stored flow. Logs, debug events, and rules stay. Clears the in-memory reveal cache. Returns `{deleted}`. |
 | `GET /api/flows/{id}` | for `reveal=true` | Stored detail, including cookies and JSON secrets. `?reveal=true` uses the in-memory copy when the reveal session is unlocked. |
 | `GET /api/flows/{id}/summary` | no | Summary JSON |
@@ -76,7 +76,7 @@ Source: [api/apps_routes.py](../src/viewlift_ai/api/apps_routes.py). All loopbac
 
 | Method and path | Purpose |
 |---|---|
-| `GET /api/apps` | Device and app tree with counts, ingest activity and `online_apps` |
+| `GET /api/apps` | Device and app tree with counts, ingest activity, LAN `peer`, `online_apps`, and `accounts` (auth states, user ids, guest ids) |
 | `DELETE /api/apps/{client_id}/data` | Delete one app's flows, logs and debug events; forget the client if offline |
 | `DELETE /api/apps/data` | Wipe all captured data, the reveal cache and ingest activity |
 
@@ -127,7 +127,7 @@ Source: [api/logs_routes.py](../src/viewlift_ai/api/logs_routes.py)
 | `GET /api/logs/sources` | Booted simulators and paired devices (used by debug tools) |
 | `GET /api/logs/status` | OS-log collector status (not used by the Logs page) |
 | `POST /api/logs/delete` | Delete all logs |
-| `GET /api/logs` | Query: `source` (single value or comma list such as `stdout,stderr`), `level`, `subsystem`, `text`, `limit`, `client_id`, `device_key` |
+| `GET /api/logs` | Query: `source` (single value or comma list such as `stdout,stderr`), `level`, `subsystem`, `text`, `limit`, `client_id`, `device_key`, `bundle_id`, `auth_state`, `user_id`, `profile_id`, `anonymous_id`. Account filters use session spans, same as flows. |
 | `GET /api/logs/{id}` | Detail, plus `linked_flow_id` resolved from `request_id` |
 
 ## Session

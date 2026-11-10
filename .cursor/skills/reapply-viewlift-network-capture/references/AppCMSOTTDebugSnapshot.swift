@@ -32,6 +32,7 @@ final class AppCMSOTTDebugSnapshot: OTTDebugSnapshotProviding, OTTDebugCommandHa
         let page = pageSection()
         let player = playerSection()
         let entitlementsV2 = entitlementsV2Section()
+        publishCaptureSession()
         return [
             "provider": .string("AppCMS"),
             "platform": .string(platform),
@@ -66,6 +67,40 @@ final class AppCMSOTTDebugSnapshot: OTTDebugSnapshotProviding, OTTDebugCommandHa
                 "Full SPM pin list is on the Mac dashboard (Package.resolved). Device lists linked frameworks."
             )
         ]
+    }
+
+    /// Push the current guest, login, or profile to the console. Call on login, logout, and profile change.
+    func publishCaptureSession() {
+        reportCaptureSession(captureSessionIdentity())
+    }
+
+    private func captureSessionIdentity() -> CaptureSessionIdentity {
+        let flow = flowSection()
+        let user = userSection()
+        let name = text(flow, "name")
+        let state: String
+        switch name {
+        case "tve":
+            state = "tve"
+        case "logged_in":
+            state = "logged_in"
+        case "guest":
+            state = "guest"
+        case "cold_start":
+            state = "cold_start"
+        default:
+            state = "unknown"
+        }
+        let userId = text(user, "user_id")
+        let tveId = text(tveSection(), "tve_user_id")
+        return CaptureSessionIdentity(
+            authState: state,
+            userId: state == "tve" && userId.isEmpty ? tveId : userId,
+            anonymousId: text(flow, "anonymous_id"),
+            emailMask: text(user, "email"),
+            profileId: text(user, "default_profile_id"),
+            loginProvider: text(user, "login_provider")
+        )
     }
 
     // MARK: - Flow (guest vs logged-in)
@@ -1073,6 +1108,9 @@ extension AppCMSOTTDebugSnapshot {
         _ name: String,
         arguments: [String: ViewliftNetworkCapture.JSONValue]
     ) async -> [String: ViewliftNetworkCapture.JSONValue]? {
+        if name == "overview" || name == "session" {
+            publishCaptureSession()
+        }
         switch name {
         case "overview": return overviewPage()
         case "config": return configPage()

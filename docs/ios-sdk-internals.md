@@ -77,7 +77,6 @@ The package has no external dependencies. It uses Foundation, ObjectiveC runtime
 | `PreviewRegistry.swift` | `ViewliftPreviews.register` and the thread-safe preview store |
 | `PreviewRenderService.swift` | Off-screen preview rendering to PNG |
 | `DebugCommandExecutor+Automation.swift` | Routes `ui.*` automation and `preview.*` commands |
-| `DebugFeatureFlags.swift` | Host-registered flags with in-memory overrides |
 | `IntegrationGuidance.swift` | Integration notes and the local network usage string |
 
 ## Interception
@@ -130,7 +129,7 @@ sequenceDiagram
 
 Telemetry loop:
 
-1. Register once (platform, OS, capabilities, app and device identity). This fails until the transport has paired, then retries.
+1. Register once (platform, OS, capabilities, app and device identity, and the current capture session when the host has called `reportCaptureSession`). This fails until the transport has paired, then retries. A later session change is sent as a `session` / `update` event and is not stored as a debug event.
 2. Send the optional telemetry (performance samples, activity, crashes, replays). A payload the receiver refuses with 400, 413, 422 or 429 is logged and dropped. It never tears down the registration.
 3. Sleep 500 ms (250 ms while a screen preview runs). On a connection error, reset registration and sleep 2 seconds. While the transport is still starting or re-pairing (`notStarted`, `notPaired`) it retries after 250 ms instead.
 
@@ -181,7 +180,6 @@ The prefix before the first dot selects the module. A disabled module returns `m
 | assets | `assets.audit` |
 | accessibility | `accessibility.audit` |
 | storage | `storage.defaults`, `storage.defaults_set {key, value}`, `storage.defaults_delete {key}`, `storage.keychain_metadata`, `storage.files {path}`, `storage.file_read {path}`, `storage.file_write {path, content, base64?}`, `storage.file_rename {path, name}`, `storage.file_delete {path}`, `storage.sqlite_schema {path}`, `storage.sqlite_query {path, query}`, `storage.snapshot_create {paths}`, `storage.snapshot_restore {snapshot}`, `storage.cookies`, `storage.cookie_delete {name, domain, path}` |
-| feature_flags | `feature_flags.list`, `feature_flags.set {key, enabled}`, `feature_flags.reset {key}` |
 | runtime | `runtime.search {query}`, `runtime.describe {class}`, `runtime.libraries`, `runtime.image_classes {image}` |
 | explorer | `explorer.roots`, `explorer.object {handle?, view_id?, memory_id?}`, `explorer.instances {class, limit?}`, `explorer.set {handle, key, value}`, `explorer.call {handle, selector}`. Handles are weak. `explorer.call` refuses `init`, `set`, `copy`, `dealloc`, and teardown selectors |
 | settings | `settings.get`, `settings.set {modules?, capture_network?, max_request_body_bytes?, max_response_body_bytes?, body_content_types?, reset?}`. Overrides can disable modules the app enabled. They cannot add modules |
@@ -234,7 +232,7 @@ Do not disable rules unless there is no alternative; if you must, scope the disa
 
 ## Tests
 
-[Tests/ViewliftNetworkCaptureTests](../ios/ViewliftNetworkCapture/Tests/ViewliftNetworkCaptureTests) has XCTest coverage for redaction, body caps, the queue, recursion guard, start and stop, configuration injection, interception (with a stub upstream protocol), `JSONValue`, storage path safety, feature flags, keychain metadata, the runtime browser, identity and discovery address replacement, element queries, scroll and focus math, and the preview registry. `AccessibilityTreeTests` (tree walk, UIKit fallback, activation, text inputs) and the preview render guards need UIKit, so run them with `xcodebuild test` on an iOS or tvOS simulator. Pinning and the drain loop are not covered.
+[Tests/ViewliftNetworkCaptureTests](../ios/ViewliftNetworkCapture/Tests/ViewliftNetworkCaptureTests) has XCTest coverage for redaction, body caps, the queue, recursion guard, start and stop, configuration injection, interception (with a stub upstream protocol), `JSONValue`, storage path safety, keychain metadata, the runtime browser, identity and discovery address replacement, element queries, scroll and focus math, and the preview registry. `AccessibilityTreeTests` (tree walk, UIKit fallback, activation, text inputs) and the preview render guards need UIKit, so run them with `xcodebuild test` on an iOS or tvOS simulator. Pinning and the drain loop are not covered.
 
 ## Known issues
 

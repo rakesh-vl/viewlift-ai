@@ -140,6 +140,16 @@ extension DebugBridgeService {
         }
     }
 
+    /// Who is signed in, when the host called `reportCaptureSession` with a new identity.
+    func sendSessionEvents(transport: DebugTransporting) async throws {
+        guard let pending = CaptureSessionStore.shared.peekPending() else { return }
+        try await transport.send(
+            event: DebugEvent(module: "session", kind: "update", payload: pending.eventPayload()),
+            clientId: clientId
+        )
+        CaptureSessionStore.shared.ack(pending)
+    }
+
     /// Host-reported OTT state changes (login, plan, language), debounced into one event.
     func sendOTTChangeEvents(config: CaptureConfiguration, transport: DebugTransporting) async throws {
         guard config.debugModules.contains(.ott), let sections = OTTDebugRegistry.drainChanged() else { return }

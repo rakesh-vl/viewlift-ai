@@ -39,8 +39,6 @@ final class DebugCommandExecutor {
             return try await visual(command)
         case "storage":
             return try storage(command)
-        case "feature_flags":
-            return try flags(command)
         case "runtime", "explorer":
             return try await introspection(command)
         case "macro", "push":
@@ -170,26 +168,8 @@ final class DebugCommandExecutor {
 
 }
 
-/// Flags, runtime, QA, capture helpers, and payload decoding.
+/// Runtime, QA, capture helpers, and payload decoding.
 extension DebugCommandExecutor {
-    private func flags(_ command: DebugCommand) throws -> [String: JSONValue] {
-        switch command.name {
-        case "feature_flags.list":
-            return DebugFeatureFlags.shared.snapshot()
-        case "feature_flags.set":
-            try DebugFeatureFlags.shared.set(
-                string(command.payload["key"]),
-                enabled: bool(command.payload["enabled"])
-            )
-            return DebugFeatureFlags.shared.snapshot()
-        case "feature_flags.reset":
-            try DebugFeatureFlags.shared.set(string(command.payload["key"]), enabled: nil)
-            return DebugFeatureFlags.shared.snapshot()
-        default:
-            throw DebugBridgeError.unsupportedCommand
-        }
-    }
-
     private func introspection(_ command: DebugCommand) async throws -> [String: JSONValue] {
         if command.name.hasPrefix("explorer.") {
             return try await explorerCommand(command)
@@ -271,7 +251,6 @@ extension DebugCommandExecutor {
             "assets": .assets,
             "accessibility": .accessibility,
             "storage": .storage,
-            "feature_flags": .featureFlags,
             "runtime": .runtime,
             "macro": .macro,
             "bug": .bug,

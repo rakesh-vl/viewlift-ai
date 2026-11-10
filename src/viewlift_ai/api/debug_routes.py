@@ -11,7 +11,7 @@ from fastapi import APIRouter, HTTPException, Query, Request
 from fastapi.responses import FileResponse, HTMLResponse, PlainTextResponse
 from fastapi.templating import Jinja2Templates
 
-from viewlift_ai.api.scope import resolve_client_ids
+from viewlift_ai.api.scope import scope_kwargs
 from viewlift_ai.services.analytics_inspect import list_analytics_traffic
 from viewlift_ai.services.debug_toolkit import (
     ANALYTICS_HOST_MARKERS,
@@ -21,6 +21,7 @@ from viewlift_ai.services.debug_toolkit import (
     list_network_profiles,
     open_deeplink,
     replay_http,
+    reveal_simulator_asset,
     set_device_location,
     validate_deeplink,
 )
@@ -112,12 +113,26 @@ def debug_analytics_traffic(
     player_beacon_url: str | None = None,
     client_id: Annotated[list[str] | None, Query()] = None,
     device_key: str | None = None,
+    bundle_id: str | None = None,
+    auth_state: str | None = None,
+    user_id: str | None = None,
+    profile_id: str | None = None,
+    anonymous_id: str | None = None,
 ) -> dict[str, object]:
     """User/player beacons + VLAnalytics client network calls with request params."""
     _loopback(request)
     flows = _store(request).list_flows(
         limit=max(1, min(limit, 1000)),
-        client_ids=resolve_client_ids(request, client_id, device_key),
+        **scope_kwargs(
+            request,
+            client_id,
+            device_key,
+            bundle_id,
+            auth_state,
+            user_id,
+            profile_id,
+            anonymous_id,
+        ),
     )
     return list_analytics_traffic(
         flows,
@@ -462,6 +477,17 @@ def _log_device_udid(request: Request, client: dict[str, object]) -> str | None:
         status_code=409,
         detail=f"Several paired devices could run this app. Pick one on the Logs page: {names}",
     )
+
+
+@router.post("/api/debug/reveal-asset")
+async def debug_reveal_asset(request: Request) -> dict[str, object]:
+    """Show one simulator asset in Finder. Loopback only. Device paths are refused."""
+    _loopback(request)
+    body = await _json_body(request)
+    try:
+        return reveal_simulator_asset(str(body.get("path") or ""))
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
 @router.post("/api/debug/deeplink")

@@ -200,7 +200,8 @@ enum UIInspectionService {
                     "name": .string(url.lastPathComponent),
                     "type": .string(ext),
                     "bytes": .number(Double(values?.fileSize ?? 0)),
-                    "bundle": .string(bundle.bundleIdentifier ?? "main")
+                    "bundle": .string(bundle.bundleIdentifier ?? "main"),
+                    "path": .string(url.path)
                 ]
                 #if canImport(UIKit)
                 if let image = UIImage(contentsOfFile: url.path) {

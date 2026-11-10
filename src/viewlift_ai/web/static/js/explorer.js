@@ -18,7 +18,7 @@
 
   const MODULE_LABELS = {
     performance: "Performance", memory: "Memory", ui: "UI inspector", swiftui: "SwiftUI probes",
-    assets: "Assets audit", accessibility: "Accessibility audit", storage: "Storage", feature_flags: "Feature flags",
+    assets: "Assets audit", accessibility: "Accessibility audit", storage: "Storage",
     runtime: "Runtime browser", macro: "Macros", bug: "Bug report", push: "Push", ott: "OTT snapshot",
     crash: "Crashes", hang: "Hangs", activity: "Live activity", playback: "Playback", nav: "Navigation",
     explorer: "Object explorer", replay: "Crash replay",

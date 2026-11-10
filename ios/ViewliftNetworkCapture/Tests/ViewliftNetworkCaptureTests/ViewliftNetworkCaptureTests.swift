@@ -306,18 +306,6 @@ extension ViewliftNetworkCaptureTests {
         )
     }
 
-    func testFeatureFlagRegistrationAndOverride() throws {
-        let key = "test-\(UUID().uuidString)"
-        DebugFeatureFlags.shared.register(
-            DebugFeatureFlag(key: key, title: "Test", defaultValue: false)
-        )
-        XCTAssertFalse(DebugFeatureFlags.shared.isEnabled(key))
-        try DebugFeatureFlags.shared.set(key, enabled: true)
-        XCTAssertTrue(DebugFeatureFlags.shared.isEnabled(key))
-        try DebugFeatureFlags.shared.set(key, enabled: nil)
-        XCTAssertFalse(DebugFeatureFlags.shared.isEnabled(key))
-    }
-
     func testKeychainResponseDeclaresValuesAreNotExposed() {
         let result = StateDebugService().keychainMetadata()
         XCTAssertEqual(result["values_exposed"], .bool(false))

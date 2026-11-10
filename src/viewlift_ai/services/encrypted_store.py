@@ -94,6 +94,22 @@ CREATE TABLE IF NOT EXISTS clients (
 
 CREATE INDEX IF NOT EXISTS idx_clients_device_bundle ON clients(device_key, bundle_id);
 
+CREATE TABLE IF NOT EXISTS session_spans (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    client_id TEXT NOT NULL,
+    auth_state TEXT NOT NULL,
+    user_id TEXT NOT NULL DEFAULT '',
+    anonymous_id TEXT NOT NULL DEFAULT '',
+    email_mask TEXT NOT NULL DEFAULT '',
+    profile_id TEXT NOT NULL DEFAULT '',
+    login_provider TEXT NOT NULL DEFAULT '',
+    started_at TEXT NOT NULL,
+    ended_at TEXT
+);
+
+CREATE INDEX IF NOT EXISTS idx_session_spans_client ON session_spans(client_id, started_at);
+CREATE INDEX IF NOT EXISTS idx_session_spans_user ON session_spans(user_id, auth_state);
+
 CREATE TABLE IF NOT EXISTS meta (
     key TEXT PRIMARY KEY,
     value TEXT NOT NULL
@@ -287,6 +303,7 @@ class EncryptedSqliteStore:
         kind: str | None = None,
         operation: str | None = None,
         client_ids: Sequence[str] | None = None,
+        spans: Sequence[tuple[str, str, str | None]] | None = None,
     ) -> list[FlowRecord]:
         kind_value = (kind or "").strip().lower() or None
         if kind_value not in {None, "graphql", "http"}:
@@ -294,7 +311,10 @@ class EncryptedSqliteStore:
         operation_needle = (operation or "").strip().lower() or None
         clauses: list[str] = []
         params: list[object] = []
-        _client_clause(client_ids, clauses, params)
+        if spans is not None:
+            _span_clause(spans, clauses, params)
+        else:
+            _client_clause(client_ids, clauses, params)
         if method:
             clauses.append("UPPER(method) = UPPER(?)")
             params.append(method)
@@ -349,17 +369,19 @@ class EncryptedSqliteStore:
         cur = self._conn.execute("DELETE FROM flows")
         logs = self._conn.execute("DELETE FROM logs")
         debug = self._conn.execute("DELETE FROM debug_events")
+        spans = self._conn.execute("DELETE FROM session_spans")
         self._conn.commit()
         self._conn.execute("VACUUM")
-        return int(cur.rowcount) + int(logs.rowcount) + int(debug.rowcount)
+        return int(cur.rowcount) + int(logs.rowcount) + int(debug.rowcount) + int(spans.rowcount)
 
     def delete_client_data(self, client_id: str) -> int:
         """Remove one app instance's flows, logs, and debug events."""
         flows = self._conn.execute("DELETE FROM flows WHERE client_id = ?", (client_id,))
         logs = self._conn.execute("DELETE FROM logs WHERE client_id = ?", (client_id,))
         debug = self._conn.execute("DELETE FROM debug_events WHERE client_id = ?", (client_id,))
+        spans = self._conn.execute("DELETE FROM session_spans WHERE client_id = ?", (client_id,))
         self._conn.commit()
-        return int(flows.rowcount) + int(logs.rowcount) + int(debug.rowcount)
+        return int(flows.rowcount) + int(logs.rowcount) + int(debug.rowcount) + int(spans.rowcount)
 
     def client_counts(self) -> dict[str, dict[str, int]]:
         """Stored flow and log counts per client_id (unattributed rows are skipped)."""
@@ -435,6 +457,113 @@ class EncryptedSqliteStore:
         self._conn.commit()
         return int(cursor.rowcount)
 
+    def close_open_session(self, client_id: str, ended_at: str) -> None:
+        self._conn.execute(
+            """
+            UPDATE session_spans
+            SET ended_at = ?
+            WHERE client_id = ? AND ended_at IS NULL
+            """,
+            (ended_at, client_id),
+        )
+        self._conn.commit()
+
+    def insert_session_span(
+        self,
+        *,
+        client_id: str,
+        auth_state: str,
+        user_id: str,
+        anonymous_id: str,
+        email_mask: str,
+        profile_id: str,
+        login_provider: str,
+        started_at: str,
+    ) -> None:
+        self._conn.execute(
+            """
+            INSERT INTO session_spans (
+                client_id, auth_state, user_id, anonymous_id, email_mask,
+                profile_id, login_provider, started_at, ended_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, NULL)
+            """,
+            (
+                client_id,
+                auth_state,
+                user_id,
+                anonymous_id,
+                email_mask,
+                profile_id,
+                login_provider,
+                started_at,
+            ),
+        )
+        self._conn.commit()
+
+    def update_open_session_labels(
+        self,
+        client_id: str,
+        *,
+        email_mask: str,
+        login_provider: str,
+    ) -> None:
+        self._conn.execute(
+            """
+            UPDATE session_spans
+            SET email_mask = ?, login_provider = ?
+            WHERE client_id = ? AND ended_at IS NULL
+            """,
+            (email_mask, login_provider, client_id),
+        )
+        self._conn.commit()
+
+    def session_span_rows(self) -> list[dict[str, object]]:
+        rows = self._conn.execute(
+            """
+            SELECT client_id, auth_state, user_id, anonymous_id, email_mask,
+                   profile_id, login_provider, started_at, ended_at
+            FROM session_spans
+            ORDER BY started_at DESC
+            """
+        ).fetchall()
+        return [dict(row) for row in rows]
+
+    def matching_session_spans(
+        self,
+        *,
+        auth_state: str | None = None,
+        user_id: str | None = None,
+        profile_id: str | None = None,
+        anonymous_id: str | None = None,
+    ) -> list[tuple[str, str, str | None]]:
+        clauses: list[str] = []
+        params: list[object] = []
+        if auth_state:
+            clauses.append("auth_state = ?")
+            params.append(auth_state)
+        if user_id:
+            clauses.append("user_id = ?")
+            params.append(user_id)
+        if profile_id:
+            clauses.append("profile_id = ?")
+            params.append(profile_id)
+        if anonymous_id:
+            clauses.append("anonymous_id = ?")
+            params.append(anonymous_id)
+        where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
+        rows = self._conn.execute(
+            f"""
+            SELECT client_id, started_at, ended_at
+            FROM session_spans
+            {where}
+            """,
+            params,
+        ).fetchall()
+        return [
+            (str(row["client_id"]), str(row["started_at"]), row["ended_at"])
+            for row in rows
+        ]
+
     def save_log(self, log: LogRecord) -> None:
         self._conn.execute(
             """
@@ -471,10 +600,14 @@ class EncryptedSqliteStore:
         subsystem: str | None = None,
         text: str | None = None,
         client_ids: Sequence[str] | None = None,
+        spans: Sequence[tuple[str, str, str | None]] | None = None,
     ) -> list[LogRecord]:
         clauses: list[str] = []
         params: list[object] = []
-        _client_clause(client_ids, clauses, params)
+        if spans is not None:
+            _span_clause(spans, clauses, params)
+        else:
+            _client_clause(client_ids, clauses, params)
         if source:
             # Comma list such as "stdout,stderr" for the Logs page. Placeholders only.
             names = [part.strip() for part in source.split(",") if part.strip()]
@@ -565,8 +698,14 @@ class EncryptedSqliteStore:
             "DELETE FROM debug_events WHERE created_at < ?",
             (cutoff_s,),
         )
+        spans = self._conn.execute(
+            "DELETE FROM session_spans WHERE ended_at IS NOT NULL AND ended_at < ?",
+            (cutoff_s,),
+        )
         self._conn.commit()
-        return int(flows.rowcount) + int(logs.rowcount) + int(debug.rowcount)
+        return (
+            int(flows.rowcount) + int(logs.rowcount) + int(debug.rowcount) + int(spans.rowcount)
+        )
 
     def apply_retention_cleanup(self, *, now: datetime | None = None) -> int:
         """No-op for session retention; 24h policy drops rows older than 24 hours."""
@@ -757,6 +896,31 @@ def _client_clause(
         return
     clauses.append(f"client_id IN ({','.join('?' for _ in ids)})")
     params.extend(ids)
+
+
+def _span_clause(
+    spans: Sequence[tuple[str, str, str | None]],
+    clauses: list[str],
+    params: list[object],
+) -> None:
+    """A row matches when its client_id has a span covering created_at.
+
+    An empty span list matches nothing. A closed span is half-open: started_at <= t < ended_at.
+    """
+    parts: list[str] = []
+    for client_id, started_at, ended_at in spans:
+        if not client_id or not started_at:
+            continue
+        if ended_at:
+            parts.append("(client_id = ? AND created_at >= ? AND created_at < ?)")
+            params.extend([client_id, started_at, ended_at])
+        else:
+            parts.append("(client_id = ? AND created_at >= ?)")
+            params.extend([client_id, started_at])
+    if not parts:
+        clauses.append("0")
+        return
+    clauses.append("(" + " OR ".join(parts) + ")")
 
 
 def _iso(value: datetime) -> str:

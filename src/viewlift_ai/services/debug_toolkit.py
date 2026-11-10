@@ -5,6 +5,7 @@ from __future__ import annotations
 import re
 from collections.abc import Callable
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any
 from urllib import error as urlerror
 from urllib import request as urlrequest
@@ -288,14 +289,6 @@ DEBUG_MODULES: tuple[DebugModule, ...] = (
         note="Uses captured proxy/SDK flows. Device ott.snapshot lists registered clients.",
     ),
     DebugModule(
-        "flags",
-        "Toolkit",
-        "Feature Flags",
-        "Toggle flags inside the app.",
-        "app-only",
-        note=_APP_ONLY,
-    ),
-    DebugModule(
         "bug", "Toolkit", "Bug Reporter", "Annotated screenshots.", "app-only", note=_APP_ONLY
     ),
     DebugModule(
@@ -571,6 +564,49 @@ def set_device_location(
     if clear:
         return {"ok": True, "detail": f"Cleared simulated location on {device}."}
     return {"ok": True, "detail": f"Location set to {latitude}, {longitude} on {device}."}
+
+
+ASSET_REVEAL_SUFFIXES = frozenset({".png", ".jpg", ".jpeg", ".heic", ".webp", ".pdf", ".mp4", ".mov"})
+
+
+def reveal_simulator_asset(
+    path: str,
+    *,
+    root: Path | None = None,
+    runner: Callable[..., Any] | None = None,
+) -> dict[str, object]:
+    """Show one simulator bundle file in Finder. Refuses every other path."""
+    raw = (path or "").strip()
+    if not raw.startswith("/") or "\x00" in raw:
+        raise ValueError("Path must be an absolute simulator file.")
+    base = (root or (Path.home() / "Library/Developer/CoreSimulator")).resolve()
+    try:
+        resolved = Path(raw).resolve(strict=True)
+    except (OSError, RuntimeError) as exc:
+        raise ValueError("That file is not on this Mac. Finder can open simulator assets only.") from exc
+    if not resolved.is_file():
+        raise ValueError("That file is not on this Mac. Finder can open simulator assets only.")
+    try:
+        resolved.relative_to(base)
+    except ValueError as exc:
+        raise ValueError("Finder can open simulator assets only.") from exc
+    if resolved.suffix.lower() not in ASSET_REVEAL_SUFFIXES:
+        raise ValueError("That file type cannot be shown from the asset audit.")
+    run = runner or _subprocess_run
+    try:
+        completed = run(
+            ["open", "-R", str(resolved)],
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+    except (FileNotFoundError, OSError) as exc:
+        raise ValueError("Could not open Finder.") from exc
+    if getattr(completed, "returncode", 1) != 0:
+        detail = (getattr(completed, "stderr", "") or "").strip() or "Could not open Finder."
+        raise ValueError(detail)
+    return {"ok": True, "path": str(resolved)}
 
 
 def _subprocess_run(argv: list[str], **kwargs: Any) -> Any:

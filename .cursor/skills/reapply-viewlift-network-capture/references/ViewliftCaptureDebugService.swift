@@ -15,8 +15,18 @@ final class ViewliftCaptureDebugService {
 
     private init() {}
 
+    private var sessionWatch: Task<Void, Never>?
+
     func start() {
         OTTDebugRegistry.register(AppCMSOTTDebugSnapshot.shared)
+        AppCMSOTTDebugSnapshot.shared.publishCaptureSession()
+        sessionWatch?.cancel()
+        sessionWatch = Task {
+            while !Task.isCancelled {
+                try? await Task.sleep(nanoseconds: 2_000_000_000)
+                AppCMSOTTDebugSnapshot.shared.publishCaptureSession()
+            }
+        }
         CaptureService.shared.start()
     }
 }

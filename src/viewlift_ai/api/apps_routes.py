@@ -37,8 +37,11 @@ def apps_payload(request: Request) -> dict[str, object]:
     sdk_apps = []
     for device in tree["devices"]:
         for app in device["apps"]:
-            app["activity"] = activity.get(app["id"])
+            raw = activity.get(app["id"]) if isinstance(activity, dict) else None
+            app["activity"] = raw if isinstance(raw, dict) else None
+            app["peer"] = str(raw.get("peer") or "") if isinstance(raw, dict) else ""
             sdk_apps.append(app)
+    tree["accounts"] = _sessions(request).session_accounts()
     registry = getattr(request.app.state, "proxy_clients", None)
     rows = registry.snapshot() if registry is not None else []
     tree["proxy_clients"] = unmatched_proxy_rows(rows, sdk_apps, activity)

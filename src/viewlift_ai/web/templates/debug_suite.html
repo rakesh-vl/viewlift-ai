@@ -1,7 +1,7 @@
 {% extends "base.html" %}
 {% block title %}Remote Debug Suite · Viewlift AI{% endblock %}
 {% block content %}
-<link rel="stylesheet" href="/static/css/debug.css?v=24">
+<link rel="stylesheet" href="/static/css/debug.css?v=26">
 <link rel="stylesheet" href="/static/css/memory.css?v=2">
 <section class="debug-session-bar">
   <span id="debug-client-name" class="debug-client-name">No app selected</span>
@@ -12,7 +12,7 @@
 <nav class="debug-tabs" id="debug-tabs" aria-label="Debug tools">
   {% for tab, label in [("live", "Live"), ("ott", "OTT"), ("analytics", "Analytics"), ("hangs", "Hangs"), ("performance", "Performance"),
                         ("memory", "Memory"), ("ui", "UI"), ("swiftui", "SwiftUI"), ("assets", "Assets"),
-                        ("accessibility", "Accessibility"), ("storage", "Storage"), ("flags", "Flags"),
+                        ("accessibility", "Accessibility"), ("storage", "Storage"),
                         ("bug", "Bug report"), ("macro", "Macros"), ("runtime", "Runtime"), ("explorer", "Explorer"),
                         ("push", "Push"), ("network-tools", "Network tools"), ("settings", "Device settings")] %}
   <button type="button" class="btn ghost" data-debug-tab="{{ tab }}">{{ label }}</button>
@@ -322,6 +322,11 @@
 
 <section class="debug-panel hidden" data-panel="assets">
   <div class="panel-title"><h2>Asset audit</h2>
+    <label class="asset-filter" for="assets-bundle">Bundle
+      <select id="assets-bundle" disabled>
+        <option value="">All bundles</option>
+      </select>
+    </label>
     <button class="btn ghost" data-command="assets.audit">Run audit</button>
   </div>
   <div id="assets-result" class="debug-result"></div>
@@ -364,13 +369,6 @@
     <button class="btn ghost" id="storage-sql-schema" type="button">SQLite schema</button>
   </form>
   <div id="storage-inspector" class="debug-result"></div>
-</section>
-
-<section class="debug-panel hidden" data-panel="flags">
-  <div class="panel-title"><h2>Feature flags</h2>
-    <button class="btn ghost" data-command="feature_flags.list">Refresh</button>
-  </div>
-  <div id="flags-result" class="debug-result"></div>
 </section>
 
 <section class="debug-panel hidden" data-panel="bug">
@@ -475,6 +473,6 @@
 <script src="/static/js/memory.js?v=5"></script>
 <script src="/static/js/live.js?v=4"></script>
 <script src="/static/js/explorer.js?v=4"></script>
-<script src="/static/js/debug.js?v=36"></script>
+<script src="/static/js/debug.js?v=38"></script>
 <script>document.addEventListener("DOMContentLoaded", () => ViewliftDebug.init());</script>
 {% endblock %}

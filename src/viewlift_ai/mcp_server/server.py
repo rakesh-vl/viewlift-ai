@@ -75,9 +75,19 @@ def list_apps(
     device_key: str = "",
     bundle_id: str = "",
     online_only: bool = False,
+    auth_state: str = "",
 ) -> dict[str, Any]:
-    """List apps. Optional filters: device_key, bundle_id, online_only."""
-    args = {"device_key": device_key, "bundle_id": bundle_id, "online_only": online_only}
+    """List apps. Optional filters: device_key, bundle_id, online_only, auth_state.
+
+    auth_state is cold_start, guest, logged_in, tve, or unknown. Two phones running the
+    same app have different client_id and device_key values. Account ids stay on the dashboard.
+    """
+    args = {
+        "device_key": device_key,
+        "bundle_id": bundle_id,
+        "online_only": online_only,
+        "auth_state": auth_state,
+    }
     return _run("list_apps", args, lambda: tools.list_apps(_api(), **args))
 
 

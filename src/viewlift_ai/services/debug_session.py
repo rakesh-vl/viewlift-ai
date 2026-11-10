@@ -29,6 +29,8 @@ CLIENT_TTL_SECONDS = 45.0
 # An app that reported "background" stays listed as backgrounded for this long.
 BACKGROUND_GRACE_SECONDS = 1800.0
 LIFECYCLE_STATES = frozenset({"foreground", "background"})
+AUTH_STATES = frozenset({"cold_start", "guest", "logged_in", "tve", "unknown"})
+_GUEST_STATES = frozenset({"cold_start", "guest", "unknown"})
 PERSIST_INTERVAL_SECONDS = 30.0
 STALL_HINT_SECONDS = 8.0
 COMMAND_TTL_SECONDS = 30.0
@@ -85,7 +87,6 @@ READ_COMMANDS = {
     "storage.file_read",
     "storage.sqlite_schema",
     "storage.sqlite_query",
-    "feature_flags.list",
     "runtime.search",
     "runtime.describe",
     "macro.list",
@@ -125,8 +126,6 @@ MUTATING_COMMANDS = {
     "storage.file_write",
     "storage.snapshot_create",
     "storage.snapshot_restore",
-    "feature_flags.set",
-    "feature_flags.reset",
     "macro.record_start",
     "macro.record_stop",
     "macro.replay",
@@ -239,6 +238,12 @@ class DebugClient:
     debugger_attached: bool = False
     crashed_at: float = 0.0
     published_state: str = ""
+    auth_state: str = ""
+    user_id: str = ""
+    anonymous_id: str = ""
+    email_mask: str = ""
+    profile_id: str = ""
+    login_provider: str = ""
 
     def presence(self, now: float) -> str:
         """online: talking now. background: app said it left the foreground. offline: silent."""
@@ -270,6 +275,12 @@ class DebugClient:
             "lifecycle": self.lifecycle or "foreground",
             "source": "runner" if self.capabilities.get("runner") == "available" else "sdk",
             "last_seen_at": datetime.fromtimestamp(self.last_seen, UTC).isoformat(),
+            "auth_state": self.auth_state,
+            "user_id": self.user_id,
+            "anonymous_id": self.anonymous_id,
+            "email_mask": self.email_mask,
+            "profile_id": self.profile_id,
+            "login_provider": self.login_provider,
         }
 
     def persisted_payload(self) -> dict[str, object]:
@@ -288,6 +299,12 @@ class DebugClient:
             "device_model": self.device_model,
             "is_simulator": self.is_simulator,
             "device_hint": self.device_hint,
+            "auth_state": self.auth_state,
+            "user_id": self.user_id,
+            "anonymous_id": self.anonymous_id,
+            "email_mask": self.email_mask,
+            "profile_id": self.profile_id,
+            "login_provider": self.login_provider,
         }
 
 
@@ -374,6 +391,12 @@ class DebugSessionService:
             device_hint=_short(payload.get("device_hint"), 64),
             first_seen=previous.first_seen if previous else now,
             debugger_attached=bool(payload.get("debugger_attached")),
+            auth_state=previous.auth_state if previous else "",
+            user_id=previous.user_id if previous else "",
+            anonymous_id=previous.anonymous_id if previous else "",
+            email_mask=previous.email_mask if previous else "",
+            profile_id=previous.profile_id if previous else "",
+            login_provider=previous.login_provider if previous else "",
         )
         with self._lock:
             self._clients[client_id] = client
@@ -386,6 +409,11 @@ class DebugSessionService:
             self._recover_waiters(client_id)
         self._publish({"type": "debug-client", "client": client.as_dict()})
         self._publish_apps_changed()
+        session = payload.get("session")
+        if isinstance(session, dict):
+            parsed = parse_session(session)
+            if parsed is not None:
+                self.record_session(client_id, parsed)
         return {"ok": True, "client_id": client_id, "commands": sorted(ALLOWED_COMMANDS)}
 
     def _recover_waiters(self, client_id: str) -> None:
@@ -676,6 +704,154 @@ class DebugSessionService:
     def client_ids_for_device(self, device_key: str) -> list[str]:
         with self._lock:
             return [item.id for item in self._clients.values() if item.device_key == device_key]
+
+    def client_ids_for_bundle(self, bundle_id: str) -> list[str]:
+        with self._lock:
+            return [item.id for item in self._clients.values() if item.bundle_id == bundle_id]
+
+    def record_session(self, client_id: str, session: dict[str, str]) -> bool:
+        """Open a span when who is signed in changes. Same identity only refreshes the label."""
+        stamp = datetime.fromtimestamp(self.time_fn(), UTC).isoformat()
+        key = (
+            session["auth_state"],
+            session["user_id"],
+            session["anonymous_id"],
+            session["profile_id"],
+        )
+        with self._lock:
+            client = self._clients.get(client_id)
+            if client is None:
+                return False
+            current = (client.auth_state, client.user_id, client.anonymous_id, client.profile_id)
+            if client.auth_state and current == key:
+                if (
+                    client.email_mask == session["email_mask"]
+                    and client.login_provider == session["login_provider"]
+                ):
+                    return False
+                client.email_mask = session["email_mask"]
+                client.login_provider = session["login_provider"]
+                opened = False
+            else:
+                client.auth_state = session["auth_state"]
+                client.user_id = session["user_id"]
+                client.anonymous_id = session["anonymous_id"]
+                client.email_mask = session["email_mask"]
+                client.profile_id = session["profile_id"]
+                client.login_provider = session["login_provider"]
+                opened = True
+        if opened:
+            self.store.close_open_session(client_id, stamp)
+            self.store.insert_session_span(
+                client_id=client_id,
+                auth_state=session["auth_state"],
+                user_id=session["user_id"],
+                anonymous_id=session["anonymous_id"],
+                email_mask=session["email_mask"],
+                profile_id=session["profile_id"],
+                login_provider=session["login_provider"],
+                started_at=stamp,
+            )
+        else:
+            self.store.update_open_session_labels(
+                client_id,
+                email_mask=session["email_mask"],
+                login_provider=session["login_provider"],
+            )
+        self._persist(client)
+        self._publish_apps_changed()
+        return True
+
+    def matching_spans(
+        self,
+        *,
+        auth_state: str | None = None,
+        user_id: str | None = None,
+        profile_id: str | None = None,
+        anonymous_id: str | None = None,
+    ) -> list[tuple[str, str, str | None]]:
+        return self.store.matching_session_spans(
+            auth_state=auth_state,
+            user_id=user_id,
+            profile_id=profile_id,
+            anonymous_id=anonymous_id,
+        )
+
+    def session_accounts(self) -> dict[str, object]:
+        """Distinct sign-in identities seen in spans, for the scope picker."""
+        users: dict[str, dict[str, object]] = {}
+        guests: dict[str, set[str]] = {}
+        states: set[str] = set()
+        with self._lock:
+            clients = {item.id: item for item in self._clients.values()}
+        for row in self.store.session_span_rows():
+            state = str(row.get("auth_state") or "")
+            if state in AUTH_STATES and state != "unknown":
+                states.add(state)
+            client_id = str(row.get("client_id") or "")
+            client = clients.get(client_id)
+            device = client.device_key if client and client.device_key else client_id
+            user_id = str(row.get("user_id") or "")
+            if user_id:
+                bucket = users.setdefault(
+                    user_id,
+                    {
+                        "user_id": user_id,
+                        "email_mask": "",
+                        "login_provider": "",
+                        "devices": set(),
+                        "profiles": set(),
+                        "started_at": "",
+                    },
+                )
+                started = str(row.get("started_at") or "")
+                if started >= str(bucket["started_at"]):
+                    bucket["started_at"] = started
+                    mask = str(row.get("email_mask") or "")
+                    provider = str(row.get("login_provider") or "")
+                    if mask:
+                        bucket["email_mask"] = mask
+                    if provider:
+                        bucket["login_provider"] = provider
+                devices = bucket["devices"]
+                profiles = bucket["profiles"]
+                assert isinstance(devices, set)
+                assert isinstance(profiles, set)
+                devices.add(device)
+                profile_id = str(row.get("profile_id") or "")
+                if profile_id:
+                    profiles.add(profile_id)
+            if state == "guest":
+                anonymous_id = str(row.get("anonymous_id") or "")
+                if anonymous_id:
+                    guests.setdefault(anonymous_id, set()).add(device)
+        user_rows = []
+        for item in users.values():
+            devices = item.pop("devices")
+            profiles = item.pop("profiles")
+            item.pop("started_at", None)
+            assert isinstance(devices, set)
+            assert isinstance(profiles, set)
+            names = sorted(profiles)
+            user_rows.append(
+                {
+                    "user_id": item["user_id"],
+                    "email_mask": item["email_mask"],
+                    "login_provider": item["login_provider"],
+                    "devices": len(devices),
+                    "profiles": names if len(names) > 1 else [],
+                }
+            )
+        user_rows.sort(key=lambda row: str(row["email_mask"] or row["user_id"]).lower())
+        guest_rows = [
+            {"anonymous_id": key, "devices": len(ids)}
+            for key, ids in sorted(guests.items())
+        ]
+        return {
+            "auth_states": sorted(states),
+            "users": user_rows,
+            "guests": guest_rows,
+        }
 
     def find_by_udid(self, udid: str) -> list[dict[str, object]]:
         """Simulator clients whose device_key is the given simulator UDID."""
@@ -1006,6 +1182,11 @@ class DebugSessionService:
         if module == "lifecycle":
             self.record_lifecycle(client_id, kind)
             return {"ok": True}
+        if module == "session":
+            parsed = parse_session(clean)
+            if parsed is not None:
+                self.record_session(client_id, parsed)
+            return {"ok": True}
         if module == "crash" and kind == "fatal":
             return self._ingest_crash(client_id, payload, clean)
         if module == "crash" and kind in ("replay-chunk", "replay-failed"):
@@ -1147,6 +1328,12 @@ class DebugSessionService:
                 device_model=_short(payload.get("device_model"), 64),
                 is_simulator=bool(payload.get("is_simulator")),
                 device_hint=_short(payload.get("device_hint"), 64),
+                auth_state=_short(payload.get("auth_state"), 32),
+                user_id=_short(payload.get("user_id"), 200),
+                anonymous_id=_short(payload.get("anonymous_id"), 200),
+                email_mask=_email_mask(payload.get("email_mask")),
+                profile_id=_short(payload.get("profile_id"), 200),
+                login_provider=_short(payload.get("login_provider"), 64),
                 first_seen=float(row.get("first_seen") or 0.0),
                 superseded_by=(str(row["superseded_by"]) if row.get("superseded_by") else None),
                 persisted_at=float(row.get("last_seen") or 0.0),
@@ -1200,6 +1387,34 @@ def _int(value: object) -> int:
 
 def _short(value: object, limit: int) -> str:
     return str(value or "").strip()[:limit]
+
+
+def _email_mask(value: object) -> str:
+    """Keep a masked address. A raw address is dropped."""
+    text = _short(value, 120)
+    if "@" in text and "***" not in text:
+        return ""
+    return text
+
+
+def parse_session(payload: dict[str, Any]) -> dict[str, str] | None:
+    """Session badge from a register body or a session event. Raw email is ignored."""
+    keys = ("auth_state", "user_id", "anonymous_id", "email_mask", "profile_id", "login_provider")
+    if not any(key in payload for key in keys):
+        return None
+    state = _short(payload.get("auth_state"), 32).lower().replace(" ", "_") or "unknown"
+    if state not in AUTH_STATES:
+        state = "unknown"
+    user_id = "" if state in _GUEST_STATES else _short(payload.get("user_id"), 200)
+    profile_id = "" if state in _GUEST_STATES else _short(payload.get("profile_id"), 200)
+    return {
+        "auth_state": state,
+        "user_id": user_id,
+        "anonymous_id": _short(payload.get("anonymous_id"), 200),
+        "email_mask": _email_mask(payload.get("email_mask")),
+        "profile_id": profile_id,
+        "login_provider": _short(payload.get("login_provider"), 64),
+    }
 
 
 def _capabilities(value: object) -> dict[str, str]:

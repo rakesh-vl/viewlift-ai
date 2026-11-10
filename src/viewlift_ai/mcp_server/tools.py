@@ -50,9 +50,11 @@ def _brief(clients: list[dict[str, Any]]) -> list[dict[str, object]]:
                 "bundle_id": client.get("bundle_id"),
                 "device_key": client.get("device_key"),
                 "device_name": client.get("device_name"),
+                "device_model": client.get("device_model"),
                 "platform": client.get("platform"),
                 "online": client.get("online"),
                 "is_simulator": client.get("is_simulator"),
+                "auth_state": client.get("auth_state") or "unknown",
             }
         )
     return rows
@@ -120,8 +122,9 @@ def list_apps(
     device_key: str = "",
     bundle_id: str = "",
     online_only: bool = False,
+    auth_state: str = "",
 ) -> dict[str, Any]:
-    """List apps. Filter by device_key, bundle_id, or online. Does not pick one."""
+    """List apps. Filter by device, bundle, online, or auth_state. Does not pick one."""
     try:
         clients = _apps(api)
     except ConsoleError as exc:
@@ -133,6 +136,8 @@ def list_apps(
         rows = [item for item in rows if item.get("bundle_id") == bundle_id]
     if online_only:
         rows = [item for item in rows if item.get("online")]
+    if auth_state:
+        rows = [item for item in rows if (item.get("auth_state") or "unknown") == auth_state]
     return {"apps": _brief(rows), "count": len(rows)}
 
 
@@ -379,7 +384,7 @@ def app_inspect(
     memory.object, memory.live_start, memory.live_stop, ui.hierarchy,
     ui.describe, ui.layers, ui.screenshot, swiftui.renders, assets.audit, accessibility.audit,
     storage.defaults, storage.keychain_metadata, storage.files, storage.file_read,
-    storage.sqlite_schema, storage.sqlite_query, feature_flags.list, runtime.search,
+    storage.sqlite_schema, storage.sqlite_query, runtime.search,
     runtime.describe, macro.list, bug.capture, ott.snapshot, ott.sections, ott.section,
     ott.diagnostics, hang.list, crash.list,
     activity.snapshot, activity.live_start, activity.live_stop, playback.snapshot, playback.drm,
@@ -461,8 +466,8 @@ def app_mutate(
     """Change one app. confirm must be true. Does not enable proxy rewrite.
 
     Commands: ui.highlight, ui.edit, ui.visual, storage.defaults_set, storage.file_write,
-    storage.snapshot_create, storage.snapshot_restore, feature_flags.set, feature_flags.reset,
-    macro.record_start, macro.record_stop, macro.replay, push.local, nav.open_url, explorer.set,
+    storage.snapshot_create, storage.snapshot_restore, macro.record_start, macro.record_stop,
+    macro.replay, push.local, nav.open_url, explorer.set,
     explorer.call, storage.defaults_delete, storage.file_rename, storage.file_delete,
     storage.cookie_delete, settings.set, ott.action.
     """

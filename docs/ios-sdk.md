@@ -108,7 +108,7 @@ Crash context and replay: while the `crash` module is on, the SDK writes what th
 
 Hangs: with the `hang` module on, a main-thread stall longer than 400 ms is recorded with the screen, recent taps, console lines, and a stack sampled while the thread was stuck. Each stall is also sent immediately as module `hang`, kind `detected`. The dashboard shows a toast that opens Debug, then Hangs. `hang.list` returns the stored stalls.
 
-`DebugModule` cases: `performance`, `memory`, `ui`, `swiftui`, `assets`, `accessibility`, `storage`, `feature_flags`, `runtime`, `explorer`, `macro`, `bug`, `push`, `ott`, `crash`, `hang`, `activity`, `playback`, `nav`, `preview`, `replay`.
+`DebugModule` cases: `performance`, `memory`, `ui`, `swiftui`, `assets`, `accessibility`, `storage`, `runtime`, `explorer`, `macro`, `bug`, `push`, `ott`, `crash`, `hang`, `activity`, `playback`, `nav`, `preview`, `replay`.
 
 The Device settings tab in the Debug Suite can override `debugModules`, `captureNetwork`, both body limits and `bodyContentTypes`. Overrides are stored in the `viewlift.capture.settings` defaults suite and applied on top of the configuration passed to `start()`. They can only turn off modules the app enabled, never add new ones. Body limits are capped at 262 144 bytes. Reset deletes the overrides.
 
@@ -147,13 +147,6 @@ MemoryDebugService.shared.startLiveTracking()
 
 Each leak report contains the class, its creation stack, the screen it was created on, the objects that still reference it, retain cycle candidates found through Swift reflection and Objective-C ivars, likely causes (closures, timers, observers, non-weak delegates, a view controller still attached to a parent), the taps and scrolls before the leak, and console lines. `memory.heap` walks the malloc heap and counts live instances of every app class, with growth since the previous snapshot. Reflection cannot tell weak references from strong ones, so cycles are candidates to confirm in the Xcode memory graph.
 
-Feature flags that the Debug Suite can toggle:
-
-```swift
-DebugFeatureFlags.shared.register(DebugFeatureFlag(key: "new_player", title: "New player", defaultValue: false))
-let enabled = DebugFeatureFlags.shared.isEnabled("new_player")
-```
-
 App-specific OTT state for the `ott.snapshot` command:
 
 ```swift
@@ -166,6 +159,21 @@ OTTDebugRegistry.register(myOTTSnapshot)
 ```
 
 The registry holds the provider weakly, so keep a strong reference. Never put token values or other secrets in the snapshot.
+
+Tell the console who is signed in. Call this on login, logout, and profile change. The bridge sends it with registration and again when it changes. `authState` is `cold_start`, `guest`, `logged_in`, `tve`, or `unknown`. Leave `userId` empty for a guest. Pass a masked email (`a***@example.com`). A raw address is dropped.
+
+```swift
+reportCaptureSession(CaptureSessionIdentity(
+    authState: "logged_in",
+    userId: userId,
+    anonymousId: anonymousId,
+    emailMask: "a***@example.com",
+    profileId: profileId,
+    loginProvider: "apple"
+))
+```
+
+AppCMS calls `AppCMSOTTDebugSnapshot.publishCaptureSession()` from the snapshot and again every two seconds while capture is running, so a login is picked up without a new dashboard command.
 
 Current screen and playback for the Debug Suite Live tab. The tab also takes a screenshot and tails this app's logs. With no provider, it still reports the top screen and any `AVPlayerLayer` (playing, paused, or buffering; live when the item duration is indefinite). Protected video frames stay black in the screenshot. The probe never reads the asset URL.
 

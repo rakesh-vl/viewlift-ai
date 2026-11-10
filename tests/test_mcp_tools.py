@@ -124,8 +124,8 @@ def test_mutate_without_confirm_does_not_enqueue() -> None:
     result = app_mutate(  # type: ignore[arg-type]
         console,
         client_id="app-a",
-        command="feature_flags.set",
-        payload={"key": "x", "enabled": True},
+        command="storage.defaults_set",
+        payload={"key": "x", "value": True},
         confirm=False,
     )
     assert result["detail"] == "confirm must be true"

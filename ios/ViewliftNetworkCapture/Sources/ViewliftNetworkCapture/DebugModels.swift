@@ -15,7 +15,6 @@ public enum DebugModule: String, CaseIterable, Hashable, Sendable {
     case assets
     case accessibility
     case storage
-    case featureFlags = "feature_flags"
     case runtime
     case macro
     case bug
@@ -102,6 +101,8 @@ public struct DebugClientRegistration: Codable, Sendable {
     public let sdkVersion: String
     /// A debugger holds a fatal trap, so a silent app may be paused in Xcode rather than gone.
     public let debuggerAttached: Bool
+    /// Who is signed in, when the host has reported a session. Nil until then.
+    public let session: CaptureSessionIdentity?
 
     public init(
         clientId: String,
@@ -115,7 +116,8 @@ public struct DebugClientRegistration: Codable, Sendable {
         executable: String = "",
         urlSchemes: [String] = [],
         frameworks: [DebugFramework] = [],
-        device: DeviceIdentity? = nil
+        device: DeviceIdentity? = nil,
+        session: CaptureSessionIdentity? = nil
     ) {
         self.deviceKey = device?.deviceKey ?? ""
         self.deviceName = device?.deviceName ?? ""
@@ -135,6 +137,7 @@ public struct DebugClientRegistration: Codable, Sendable {
         self.executable = executable
         self.urlSchemes = urlSchemes
         self.frameworks = frameworks
+        self.session = session
     }
 
     enum CodingKeys: String, CodingKey {
@@ -156,6 +159,7 @@ public struct DebugClientRegistration: Codable, Sendable {
         case deviceHint = "device_hint"
         case sdkVersion = "sdk_version"
         case debuggerAttached = "debugger_attached"
+        case session
     }
 }
 

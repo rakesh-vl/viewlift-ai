@@ -101,7 +101,7 @@ These never run code on a device.
 | `console_status` | | Reachable or not, online apps, whether reveal is unlocked, whether any rewrite rule is active, and the policy |
 | `security_policy` | | The mask list and both switches. No console call |
 | `list_devices` | | Apps grouped by `device_key`. One phone can hold many apps |
-| `list_apps` | `device_key?`, `bundle_id?`, `online_only?` | `client_id`, name, bundle id, device, platform, online |
+| `list_apps` | `device_key?`, `bundle_id?`, `online_only?`, `auth_state?` | `client_id`, name, bundle id, device, model, `auth_state`, platform, online. Same app on two phones is two rows. User ids stay on the dashboard. |
 | `get_app` | `client_id` | Version, build, capabilities, URL schemes, linked frameworks. The unlock token is removed |
 | `describe_command` | `command?` | One command, or every command, with read/write and the payload note |
 
@@ -210,7 +210,6 @@ Stored on this Mac. Bodies and headers are redacted. Unattributed proxy rows (no
 | Storage | `storage.sqlite_schema` | `path` | Table list. The database is opened read-only |
 | Storage | `storage.sqlite_query` | `path`, `query` | One `SELECT`, `PRAGMA`, `WITH`, or `EXPLAIN`. Up to 1,000 rows |
 | Storage | `storage.cookies` | | `HTTPCookieStorage` cookies. Values are masked |
-| Flags | `feature_flags.list` | | Debug flag values and overrides |
 | Runtime | `runtime.search` | `query` | Objective-C classes matching the query |
 | Runtime | `runtime.describe` | `class` | Methods and properties |
 | Runtime | `runtime.libraries` | | Loaded images and their class counts. App images come first |
@@ -256,8 +255,6 @@ Every tool in this section requires `confirm: true`. Call it only after telling 
 | `storage.snapshot_create` | `paths` | Saves defaults and the named files |
 | `storage.snapshot_restore` | snapshot | Restores a saved snapshot |
 | `storage.cookie_delete` | `name`, `domain`, `path` | Deletes matching cookies |
-| `feature_flags.set` | `key`, `enabled` | Overrides a debug flag |
-| `feature_flags.reset` | `key` | Drops an override |
 | `macro.record_start` | | Starts recording touches |
 | `macro.record_stop` | | Stops and saves the macro |
 | `macro.replay` | | Replays a recorded macro |

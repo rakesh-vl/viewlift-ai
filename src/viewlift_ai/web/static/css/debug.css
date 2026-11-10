@@ -227,6 +227,54 @@
   vertical-align: top;
 }
 .debug-table th { color: var(--muted); font: 500 var(--fs-11) var(--font-sans); border-bottom-color: var(--line); }
+.debug-table th .sort-col {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  margin: 0;
+  padding: 0;
+  border: 0;
+  background: none;
+  color: inherit;
+  font: inherit;
+  line-height: inherit;
+  white-space: nowrap;
+  cursor: pointer;
+  appearance: none;
+}
+.debug-table th[aria-sort="ascending"] .sort-col,
+.debug-table th[aria-sort="descending"] .sort-col { color: var(--text-strong); }
+.debug-table .sort-mark { font-size: 8px; line-height: 1; }
+.debug-table td.asset-size { font-variant-numeric: tabular-nums; }
+.debug-table td.asset-path {
+  white-space: normal;
+  overflow-wrap: anywhere;
+  min-width: 280px;
+}
+.asset-finder {
+  height: 22px;
+  margin-left: 8px;
+  padding: 0 8px;
+  font-size: var(--fs-11);
+  vertical-align: baseline;
+}
+.asset-filter {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--muted);
+  font: 500 var(--fs-11) var(--font-sans);
+}
+.asset-filter select {
+  max-width: 280px;
+  height: var(--control-h);
+  padding: 0 8px;
+  border: 1px solid var(--line);
+  border-radius: var(--r-control);
+  background: var(--surface);
+  color: var(--text);
+  font: var(--fs-12) var(--font-mono);
+}
 
 .capability { font: 500 var(--fs-11) var(--font-mono); }
 .capability.available { color: var(--ok); }

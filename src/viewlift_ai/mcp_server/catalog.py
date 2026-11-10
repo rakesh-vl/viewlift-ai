@@ -62,8 +62,8 @@ TOOL_GROUPS: tuple[ToolGroup, ...] = (
             ),
             ToolDoc(
                 "list_apps",
-                "device_key?, bundle_id?, online_only?",
-                "Flat list with client_id, bundle id, device, and online state.",
+                "device_key?, bundle_id?, online_only?, auth_state?",
+                "Flat list with client_id, bundle id, device, model, auth state, and online state.",
             ),
             ToolDoc(
                 "get_app",
@@ -762,7 +762,6 @@ COMMAND_NOTES: dict[str, str] = {
     "storage.file_read": "One sandbox file (payload: path)",
     "storage.sqlite_schema": "Tables of one database (payload: path)",
     "storage.sqlite_query": "SELECT, PRAGMA, WITH, or EXPLAIN only",
-    "feature_flags.list": "Debug flag values and overrides",
     "runtime.search": "Objective-C classes (payload: query)",
     "runtime.describe": "Methods and properties (payload: class)",
     "macro.list": "Recorded touch macros",
@@ -799,8 +798,6 @@ COMMAND_NOTES: dict[str, str] = {
     "storage.file_write": "Write a sandbox file (payload: path, content)",
     "storage.snapshot_create": "Save defaults and files (payload: paths)",
     "storage.snapshot_restore": "Restore a saved snapshot",
-    "feature_flags.set": "Override a flag (payload: key, enabled)",
-    "feature_flags.reset": "Drop an override (payload: key)",
     "macro.record_start": "Start recording touches",
     "macro.record_stop": "Stop and save the macro",
     "macro.replay": "Replay a recorded macro",

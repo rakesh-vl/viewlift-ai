@@ -9,7 +9,7 @@ from fastapi import APIRouter, HTTPException, Query, Request
 from fastapi.responses import HTMLResponse, JSONResponse, PlainTextResponse, Response
 from fastapi.templating import Jinja2Templates
 
-from viewlift_ai.api.scope import resolve_client_ids
+from viewlift_ai.api.scope import scope_kwargs
 from viewlift_ai.proxy.redact import RedactionService
 from viewlift_ai.services.flow_export import build_curl, har_json
 from viewlift_ai.services.flow_present import flow_detail, flow_summary
@@ -103,6 +103,11 @@ def list_flows(
     limit: Annotated[int, Query(ge=1, le=1000)] = 200,
     client_id: Annotated[list[str] | None, Query()] = None,
     device_key: Annotated[str | None, Query()] = None,
+    bundle_id: Annotated[str | None, Query()] = None,
+    auth_state: Annotated[str | None, Query()] = None,
+    user_id: Annotated[str | None, Query()] = None,
+    profile_id: Annotated[str | None, Query()] = None,
+    anonymous_id: Annotated[str | None, Query()] = None,
 ) -> dict[str, object]:
     flows = _store(request).list_flows(
         limit=limit,
@@ -113,7 +118,16 @@ def list_flows(
         text=text or None,
         kind=_kind_filter(kind),
         operation=operation or None,
-        client_ids=resolve_client_ids(request, client_id, device_key),
+        **scope_kwargs(
+            request,
+            client_id,
+            device_key,
+            bundle_id,
+            auth_state,
+            user_id,
+            profile_id,
+            anonymous_id,
+        ),
     )
     return {"flows": [flow_summary(f) for f in flows], "count": len(flows)}
 
@@ -215,6 +229,11 @@ def export_har(
     limit: Annotated[int, Query(ge=1, le=1000)] = 200,
     client_id: Annotated[list[str] | None, Query()] = None,
     device_key: Annotated[str | None, Query()] = None,
+    bundle_id: Annotated[str | None, Query()] = None,
+    auth_state: Annotated[str | None, Query()] = None,
+    user_id: Annotated[str | None, Query()] = None,
+    profile_id: Annotated[str | None, Query()] = None,
+    anonymous_id: Annotated[str | None, Query()] = None,
 ) -> Response:
     flows = _store(request).list_flows(
         limit=limit,
@@ -225,7 +244,16 @@ def export_har(
         text=text or None,
         kind=_kind_filter(kind),
         operation=operation or None,
-        client_ids=resolve_client_ids(request, client_id, device_key),
+        **scope_kwargs(
+            request,
+            client_id,
+            device_key,
+            bundle_id,
+            auth_state,
+            user_id,
+            profile_id,
+            anonymous_id,
+        ),
     )
     payload = har_json(flows, redaction=_redaction(request))
     return Response(

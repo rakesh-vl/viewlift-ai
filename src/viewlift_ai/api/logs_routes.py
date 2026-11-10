@@ -13,7 +13,7 @@ from fastapi import APIRouter, HTTPException, Query, Request
 from fastapi.responses import HTMLResponse
 from fastapi.templating import Jinja2Templates
 
-from viewlift_ai.api.scope import resolve_client_ids
+from viewlift_ai.api.scope import scope_kwargs
 from viewlift_ai.services.log_present import log_detail, log_summary
 
 WEB_ROOT = Path(__file__).resolve().parent.parent / "web"
@@ -80,6 +80,11 @@ def list_logs(
     limit: Annotated[int, Query(ge=1, le=1000)] = 200,
     client_id: Annotated[list[str] | None, Query()] = None,
     device_key: Annotated[str | None, Query()] = None,
+    bundle_id: Annotated[str | None, Query()] = None,
+    auth_state: Annotated[str | None, Query()] = None,
+    user_id: Annotated[str | None, Query()] = None,
+    profile_id: Annotated[str | None, Query()] = None,
+    anonymous_id: Annotated[str | None, Query()] = None,
 ) -> dict[str, object]:
     logs = _store(request).list_logs(
         limit=limit,
@@ -87,7 +92,16 @@ def list_logs(
         level=level or None,
         subsystem=subsystem or None,
         text=text or None,
-        client_ids=resolve_client_ids(request, client_id, device_key),
+        **scope_kwargs(
+            request,
+            client_id,
+            device_key,
+            bundle_id,
+            auth_state,
+            user_id,
+            profile_id,
+            anonymous_id,
+        ),
     )
     return {"logs": [log_summary(item) for item in logs]}
 

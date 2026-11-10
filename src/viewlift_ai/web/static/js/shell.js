@@ -97,10 +97,33 @@
     return letters.toUpperCase();
   }
 
+  function shortDeviceKey(key) {
+    const text = String(key || "");
+    const bare = text.includes(":") ? text.slice(text.lastIndexOf(":") + 1) : text;
+    return bare.length > 4 ? bare.slice(-4) : bare;
+  }
+
+  function sessionLabel(app) {
+    const state = app.auth_state || "";
+    if (state === "logged_in") return ["logged in", app.email_mask].filter(Boolean).join(" · ");
+    if (state === "tve") return ["tve", app.email_mask].filter(Boolean).join(" · ");
+    if (state === "guest") return "guest";
+    if (state === "cold_start") return "cold start";
+    return "";
+  }
+
+  const AUTH_LABELS = {
+    guest: "Guests",
+    logged_in: "Logged in",
+    tve: "TVE",
+    cold_start: "Cold start",
+  };
+
   /*
    * Device > App scope shared by every page. Each browser tab keeps its own choice in
    * sessionStorage, so two tabs can watch two apps running on the same simulator.
-   * Values: "" (all apps), "d:<device_key>", "c:<client_id>".
+   * Values: "" (all), "d:<device_key>", "c:<client_id>", "b:<bundle_id>",
+   * "a:<auth_state>", "u:<user_id>", "p:<profile_id>", "g:<anonymous_id>".
    */
   const Scope = {
     value: (() => {
@@ -111,6 +134,7 @@
       }
     })(),
     devices: [],
+    accounts: { auth_states: [], users: [], guests: [] },
     proxyApps: [],
     byId: new Map(),
     loaded: false,
@@ -118,8 +142,14 @@
     asking: false,
 
     get() {
-      if (this.value.startsWith("c:")) return { kind: "app", clientId: this.value.slice(2) };
-      if (this.value.startsWith("d:")) return { kind: "device", deviceKey: this.value.slice(2) };
+      const value = this.value;
+      if (value.startsWith("c:")) return { kind: "app", clientId: value.slice(2) };
+      if (value.startsWith("d:")) return { kind: "device", deviceKey: value.slice(2) };
+      if (value.startsWith("b:")) return { kind: "bundle", bundleId: value.slice(2) };
+      if (value.startsWith("a:")) return { kind: "auth", authState: value.slice(2) };
+      if (value.startsWith("u:")) return { kind: "user", userId: value.slice(2) };
+      if (value.startsWith("p:")) return { kind: "profile", profileId: value.slice(2) };
+      if (value.startsWith("g:")) return { kind: "guest", anonymousId: value.slice(2) };
       return { kind: "all" };
     },
 
@@ -165,15 +195,33 @@
     matches(clientId) {
       const scope = this.get();
       if (scope.kind === "all") return true;
+      if (!clientId) return false;
       if (scope.kind === "app") return clientId === scope.clientId;
       const app = this.app(clientId);
-      return !!app && app.device_key === scope.deviceKey;
+      if (!app) return false;
+      if (scope.kind === "device") return app.device_key === scope.deviceKey;
+      if (scope.kind === "bundle") return app.bundle_id === scope.bundleId;
+      if (scope.kind === "auth") return (app.auth_state || "") === scope.authState;
+      if (scope.kind === "user") return app.user_id === scope.userId;
+      if (scope.kind === "profile") return app.profile_id === scope.profileId;
+      if (scope.kind === "guest") {
+        return app.auth_state === "guest" && app.anonymous_id === scope.anonymousId;
+      }
+      return false;
     },
 
     applyTo(params) {
       const scope = this.get();
       if (scope.kind === "app") params.append("client_id", scope.clientId);
       if (scope.kind === "device") params.set("device_key", scope.deviceKey);
+      if (scope.kind === "bundle") params.set("bundle_id", scope.bundleId);
+      if (scope.kind === "auth") params.set("auth_state", scope.authState);
+      if (scope.kind === "user") params.set("user_id", scope.userId);
+      if (scope.kind === "profile") params.set("profile_id", scope.profileId);
+      if (scope.kind === "guest") {
+        params.set("anonymous_id", scope.anonymousId);
+        params.set("auth_state", "guest");
+      }
       return params;
     },
 
@@ -217,6 +265,7 @@
         const data = await res.json();
         const before = this.loaded ? this.byId : null;
         this.devices = data.devices || [];
+        this.accounts = data.accounts || { auth_states: [], users: [], guests: [] };
         this.proxyApps = data.proxy_clients || [];
         this.byId = new Map();
         for (const device of this.devices) {
@@ -288,19 +337,49 @@
       Alerts.forgetClients(ids);
       await this.refresh();
       const scope = this.get();
-      const stale =
-        (scope.kind === "app" && !this.byId.has(scope.clientId))
-        || (scope.kind === "device" && !Array.from(this.byId.values()).some((app) => app.device_key === scope.deviceKey));
+      const stale = scope.kind !== "all"
+        && !Array.from(this.byId.values()).some((app) => this.matches(app.id));
       if (stale) this.set("", { silent: true });
       document.dispatchEvent(new CustomEvent("vl:scope-change", { detail: this.get() }));
+    },
+
+    listedApps() {
+      return Array.from(this.byId.values()).filter((app) => this.listed(app));
+    },
+
+    optionLabel(app, ambiguousNames, ambiguousBundles) {
+      const state = this.stateOf(app);
+      const glyph = state === "online" ? "\u25CF" : state === "background" ? "\u25D0" : state === "crashed" ? "\u2716" : "\u25CB";
+      const title = [app.app_name, app.app_version].filter(Boolean).join(" ");
+      const parts = [title, app.device_name, app.device_model];
+      const crowded = ambiguousNames.has(app.device_name || "") || ambiguousBundles.has(app.bundle_id || "");
+      if (crowded) {
+        const suffix = shortDeviceKey(app.device_key);
+        if (suffix) parts.push(suffix);
+        const peer = app.peer || (app.activity && app.activity.peer) || "";
+        if (peer) parts.push(peer);
+      }
+      const who = sessionLabel(app);
+      if (who) parts.push(who);
+      parts.push(state);
+      return `${glyph} ${parts.filter(Boolean).join(" · ")}`;
     },
 
     render() {
       const select = document.getElementById("scope-select");
       if (!select) return;
+      const listed = this.listedApps();
+      const nameCount = new Map();
+      const bundleCount = new Map();
+      for (const app of listed) {
+        const bundle = app.bundle_id || "";
+        if (bundle) bundleCount.set(bundle, (bundleCount.get(bundle) || 0) + 1);
+      }
       const groups = this.devices.map((device) => {
         const apps = (device.apps || []).filter((app) => this.listed(app));
         if (!apps.length) return "";
+        const name = device.device_name || "";
+        nameCount.set(name, (nameCount.get(name) || 0) + 1);
         const where = [device.platform, device.os_version, device.is_simulator ? "Simulator" : "Device"]
           .filter(Boolean)
           .join(" ");
@@ -310,18 +389,78 @@
             `<option value="d:${escapeHtml(device.device_key)}">All apps on this device (${apps.length})</option>`
           );
         }
-        for (const app of apps) {
-          const state = Scope.stateOf(app);
-          const glyph = state === "online" ? "\u25CF" : state === "background" ? "\u25D0" : state === "crashed" ? "\u2716" : "\u25CB";
-          const label = `${glyph} ${app.app_name} ${app.app_version || ""} · ${state}`;
-          options.push(`<option value="c:${escapeHtml(app.id)}">${escapeHtml(label)}</option>`);
+        return { device, where, apps, options };
+      }).filter(Boolean);
+      const ambiguousNames = new Set(
+        Array.from(nameCount.entries()).filter(([, count]) => count > 1).map(([name]) => name)
+      );
+      const ambiguousBundles = new Set(
+        Array.from(bundleCount.entries()).filter(([, count]) => count > 1).map(([bundle]) => bundle)
+      );
+      const deviceHtml = groups.map((group) => {
+        for (const app of group.apps) {
+          const label = this.optionLabel(app, ambiguousNames, ambiguousBundles);
+          group.options.push(`<option value="c:${escapeHtml(app.id)}">${escapeHtml(label)}</option>`);
         }
-        return `<optgroup label="${escapeHtml(`${device.device_name} · ${where}`)}">${options.join("")}</optgroup>`;
+        const caption = `${group.device.device_name} · ${group.where}`;
+        return `<optgroup label="${escapeHtml(caption)}">${group.options.join("")}</optgroup>`;
       });
-      select.innerHTML = `<option value="">All apps</option>${groups.join("")}`;
+      const bundleOptions = [];
+      const seenBundles = new Set();
+      for (const app of listed) {
+        const bundle = app.bundle_id || "";
+        if (!bundle || seenBundles.has(bundle) || (bundleCount.get(bundle) || 0) < 2) continue;
+        seenBundles.add(bundle);
+        const installs = listed.filter((item) => item.bundle_id === bundle);
+        const places = new Set(installs.map((item) => item.device_key || item.id)).size;
+        const name = app.app_name || bundle;
+        const label = places > 1 ? `${name} on ${places} devices` : `${name} (${installs.length} installs)`;
+        bundleOptions.push(`<option value="b:${escapeHtml(bundle)}">${escapeHtml(label)}</option>`);
+      }
+      const bundleHtml = bundleOptions.length
+        ? `<optgroup label="By app">${bundleOptions.join("")}</optgroup>`
+        : "";
+      const accountOptions = [];
+      const states = this.accounts.auth_states || [];
+      for (const state of states) {
+        accountOptions.push(
+          `<option value="a:${escapeHtml(state)}">${escapeHtml(AUTH_LABELS[state] || state)}</option>`
+        );
+      }
+      for (const user of this.accounts.users || []) {
+        const who = user.email_mask || user.user_id;
+        const provider = user.login_provider ? ` · ${user.login_provider}` : "";
+        const places = `${user.devices} device${user.devices === 1 ? "" : "s"}`;
+        accountOptions.push(
+          `<option value="u:${escapeHtml(user.user_id)}">${escapeHtml(`${who}${provider} · ${places}`)}</option>`
+        );
+        for (const profile of user.profiles || []) {
+          accountOptions.push(
+            `<option value="p:${escapeHtml(profile)}">${escapeHtml(`${who} · profile ${profile}`)}</option>`
+          );
+        }
+      }
+      for (const guest of this.accounts.guests || []) {
+        const places = `${guest.devices} device${guest.devices === 1 ? "" : "s"}`;
+        accountOptions.push(
+          `<option value="g:${escapeHtml(guest.anonymous_id)}">${escapeHtml(`Guest ${guest.anonymous_id} · ${places}`)}</option>`
+        );
+      }
+      const accountHtml = accountOptions.length
+        ? `<optgroup label="By account">${accountOptions.join("")}</optgroup>`
+        : "";
+      select.innerHTML = `<option value="">All apps</option>${deviceHtml.join("")}${bundleHtml}${accountHtml}`;
       const present = Array.from(select.options).some((option) => option.value === this.value);
-      if (!present) {
-        const missing = this.get().kind === "app" ? "Selected app (not connected)" : "Selected device (not connected)";
+      if (!present && this.value) {
+        const missing = {
+          app: "Selected app (not connected)",
+          device: "Selected device (not connected)",
+          bundle: "Selected app (not connected)",
+          auth: "Selected account (not connected)",
+          user: "Selected account (not connected)",
+          profile: "Selected profile (not connected)",
+          guest: "Selected guest (not connected)",
+        }[this.get().kind] || "Selected scope (not connected)";
         select.insertAdjacentHTML(
           "beforeend",
           `<option value="${escapeHtml(this.value)}">${escapeHtml(missing)}</option>`
@@ -377,12 +516,10 @@
         document.dispatchEvent(new CustomEvent("vl:scope-change", { detail: this.get() }));
         return;
       }
-      const targets =
-        scope.kind === "app"
-          ? [scope.clientId]
-          : Array.from(this.byId.values())
-              .filter((app) => app.device_key === scope.deviceKey)
-              .map((app) => app.id);
+      const targets = Array.from(this.byId.values())
+        .filter((app) => this.matches(app.id))
+        .map((app) => app.id);
+      if (!targets.length) return;
       const names = targets.map((id) => (this.app(id) || { app_name: id }).app_name).join(", ");
       const ok = window.confirm(
         `Clear captured flows, logs, debug events, crash replays, and alerts for ${names}? This cannot be undone.`
