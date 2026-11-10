@@ -176,10 +176,14 @@ enum UIInspectionService {
         #endif
     }
 
+    /// The receiver rejects events above 512 KB, so the audit result is size-budgeted.
+    static let assetPayloadBudget = 480_000
+
     static func assetAudit() -> [String: JSONValue] {
         let bundles = [Bundle.main] + Bundle.allFrameworks
         var rows: [JSONValue] = []
         var seen = Set<String>()
+        var truncated = false
         for bundle in bundles {
             guard let root = bundle.resourceURL,
                   let enumerator = FileManager.default.enumerator(
@@ -214,11 +218,18 @@ enum UIInspectionService {
                 #endif
                 rows.append(.object(row))
                 if rows.count >= 2_000 {
-                    return ["assets": .array(rows), "truncated": .bool(true)]
+                    truncated = true
+                    break
+                }
+                if rows.count % 50 == 0,
+                   (try? JSONEncoder().encode(["assets": JSONValue.array(rows)] as [String: JSONValue]).count) ?? assetPayloadBudget > assetPayloadBudget {
+                    truncated = true
+                    break
                 }
             }
+            if truncated { break }
         }
-        return ["assets": .array(rows), "truncated": .bool(false)]
+        return ["assets": .array(rows), "truncated": .bool(truncated)]
     }
 
     #if canImport(UIKit)
